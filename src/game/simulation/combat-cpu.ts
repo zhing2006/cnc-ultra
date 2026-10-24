@@ -57,9 +57,7 @@ export class CpuCombat {
     this.sight = new CpuSight(setup.grid.width, setup.grid.height, setup.units.length);
     this.sight.step(this.movement.units);
     this.state = C.initialCombat(setup);
-    this.projectiles = new Int32Array(setup.units.length * C.SHOTS_PER_UNIT * C.BWORDS);
-    for (let b = 0; b < this.projectiles.length; b += C.BWORDS)
-      this.projectiles[b + C.BEXPLODED] = -1;
+    this.projectiles = C.initialProjectiles(setup.units.length);
   }
   get frame() { return this.movement.frame; }
   get units() { return this.movement.units; }

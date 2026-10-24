@@ -121,8 +121,23 @@ export async function compareUnits(){
     try{
       while(ticks<100){large.step();ticks++;const fields=new Int32Array(await renderer.getArrayBufferAsync(large.fields));if(fields[1])break;}
       if(ticks===100)throw new Error('Large detour field did not converge');
+      const largeGridMilliseconds = performance.now() - start;
+      const oldTarget = (goalsLarge.array as Int32Array)[0];
+      (goalsLarge.array as Int32Array)[0] = -1;
+      goalsLarge.needsUpdate = true;
+      large.step();
+      const cancelled = new Int32Array(await renderer.getArrayBufferAsync(large.fields));
+      const lookup = new Int32Array(await renderer.getArrayBufferAsync(large.lookup));
+      if (cancelled[0] !== -1 || lookup[oldTarget] !== -1)
+        throw new Error('An empty request bitmap retained the cancelled flow field');
+      (goalsLarge.array as Int32Array)[0] = width * width - 1;
+      goalsLarge.needsUpdate = true;
+      large.step();
+      const resumed = new Int32Array(await renderer.getArrayBufferAsync(large.fields));
+      if (resumed[0] !== width * width - 1)
+        throw new Error('The highest request-bit group did not restart an idle flow pool');
       const adapter=await navigator.gpu.requestAdapter();
-      const largeGridMilliseconds=performance.now()-start,gpu=await measureM3Gpu(renderer);
+      const gpu=await measureM3Gpu(renderer);
       return {largeGridTicks:ticks,largeGridMilliseconds,regressions,gpu,adapter:adapter && {vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description}};
     }finally{large.dispose();releaseStorage(renderer,[goalsLarge]);}
   }finally{wrapper.dispose();canvas.remove();}

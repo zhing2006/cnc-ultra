@@ -77,12 +77,27 @@ export async function compareCombatWorld(renderer: WebGPURenderer, everyTick = f
     (gpu.projectiles.array as Int32Array).set(cpu.projectiles);
     gpu.projectiles.needsUpdate = true;
     for (let tick = 1; tick <= 2000; tick++) {
+      // Refill an idle, nonzero projectile slot after its earlier queue has
+      // drained. This also exercises external save-state uploads between ticks.
+      const refilled = (collision.first * C.SHOTS_PER_UNIT + 511) * C.BWORDS;
+      if (tick === 901 || tick === 1201) {
+        const p = cpu.projectiles;
+        p.fill(0, refilled, refilled + C.BWORDS);
+        p[refilled] = p[refilled + C.BTO_X] = cpu.units[collision.first * WORDS];
+        p[refilled + 1] = p[refilled + C.BTO_Y] = cpu.units[collision.first * WORDS + 1];
+        p[refilled + C.BACTIVE] = p[refilled + C.BTIMER] = 1;
+        p[refilled + C.BTYPE] = 2;
+        p[refilled + C.BSOURCE] = -1;
+        (gpu.projectiles.array as Int32Array).set(p);
+        gpu.projectiles.needsUpdate = true;
+      }
       cpu.step(tick === 1 ? commands : []);
       if (tick === 1) gpu.step(commands);
       const victimDeath=cpu.state[(celebration.first+1)*C.CWORDS+C.CDEATH];
       // Union of every original checkpoint; no case loses a state comparison.
       const sample = everyTick || tick <= 8 || (tick <= 780 && tick % 30 === 0) ||
-        (tick <= 150 && tick % 10 === 0) || tick % 60 === 0 || tick === 2000 || (victimDeath>0 && tick===victimDeath+30);
+        (tick <= 150 && tick % 10 === 0) || tick % 60 === 0 || tick === 2000 || (victimDeath>0 && tick===victimDeath+30) ||
+        (tick >= 901 && tick <= 903) || (tick >= 1201 && tick <= 1203);
       if (sample) {
         gpu.stepMany(tick - gpu.frame);
         const actual = await gpu.snapshot(), expected = cpu.buffers();
@@ -101,6 +116,10 @@ export async function compareCombatWorld(renderer: WebGPURenderer, everyTick = f
         for (let id = 0; id < 64; id++) if (cpu.units[(collision.first + id) * WORDS + UHEALTH] !== 0)
           throw new Error('Simultaneous shell impacts must kill their target without activating dormant units');
       }
+      if ((tick === 901 || tick === 1201) && cpu.projectiles[refilled + C.BIMPACT] !== 1)
+        throw new Error('Refilled projectile did not emit its impact on the original fuse tick');
+      if ((tick === 902 || tick === 1202) && cpu.projectiles[refilled + C.BIMPACT] !== 0)
+        throw new Error('Retired projectile emitted its impact more than once');
       if(victimDeath>0 && tick===victimDeath+30) {
         const at=celebration.first*C.CWORDS;
         if(cpu.state[at+C.CKILLS]!==2 || cpu.state[at+C.CCELEBRATED]!==tick || ![27,29].includes(cpu.state[at+C.CACTION]))

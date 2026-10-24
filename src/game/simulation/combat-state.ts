@@ -22,6 +22,14 @@ export const BTO_X = 12, BTO_Y = 13, BPROXIMITY = 14, BALTITUDE = 15, BRISER = 1
 export const BIMPACT = 17, BEXPLODED = 18, BSOURCE = 19, BFIRE_X = 20, BFIRE_Y = 21, BWEAPON = 22, BBORN = 23;
 export const BFIRE_FACE = 24;
 export const BTRAIL_X = 25, BTRAIL_Y = 26, BTRAIL_TICK = 27;
+export function initialProjectiles(units: number) {
+  const state = new Int32Array(units * SHOTS_PER_UNIT * BWORDS);
+  for (let at = 0; at < state.length; at += BWORDS) {
+    state[at + BEXPLODED] = -1;
+    state[at + BTRAIL_TICK] = -1;
+  }
+  return state;
+}
 export interface CombatSetup extends UnitsSetup {
   /** Parent vehicle index for each reserved survivor; -1 for initially present units. */
   crewParents?: readonly number[];

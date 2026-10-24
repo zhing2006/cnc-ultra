@@ -61,6 +61,8 @@ export class GpuUnits {
   readonly pathGoals: StorageBufferAttribute;
   readonly control: StorageBufferAttribute;
   readonly occupancy: StorageBufferAttribute;
+  /** Per-unit scatter flags followed by an occupancy invalidation flag. */
+  readonly occupancyChanges: StorageBufferAttribute;
   readonly flow: GpuFlowFields;
   readonly pending: StorageBufferAttribute;
   private readonly applyPending: ComputeNode;
@@ -77,6 +79,8 @@ export class GpuUnits {
   private readonly commandKind = uniform(0, 'int');
   private readonly target = uniform(-1, 'int');
   private readonly digest: GpuChecksum;
+  private readonly invalidateOccupancy: ComputeNode;
+  private unitsVersion = -1;
   frame = 0;
   constructor(readonly renderer: WebGPURenderer, readonly setup: S.UnitsSetup) {
     const count = setup.units.length;
@@ -107,7 +111,14 @@ export class GpuUnits {
     const control = storage(this.control, 'int', 2).setName('unit_control');
     const occupancy = storage(this.occupancy, 'uint', cells * 5).setName('unit_occupancy').toAtomic();
     const claims = storage(keep(new Uint32Array(cells * 5)), 'uint', cells * 5).setName('unit_claims').toAtomic();
-    const nudges = storage(keep(new Uint32Array(count)), 'uint', count).setName('unit_nudges').toAtomic();
+    const changes = new Uint32Array(count + 1);
+    changes[count] = 1;
+    this.occupancyChanges = keep(changes);
+    const nudges = storage(this.occupancyChanges, 'uint', count + 1).setName('unit_nudges').toAtomic();
+    // Rebuild passes consume the flag after all invalidation writes. Reading
+    // it through atomics in every cell invocation serializes AMD's D3D path.
+    const occupancyStatus = storage(this.occupancyChanges, 'uint', count + 1).setName('unit_occupancy_status').toReadOnly();
+    const invalidateOccupancy = () => { atomicStore(nudges.element(count), uint(1)); };
     const proposal = storage(keep(new Int32Array(count * PROPOSAL_WORDS)), 'int', count * PROPOSAL_WORDS).setName('unit_proposal');
     const heads = storage(keep(new Uint32Array(cells)), 'uint', cells).setName('unit_heads').toAtomic();
     const links = storage(keep(new Uint32Array(count)), 'uint', count).setName('unit_links');
@@ -431,6 +442,7 @@ export class GpuUnits {
         u.element(at.add(int(S.UWAIT))).subAssign(int(1));
       });
       If(driving, () => {
+        invalidateOccupancy();
         advance(id);
       }).Else(() => {
         If(u.element(at.add(int(S.UFACE))).notEqual(u.element(at.add(int(S.UDESIRED)))), () => {
@@ -443,29 +455,40 @@ export class GpuUnits {
       });
     });
     const clear = kernel(cells * 5, () => {
-      atomicStore(occupancy.element(instanceIndex), 0);
+      If(occupancyStatus.element(count).notEqual(uint(0)), () => {
+        atomicStore(occupancy.element(instanceIndex), 0);
+      });
       atomicStore(claims.element(instanceIndex), 0x7fffffff);
     });
     // Vehicle reservations take precedence while a crusher shares a cell with infantry.
     const occupy = [1, 0].map(infantry => kernel(count, () => {
-      const id = int(instanceIndex);
-      const at = id.mul(int(S.WORDS)).toVar();
-      for (const field of [S.UCELL, S.UDEST, S.UMIDDLE]) {
-        const cell = u.element(at.add(int(field)));
-        const reserved = field === S.UCELL
-          ? u.element(at.add(int(S.UKIND))).equal(int(0)).or(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
-          : int(1).equal(int(1));
-        If(cell.greaterThanEqual(int(0)).and(reserved).and(u.element(at.add(S.UHEALTH)).greaterThan(0))
-          .and(u.element(at.add(S.UKIND)).equal(infantry)), () => {
-          const slot = u.element(at.add(field === S.UCELL ? S.USLOT : S.UDSLOT));
-          Loop(5, ({ i: s }) => {
-            If(u.element(at.add(int(S.UKIND))).equal(int(0)).or(slot.equal(int(s))), () => {
-              atomicStore(occupancy.element(cell.mul(int(5)).add(s)), uint(id.add(int(1))));
+      If(occupancyStatus.element(count).notEqual(uint(0)), () => {
+        const id = int(instanceIndex);
+        const at = id.mul(int(S.WORDS)).toVar();
+        for (const field of [S.UCELL, S.UDEST, S.UMIDDLE]) {
+          const cell = u.element(at.add(int(field)));
+          const reserved = field === S.UCELL
+            ? u.element(at.add(int(S.UKIND))).equal(int(0)).or(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
+            : int(1).equal(int(1));
+          If(cell.greaterThanEqual(int(0)).and(reserved).and(u.element(at.add(S.UHEALTH)).greaterThan(0))
+            .and(u.element(at.add(S.UKIND)).equal(infantry)), () => {
+            const slot = u.element(at.add(field === S.UCELL ? S.USLOT : S.UDSLOT));
+            Loop(5, ({ i: s }) => {
+              If(u.element(at.add(int(S.UKIND))).equal(int(0)).or(slot.equal(int(s))), () => {
+                atomicStore(occupancy.element(cell.mul(int(5)).add(s)), uint(id.add(int(1))));
+              });
             });
           });
-        });
-      }
+        }
+      });
     }));
+    const finishOccupancy = kernel(1, () => { atomicStore(nudges.element(count), uint(0)); });
+    this.invalidateOccupancy = kernel(1, invalidateOccupancy);
+    const clearOccupancy = kernel(cells * 5, () => {
+      If(occupancyStatus.element(count).notEqual(uint(0)), () => {
+        atomicStore(occupancy.element(instanceIndex), uint(0));
+      });
+    });
     const query = kernel(count, () => {
       const id = int(instanceIndex);
       const p = id.mul(int(PROPOSAL_WORDS)).toVar();
@@ -737,6 +760,7 @@ export class GpuUnits {
             });
           });
         If(won.notEqual(int(0)), () => {
+          invalidateOccupancy();
           If(u.element(at.add(int(S.UJUMP))).greaterThanEqual(int(0)), () => {
             u.element(at.add(int(S.UMIDDLE))).assign(u.element(at.add(int(S.UDEST))));
             u.element(at.add(int(S.UDEST))).assign(cell);
@@ -786,6 +810,7 @@ export class GpuUnits {
       const id = int(instanceIndex);
       const at = id.mul(int(S.WORDS));
       If(u.element(at.add(int(S.UJUMP))).greaterThanEqual(int(0)), () => {
+        invalidateOccupancy();
         // The current tick's speed was already accumulated before the reservation pass.
         u.element(at.add(int(S.UJUMP))).assign(-1);
         advance(id, false);
@@ -860,17 +885,18 @@ export class GpuUnits {
     // Start inter-cell moves first, then reserve short infantry steps in the
     // vacated source slots. This preserves same-tick starts without overlapping reservations.
     this.prepare = this.flow.prepareKernels.length ? [this.resolvePaths,...this.flow.prepareKernels] : [];
-    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, ...occupy,
+    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, ...occupy, finishOccupancy,
       snapshotGoals, query, propose, prepareInfantry,
-      clearHeads, linkInfantry(true), allocateInfantry, accept, clear, ...occupy,
-      clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clear, ...occupy, yieldSpace, this.applyPending];
-    this.occupancyPasses = [clear, ...occupy];
+      clearHeads, linkInfantry(true), allocateInfantry, accept, clear, ...occupy, finishOccupancy,
+      clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clearOccupancy, ...occupy, finishOccupancy, yieldSpace, this.applyPending];
+    this.occupancyPasses = [clearOccupancy, ...occupy, finishOccupancy];
     this.batch = Array.from({length:32},()=>this.tick).flat();
     if (this.prepare.length) renderer.compute(this.prepare);
     renderer.compute([...this.tick, this.command, kernel(1, () => control.element(0).assign(0))]);
     this.digest = new GpuChecksum(renderer, this.buffers());
   }
   step(commands: readonly S.UnitCommand[] = []) {
+    if (this.unitsVersion !== this.units.version) this.refreshOccupancy();
     if (this.prepare.length) this.renderer.compute(this.prepare);
     this.renderer.compute(this.tick);
     this.frame++;
@@ -894,6 +920,7 @@ export class GpuUnits {
   }
   /** Advance command-free ticks in bounded submissions, preserving every compute pass. */
   stepMany(ticks: number, extension?: UnitTickExtension) {
+    if (this.unitsVersion !== this.units.version) this.refreshOccupancy();
     // Indirect dispatch arguments must be written in a separate compute pass.
     if (this.prepare.length) {
       for (let tick = 0; tick < ticks; tick++) {
@@ -924,7 +951,11 @@ export class GpuUnits {
       ticks -= count;
     }
   }
-  refreshOccupancy() { this.renderer.compute(this.occupancyPasses); }
+  /** Explicit external state edits invalidate the cache; tick passes mark their own changes. */
+  refreshOccupancy() {
+    this.renderer.compute([this.invalidateOccupancy, ...this.occupancyPasses]);
+    this.unitsVersion = this.units.version;
+  }
   buffers() {
     return [this.control, this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
   }

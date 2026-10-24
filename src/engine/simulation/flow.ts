@@ -119,16 +119,25 @@ export class GpuFlowFields {
     const scratchAttribute = keep(new Uint32Array(cells * capacity).fill(UNREACHABLE));
     const scratch = storage(scratchAttribute, 'uint', cells * capacity).setName('flow_scratch').toAtomic();
     const requested = storage(keep(new Uint32Array(words)), 'uint', words).setName('flow_requested').toAtomic();
+    // A second bitmap skips empty groups of 1024 cells. Traversal remains in
+    // ascending cell order, including when the bounded pool must rotate goals.
+    const blockWords = Math.ceil(words / 32);
+    const requestedBlocks = storage(keep(new Uint32Array(blockWords)), 'uint', blockWords).setName('flow_requested_blocks').toAtomic();
     const pending = storage(keep(new Int32Array(cells)), 'int', cells).setName('flow_pending');
     const goal = storage(goals, 'int', users).setName('flow_goal').toReadOnly();
     const edgeAttribute = keep(Int32Array.from(grid.edges));
     const edge = storage(edgeAttribute, 'int', cells).setName('flow_edge').toReadOnly();
-    const clear = Fn(() => { atomicStore(requested.element(instanceIndex), uint(0)); })().compute(words);
+    const clear = Fn(() => {
+      atomicStore(requested.element(instanceIndex), uint(0));
+      If(instanceIndex.lessThan(uint(blockWords)), () => { atomicStore(requestedBlocks.element(instanceIndex), uint(0)); });
+    })().compute(words);
     const request = Fn(() => {
       const target = goal.element(instanceIndex);
       If(target.greaterThanEqual(int(0)), () => {
         const register = () => {
           atomicOr(requested.element(target.div(int(32))), uint(1).shiftLeft(uint(target.mod(int(32)))));
+          const word = target.div(int(32));
+          atomicOr(requestedBlocks.element(word.div(int(32))), uint(1).shiftLeft(uint(word.mod(int(32)))));
         };
         // One request per contiguous run preserves the set while avoiding thousands
         // of contending atomics when an army shares a destination.
@@ -147,15 +156,21 @@ export class GpuFlowFields {
         });
       });
       const size = int(0).toVar(), start = int(-1).toVar();
-      Loop(words, ({ i: word }) => {
-        const bits = atomicLoad(requested.element(word)).toVar();
+      Loop(blockWords, ({ i: block }) => {
+        const occupied = atomicLoad(requestedBlocks.element(block)).toVar();
         Loop(() => {
-          If(bits.equal(uint(0)), () => { Break(); });
-          const target = word.mul(int(32)).add(int(trailingZeros(bits))).toVar();
-          bits.assign(bits.bitAnd(bits.sub(uint(1))));
-          If(index.element(target).lessThan(int(0)), () => {
-            If(start.lessThan(int(0)).and(target.greaterThanEqual(schedule.element(0))), () => { start.assign(size); });
-            pending.element(size).assign(target); size.addAssign(int(1));
+          If(occupied.equal(uint(0)), () => { Break(); });
+          const word = block.mul(int(32)).add(int(trailingZeros(occupied))).toVar();
+          occupied.assign(occupied.bitAnd(occupied.sub(uint(1))));
+          const bits = atomicLoad(requested.element(word)).toVar();
+          Loop(() => {
+            If(bits.equal(uint(0)), () => { Break(); });
+            const target = word.mul(int(32)).add(int(trailingZeros(bits))).toVar();
+            bits.assign(bits.bitAnd(bits.sub(uint(1))));
+            If(index.element(target).lessThan(int(0)), () => {
+              If(start.lessThan(int(0)).and(target.greaterThanEqual(schedule.element(0))), () => { start.assign(size); });
+              pending.element(size).assign(target); size.addAssign(int(1));
+            });
           });
         });
       });
