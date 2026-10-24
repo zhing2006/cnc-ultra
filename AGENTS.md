@@ -29,7 +29,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 - `src/App.svelte`, `src/main.ts`: the app shell.
 - `assets/dev/`: a few original MIX files for development and tests, stored in LFS with lower-case names.
 - `refs/`: downloaded references. Git ignores everything in it except its index and the fetch scripts.
-- `docs/`: docs in Chinese: the constitutions, the roadmap and the writing guide, listed in `docs/README.md`. The task list for each milestone of the roadmap goes in `docs/plans/`.
+- `docs/`: docs in Chinese: the constitutions, the roadmap and the writing guide, listed in `docs/README.md`. `docs/tasks/` holds one file per milestone of the roadmap, with its goal, reasons, scope, references and acceptance criteria, and `docs/tasks/progress.md` tracks where each milestone stands.
 
 ## Rules
 
@@ -40,7 +40,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 - The game needs no backend: it builds to a static site with relative asset paths. The page is cross-origin isolated (`vite.config.ts` sets COOP and COEP), so it can only load resources from other origins that send CORP or CORS headers; do not add external resources.
 - Read original data at run time through the format parsers in `src/game/`. Do not commit converted or extracted copies of original assets, except reference images for tests.
 - Never commit anything from `refs/` other than its index and fetch scripts, and never commit original game files outside `assets/dev/`.
-- Ask first before adding a dependency, changing a constitution, moving code across the engine/game boundary or committing new binary files.
+- Ask first before adding a dependency, changing a constitution or another design doc, moving code across the engine/game boundary or committing new binary files.
 
 ## Reviews
 
@@ -88,7 +88,7 @@ Then:
 - Get to the point and say a thing once. Write no preview sentences such as “下面我们来看看”, no empty background such as “随着技术的不断发展”, and no closing platitudes such as “总之” or “值得期待”. Do not follow a point with a line explaining it, and do not open a section by restating its heading.
 - Do not inflate. Cut words that carry no information, such as “标志着”“彰显了”“至关重要”“深入探讨”“无缝”“赋能”, and trailing verdicts such as “体现了……”; such a word may stay where it has its exact meaning. Do not stage contrasts with “不是 X，而是 Y” unless the first half corrects a misreading a reader might really have.
 - Write graphics and game terms the way developers use them. Keep established terms such as WebGPU, compute shader, TSL, draw call, storage buffer, MIX and SHP in their original form; do not coin Chinese paraphrases.
-- Design docs and guides describe the current design, constraints and usage. Do not put test results, performance measurements or build-pass records in them; keep measurements in reports and task progress in `docs/plans/`. Do not write “这里新补充了……” or “现在改为……”, or leave notes about moved content. Record changes in commit messages.
+- Everything under `docs/` except `docs/tasks/` is a design doc. Design docs hold the high-level design, module boundaries and constraints that are easy to get wrong. They hold no work log, no test results, performance measurements or build-pass records, and nothing the code already says; those, and task progress, go in `docs/tasks/`. In normal work, the only docs you update are the files in `docs/tasks/`, including `progress.md`. Once a design is settled, change it only for a good reason, and give the reason in the commit message. Do not write “这里新补充了……” or “现在改为……”, or leave notes about moved content. Record changes in commit messages.
 - In Simplified Chinese, use “” for quotes, names and section references; 「」 belongs to Traditional Chinese. Use full-width punctuation in Chinese text, and leave code, paths and commands as they are.
 
 ## References
