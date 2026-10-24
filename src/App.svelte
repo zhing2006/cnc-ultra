@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { createRenderer, type Renderer } from './engine/renderer.ts';
+  import { createRenderer, DeviceLostError, type Renderer } from './engine/renderer.ts';
 
   type Status = 'starting' | 'running' | 'unsupported' | 'failed' | 'lost';
 
@@ -9,16 +9,16 @@
   let renderer: Renderer | null = null;
   let unmounted = false;
 
+  function lost(message: string) {
+    console.error(`WebGPU device lost: ${message}`);
+    renderer = null;
+    status = 'lost';
+  }
+
   async function start() {
     status = 'starting';
     try {
-      const created = await createRenderer(canvas, {
-        onDeviceLost(message) {
-          console.error(`WebGPU device lost: ${message}`);
-          renderer = null;
-          status = 'lost';
-        },
-      });
+      const created = await createRenderer(canvas, { onDeviceLost: lost });
       if (unmounted) {
         created?.dispose();
         return;
@@ -26,8 +26,12 @@
       renderer = created;
       status = created ? 'running' : 'unsupported';
     } catch (error) {
-      console.error(error);
-      status = 'failed';
+      if (error instanceof DeviceLostError) {
+        lost(error.message);
+      } else {
+        console.error(error);
+        status = 'failed';
+      }
     }
   }
 

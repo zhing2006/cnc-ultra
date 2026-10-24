@@ -14,15 +14,22 @@ function refuseDevice() {
   };
 }
 
-/** Hands out devices whose `lost` promise `window.loseDevice()` resolves. */
+/**
+ * The first device comes already lost, so the loss arrives while the renderer is starting. Later
+ * devices are lost when the test calls `window.loseDevice()`.
+ */
 function controlDeviceLoss() {
   const requestDevice = GPUAdapter.prototype.requestDevice;
   const hooks = window as unknown as { loseDevice?: () => void };
+  let requests = 0;
   GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, ...args: Parameters<GPUAdapter['requestDevice']>) {
     const device = await requestDevice.apply(this, args);
-    const lost = new Promise<GPUDeviceLostInfo>((resolve) => {
-      hooks.loseDevice = () => resolve({ reason: 'unknown', message: 'lost by the test' } as GPUDeviceLostInfo);
-    });
+    requests += 1;
+    const lost = requests === 1
+      ? Promise.resolve({ reason: 'unknown', message: 'lost during start by the test' } as GPUDeviceLostInfo)
+      : new Promise<GPUDeviceLostInfo>((resolve) => {
+        hooks.loseDevice = () => resolve({ reason: 'unknown', message: 'lost by the test' } as GPUDeviceLostInfo);
+      });
     Object.defineProperty(device, 'lost', { value: lost });
     return device;
   };
@@ -38,9 +45,12 @@ export function checkNoWebGLFallback(session: Session) {
 }
 
 export function checkDeviceLossRestart(session: Session) {
-  const options = { init: controlDeviceLoss, expectedErrors: [/WebGPU device lost: lost by the test/] };
+  const options = { init: controlDeviceLoss, expectedErrors: [/WebGPU device lost: lost (during start )?by the test/] };
   return withApp(session, options, async (page) => {
+    await page.locator('canvas[data-status="lost"]').waitFor({ state: 'attached' });
+    await page.getByRole('button', { name: 'Restart' }).click();
     await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
+
     await page.evaluate(() => (window as unknown as { loseDevice: () => void }).loseDevice());
     await page.locator('canvas[data-status="lost"]').waitFor({ state: 'attached' });
     await page.getByRole('button', { name: 'Restart' }).click();

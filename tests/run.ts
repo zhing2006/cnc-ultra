@@ -48,7 +48,7 @@ try {
 
   const checks: [string, (session: Session) => Promise<void>][] = [
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],
-    ['restart after the GPU device is lost', checkDeviceLossRestart],
+    ['restart after the GPU device is lost while starting and while running', checkDeviceLossRestart],
   ];
   const results = await Promise.allSettled(checks.map(async ([name, check]) => {
     const start = performance.now();
