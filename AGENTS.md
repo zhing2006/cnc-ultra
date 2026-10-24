@@ -13,6 +13,7 @@ The constitutions in `docs/` set the product scope and the technical, design and
 - `pnpm test:e2e`: run the browser checks with `tests/run.ts`. It starts Vite in-process on a free port, launches one full Chromium, which has WebGPU in new headless mode, and runs the checks side by side. Install Chromium once with `pnpm exec playwright install chromium`.
 - `pnpm build`: type-check, then build into `dist/`.
 - `refs/fetch.ps1` on Windows, `refs/fetch.sh` elsewhere: download the game data and the reference source code into `refs/`.
+- `node refs/export-png.ts`: export OpenRA's decoding of the original shapes and templates into `refs/openra-png/` and write their digests to `tests/reference/openra.txt`, which the format tests compare against. It builds OpenRA first if needed, which takes the .NET SDK.
 
 Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2e`, and report what each one printed, failures included.
 

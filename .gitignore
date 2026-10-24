@@ -21,11 +21,12 @@ logs/
 !.env.example
 .claude/settings.local.json
 
-# Downloaded references. Only the index and the fetch scripts are committed.
+# Downloaded references. Only the index and the scripts are committed.
 refs/*
 !refs/README.md
 !refs/fetch.sh
 !refs/fetch.ps1
+!refs/export-png.ts
 
 # Editors and operating systems
 .idea/

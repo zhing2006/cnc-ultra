@@ -1,6 +1,6 @@
 # 参考资料
 
-这个目录存放下载来的原版游戏数据和参考源码。除了本文和两个下载脚本，目录里的其他内容都不入库。
+这个目录存放下载来的原版游戏数据和参考源码，以及从 OpenRA 导出的参考图。除了本文和几个脚本，目录里的其他内容都不入库。
 
 ## 下载
 
@@ -38,6 +38,7 @@ bash refs/fetch.sh
 | `source/nyerguds-tiberian-dawn/` | 在原版源码基础上修到能编译、能运行的版本 | [Nyerguds/CnC_Tiberian_Dawn](https://github.com/Nyerguds/CnC_Tiberian_Dawn) | `3c9449e` |
 | `source/openra/` | 用 C# 写的重制引擎，资源格式的解析代码可以对照 | [OpenRA/OpenRA](https://github.com/OpenRA/OpenRA) | `release-20250330`（`b4f3d8a`） |
 | `source/vanilla-conquer/` | 基于重制版源码的跨平台移植 | [TheAssemblyArmada/Vanilla-Conquer](https://github.com/TheAssemblyArmada/Vanilla-Conquer) | `ce83b59` |
+| `openra-png/` | OpenRA 导出的参考图，每个文件一个目录 | `export-png.ts` | |
 
 ## 游戏数据
 
@@ -47,7 +48,17 @@ bash refs/fetch.sh
 
 `speech.mix`、`tempicnh.mix` 和 `transit.mix` 装在光盘的 `INSTALL/SETUP.Z` 里。这是 InstallShield 3 的安装包，bsdtar 读不了，所以这三个文件取自 OpenRA 的素材包。OpenRA 也提供这个素材包，用来代替从光盘安装，见 `source/openra/mods/cnc-content/installer/downloads.yaml`。素材包里的这三个文件和 `SETUP.Z` 里的是否逐字节相同，未核对。素材包里的其他 MIX 和 GDI 光盘上的相同，只有 `cclocal.mix` 是另一个版本。素材包里还多一个 `updatec.mix`，光盘上没有这个文件。
 
-`assets/dev/` 里入库的 `conquer.mix`、`temperat.mix` 和 `general.mix` 复制自 `cnc-gold/gdi/`，供开发和测试使用。
+`assets/dev/` 里入库的 `conquer.mix`、`temperat.mix`、`general.mix` 和 `cclocal.mix` 复制自 `cnc-gold/gdi/`，供开发和测试使用。
+
+## 参考图
+
+`export-png.ts` 用 OpenRA 的 `--png` 命令，导出 `assets/dev/` 里的温带地形模板、全部车辆和步兵的 SHP，以及鼠标指针的 `mouse.shp`。导出的 PNG 存在 `openra-png/` 里，可以直接打开看。脚本把每个文件逐帧的宽、高和调色板索引算成 SHA-256，写进 `tests/reference/openra.txt`，格式测试拿这个文件来对照。
+
+```sh
+node refs/export-png.ts
+```
+
+还没有编译过 OpenRA 的话，脚本会先在 `source/openra/` 里编译，这需要 .NET SDK。OpenRA 的目标框架是 net6.0，用 .NET 9 SDK 也能编译，只会报一个框架过期的警告。
 
 ## 源码
 
