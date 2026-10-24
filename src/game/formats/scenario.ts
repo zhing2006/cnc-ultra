@@ -20,7 +20,18 @@ export interface PlacedInfantry extends PlacedUnit {
   spot: number;
 }
 
-/** What M0 reads from a scenario: the map area, the terrain and the units placed on it. */
+export interface PlacedBuilding {
+  house: string;
+  type: string;
+  strength: number;
+  cell: number;
+  facing: number;
+}
+
+export interface PlacedTerrain { type: string; cell: number }
+export interface PlacedSmudge extends PlacedTerrain { frame: number }
+
+/** The original scenario's initial, static map contents. */
 export interface Scenario {
   theater: string;
   /** The playable area in cells (DisplayClass::Read_INI reads it from [MAP]). */
@@ -33,6 +44,12 @@ export interface Scenario {
   icons: Uint8Array;
   units: PlacedUnit[];
   infantry: PlacedInfantry[];
+  buildings: PlacedBuilding[];
+  terrain: PlacedTerrain[];
+  overlays: PlacedTerrain[];
+  smudges: PlacedSmudge[];
+  /** Parked aircraft for static previews; campaign aircraft arrive later as reinforcements. */
+  aircraft?: PlacedUnit[];
   /** Waypoint number to cell number, for the waypoints that are set. */
   waypoints: Map<number, number>;
 }
@@ -80,6 +97,17 @@ export function readScenario(iniText: string, bin: Uint8Array): Scenario {
     icons,
     units,
     infantry,
+    // Ported from BUILDING.CPP, TERRAIN.CPP, OVERLAY.CPP and SMUDGE.CPP, Read_INI.
+    buildings: ini.entries('STRUCTURES').map(([, value]) => {
+      const [house, type, strength, cell, facing] = value.split(',');
+      return { house, type, strength: Number(strength), cell: Number(cell), facing: Number(facing) };
+    }),
+    terrain: ini.entries('TERRAIN').map(([cell, value]) => ({ cell: Number(cell), type: value.split(',')[0] })),
+    overlays: ini.entries('OVERLAY').map(([cell, type]) => ({ cell: Number(cell), type })),
+    smudges: ini.entries('SMUDGE').map(([, value]) => {
+      const [type, cell, frame = '0'] = value.split(',');
+      return { type, cell: Number(cell), frame: Number(frame) };
+    }),
     waypoints,
   };
 }

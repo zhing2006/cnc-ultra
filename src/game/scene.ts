@@ -1,10 +1,13 @@
 import { packAtlas, type AtlasRegion, type IndexedImage } from '../engine/indexed/atlas.ts';
 import { NO_TILE, type PaletteSetup, type Sprite, type TileMap } from '../engine/indexed/pipeline.ts';
 import {
-  BODY_SHAPE, CELL_LEPTONS, CELL_PIXELS, dirFacing, facingDir, facingTo32, HUMAN_SHAPE, leptonToPixel, turretAdjust,
+  BODY_SHAPE, CELL_LEPTONS, CELL_PIXELS, dirFacing, facingDir, facingTo32, HUMAN_SHAPE, leptonToPixel, pixelToLepton, turretAdjust, movePoint,
 } from './coord.ts';
+import { BUILDINGS } from './data/buildings.ts';
 import { INFANTRY } from './data/infantry.ts';
-import { REMAP_NAMES, remapTable, unitRemap } from './data/houses.ts';
+import { buildingRemap, REMAP_NAMES, remapTable, unitRemap } from './data/houses.ts';
+import { OVERLAYS } from './data/overlays.ts';
+import { TERRAIN } from './data/terrain.ts';
 import { MOUSE_NORMAL, MOUSE_NO_SCROLL, MOUSE_SCROLL, type MousePointer } from './data/mouse.ts';
 import { clearIcon, TEMPLATE_CLEAR1, TEMPLATES } from './data/templates.ts';
 import { UNITS } from './data/units.ts';
@@ -14,6 +17,8 @@ import { gamePalette, paletteToRgba } from './formats/palette.ts';
 import { ORIGINAL_MAP_SIZE, readScenario, TEMPLATE_NONE, type Scenario } from './formats/scenario.ts';
 import { decodeShapeLibrary } from './formats/shapes.ts';
 import { decodeShp, type Shape } from './formats/shp.ts';
+import { buildingFrame, buildingPosition, initialCellImages } from './map-visuals.ts';
+import { cloakDisplacement, cloakedSprites, specialGhost, type CloakStage } from './cloak.ts';
 
 /** A theater's name in scenario files, file name root and template extension (CONST.CPP, Theaters). */
 const THEATERS = [
@@ -38,8 +43,10 @@ export interface CursorImage {
 
 export interface GameScene {
   setup: Omit<PaletteSetup, 'spriteCapacity'>;
-  /** Vehicles and infantry, in the order the original draws them. */
+  /** Cell graphics followed by objects in the order the original draws them. */
   sprites: Sprite[];
+  /** Object draw ranges, also used to inspect their ordering in rendering checks. */
+  objects: { key: string; first: number; count: number }[];
   cursors: { normal: CursorImage; scroll: CursorImage[]; blocked: CursorImage[] };
   /** The remap row for images drawn without remapping, such as the mouse pointer. */
   plainRemap: number;
@@ -71,15 +78,17 @@ interface PendingSprite extends Omit<Sprite, 'region'> {
 
 /** A drawable object with the position the original sorts it by (ObjectClass::Sort_Y). */
 interface Drawn {
+  key: string;
   sortX: number;
   sortY: number;
   sprites: PendingSprite[];
 }
 
-/** Builds what M0 draws for a scenario: the terrain, the vehicles and the infantry. */
-export function buildScene(mix: MixSet, scenarioName: string): GameScene {
-  const ini = new TextDecoder('latin1').decode(mix.require(`${scenarioName}.INI`));
-  const scenario = readScenario(ini, mix.require(`${scenarioName}.BIN`));
+/** Builds an original scenario, or a supplied static scenario for the asset preview. */
+export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakStage | ReadonlyMap<number, CloakStage> = 'normal'): GameScene {
+  const scenario = typeof source === 'string'
+    ? readScenario(new TextDecoder('latin1').decode(mix.require(`${source}.INI`)), mix.require(`${source}.BIN`))
+    : source;
   // DisplayClass::Read_INI looks the theater up by name (CONQUER.CPP, Theater_From_Name), with the desert
   // as the default.
   const theater = THEATERS.find((entry) => entry.name === scenario.theater.toUpperCase()) ?? THEATERS[0];
@@ -94,7 +103,11 @@ export function buildScene(mix: MixSet, scenarioName: string): GameScene {
   const remaps = REMAP_NAMES.map(remapTable);
 
   const images = new SpriteImages();
-  const drawn = [...placeUnits(mix, scenario, images), ...placeInfantry(mix, scenario, images)];
+  const ground = placeCellImages(mix, scenario, images, theater.suffix);
+  // INI.CPP, Read_Scenario_Ini: terrain, units, infantry, then buildings enter the ground layer.
+  const drawn = [...placeTerrain(mix, scenario, images, theater.suffix), ...placeUnits(mix, scenario, images, cloak),
+    ...placeInfantry(mix, scenario, images), ...placeBuildings(mix, scenario, images, theater.suffix),
+    ...placeAircraft(mix, scenario, images)];
   // Ported from LAYER.CPP, LayerClass::Sorted_Add: each object goes after every one that does not sort
   // after it, so equal positions keep the order the scenario lists them in. A COORDINATE compares y
   // before x.
@@ -116,15 +129,22 @@ export function buildScene(mix: MixSet, scenarioName: string): GameScene {
   const toCursor = ({ image, hotX, hotY }: { image: number; hotX: number; hotY: number }) => ({
     region: regions[image], hotX, hotY,
   });
-  const sprites = ordered.flatMap(({ object }) => object.sprites.map(({ image, ...sprite }) => ({
-    ...sprite, region: regions[image],
-  })));
+  const convert = ({ image, ...sprite }: PendingSprite): Sprite => ({ ...sprite, region: regions[image] });
+  const sprites = ground.map(convert);
+  const objects = ordered.map(({ object }) => {
+    const first = sprites.length;
+    sprites.push(...object.sprites.map(convert));
+    return { key: object.key, first, count: object.sprites.length };
+  });
 
   return {
     setup: {
       palette, shadowSources, shadowTable, remaps, tiles: terrain(mix, scenario, theater.suffix), spriteAtlas: atlas,
+      filters: [specialGhost(mix.require(`${theater.root}.PAL`))],
+      displacement: sprites.some(sprite => sprite.displace) ? cloakDisplacement(atlas) : undefined,
     },
     sprites,
+    objects,
     cursors: { normal: toCursor(normal), scroll: scroll.map(toCursor), blocked: blocked.map(toCursor) },
     plainRemap,
     scenario,
@@ -206,16 +226,20 @@ function terrain(mix: MixSet, scenario: Scenario, suffix: string): TileMap {
 /** Loads and caches shape files for the sprite atlas. */
 function shapeLoader(mix: MixSet, images: SpriteImages) {
   const shapes = new Map<string, Shape>();
-  return (file: string, frame: number) => {
+  const read = (file: string) => {
     let shape = shapes.get(file);
     if (!shape) {
       shape = decodeShp(mix.require(file));
       shapes.set(file, shape);
     }
+    return shape;
+  };
+  return Object.assign((file: string, frame: number) => {
+    const shape = read(file);
     const { width, height, frames } = shape;
     if (frame >= frames.length) throw new Error(`${file} has no frame ${frame}`);
     return { image: images.add(`${file}:${frame}`, () => ({ width, height, pixels: frames[frame] })), width, height };
-  };
+  }, { read });
 }
 
 /**
@@ -235,17 +259,12 @@ function centred(
  * secondary facing on unlimbo). TechnoClass::Techno_Draw_Object draws every frame with the house's
  * remap table and the unit shadow.
  */
-function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages): Drawn[] {
+function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages, cloak: CloakStage | ReadonlyMap<number, CloakStage>): Drawn[] {
   const shape = shapeLoader(mix, images);
   const placed: Drawn[] = [];
   for (const unit of scenario.units) {
     const type = UNITS.get(unit.type.toUpperCase());
     if (!type) throw new Error(`unknown unit type ${unit.type}`);
-    // The hovercraft and the gunboat have their own drawing code, which M0 does not port.
-    if (type.chunky) {
-      console.warn(`${type.name} is not drawn yet`);
-      continue;
-    }
     const file = `${type.name}.SHP`;
     const remap = REMAP_NAMES.indexOf(unitRemap(unit.house));
     const dir = facingDir(dirFacing(unit.facing));
@@ -263,9 +282,16 @@ function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages): Draw
       const eight = dirFacing(dir);
       body = eight ? BODY_SHAPE[24 + eight] : 0;
     }
-    const sprites = [centred(shape(file, body), x, y, remap)];
+    const east = dirFacing(dir) >= 1 && dirFacing(dir) <= 3;
+    if (type.chunky) body = type.name === 'BOAT' ? BODY_SHAPE[facing] + (east ? 96 : 0) : 0;
+    const normal = centred(shape(file, body), x, y, remap);
+    const stage = typeof cloak === 'string' ? cloak : cloak.get(unit.cell) ?? 'normal';
+    const sprites = type.name === 'STNK' ? cloakedSprites(normal, stage) : [normal];
+    // Ported from UNIT.CPP, UnitClass::Draw_It: the gunboat includes its turret in the body frame.
+    if (type.name === 'BOAT') sprites.unshift({ ...centred(shape('WAKE.SHP', east ? 0 : 6),
+      x + (east ? -1 : 3), y + 3, REMAP_NAMES.indexOf('none')), shadow: false });
     if (type.radar) sprites.push(centred(shape(file, 32), x, y - 5, remap));
-    if (type.turret) {
+    if (type.turret && !type.chunky) {
       let turretX = x;
       let turretY = y;
       // The rocket launchers' turret moves with the body facing.
@@ -278,9 +304,31 @@ function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages): Draw
       sprites.push(centred(shape(file, BODY_SHAPE[facing] + 32), turretX, turretY, remap));
     }
     // UnitClass::Sort_Y sorts by a point half a cell below the unit.
-    placed.push({ sortX: coordX, sortY: coordY + 0x80, sprites });
+    placed.push({ key: `unit:${unit.cell}:${type.name}`, sortX: coordX, sortY: coordY + 0x80, sprites });
   }
   return placed;
+}
+
+/** Ported from AIRCRAFT.CPP, AircraftClass::Draw_It. Preview aircraft are parked, with idle rotors. */
+function placeAircraft(mix: MixSet, scenario: Scenario, images: SpriteImages): Drawn[] {
+  const shape = shapeLoader(mix, images);
+  return (scenario.aircraft ?? []).map((aircraft) => {
+    const x = (aircraft.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12;
+    const y = Math.floor(aircraft.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12;
+    const remap = REMAP_NAMES.indexOf(unitRemap(aircraft.house));
+    const frame = shape(`${aircraft.type}.SHP`, BODY_SHAPE[facingTo32(aircraft.facing)]);
+    const sprites = [{ ...centred(frame, x + 1, y + 2, remap), shadow: false, filter: 0 },
+      centred(frame, x, y, remap)];
+    if (aircraft.type === 'HELI') sprites.push(centred(shape('RROTOR.SHP', 4), x, y - 2, REMAP_NAMES.indexOf('none')));
+    if (aircraft.type === 'TRAN') {
+      const stretch = [8, 9, 10, 9, 8, 9, 10, 9][dirFacing(aircraft.facing)];
+      const [xx, yy] = movePoint(x, y, aircraft.facing, stretch);
+      const [xx2, yy2] = movePoint(xx, yy, (aircraft.facing + 128) & 255, stretch * 2);
+      sprites.push(centred(shape('RROTOR.SHP', 4), xx, yy - 2, REMAP_NAMES.indexOf('none')),
+        centred(shape('LROTOR.SHP', 4), xx2, yy2 - 2, REMAP_NAMES.indexOf('none')));
+    }
+    return { key: `aircraft:${aircraft.cell}:${aircraft.type}`, sortX: x * 256, sortY: y * 256, sprites };
+  });
 }
 
 /**
@@ -301,6 +349,66 @@ function placeInfantry(mix: MixSet, scenario: Scenario, images: SpriteImages): D
     const remap = REMAP_NAMES.indexOf(unitRemap(infantry.house));
     const sprite = centred(shown, leptonToPixel(coordX) - 2, leptonToPixel(coordY) + 4, remap);
     // FootClass::Sort_Y sorts by a point 0x30 leptons below the infantry.
-    return { sortX: coordX, sortY: coordY + 0x30, sprites: [sprite] };
+    return { key: `infantry:${infantry.cell}:${type.name}`, sortX: coordX, sortY: coordY + 0x30, sprites: [sprite] };
   });
+}
+
+/** Ported from CELL.CPP, CellClass::Draw_It, and SDATA.CPP, SmudgeTypeClass::Draw_It. */
+function placeCellImages(mix: MixSet, scenario: Scenario, images: SpriteImages, suffix: string): PendingSprite[] {
+  const { smudges, overlays } = initialCellImages(scenario);
+  const shape = shapeLoader(mix, images);
+  const remap = REMAP_NAMES.indexOf('none');
+  const result: PendingSprite[] = [];
+  for (const item of smudges) {
+    const shown = shape(`${item.type}.${suffix}`, item.frame);
+    result.push({ image: shown.image, x: (item.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS,
+      y: Math.floor(item.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS, remap, shadow: false });
+  }
+  for (const item of overlays) {
+    const type = OVERLAYS.get(item.type)!;
+    const shown = shape(`${item.type}.${type.theater ? suffix : 'SHP'}`, item.frame);
+    result.push(centred(shown, (item.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12,
+      Math.floor(item.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12, remap));
+  }
+  return result;
+}
+
+/** Ported from TERRAIN.CPP, Draw_It; TERRAIN.H, Sort_Y/Render_Coord; and TYPE.H, Coord_Fixup. */
+function placeTerrain(mix: MixSet, scenario: Scenario, images: SpriteImages, suffix: string): Drawn[] {
+  const shape = shapeLoader(mix, images);
+  return scenario.terrain.map((object) => {
+    const type = TERRAIN.get(object.type.toUpperCase());
+    if (!type) throw new Error(`unknown terrain type ${object.type}`);
+    const x = object.cell % ORIGINAL_MAP_SIZE, y = Math.floor(object.cell / ORIGINAL_MAP_SIZE);
+    const shown = shape(`${type.name}.${suffix}`, 0);
+    return {
+      key: `terrain:${object.cell}:${type.name}`,
+      sortX: x * CELL_LEPTONS + pixelToLepton(type.baseX), sortY: y * CELL_LEPTONS + pixelToLepton(type.baseY),
+      sprites: [{ image: shown.image, x: x * CELL_PIXELS, y: y * CELL_PIXELS,
+        remap: REMAP_NAMES.indexOf('none'), shadow: true }],
+    };
+  });
+}
+
+/** Ported from BUILDING.CPP, Draw_It/Center_Coord/Sort_Y/Remap_Table. */
+function placeBuildings(mix: MixSet, scenario: Scenario, images: SpriteImages, suffix: string): Drawn[] {
+  const shape = shapeLoader(mix, images);
+  const result: Drawn[] = [];
+  for (const building of scenario.buildings) {
+    const type = BUILDINGS.get(building.type.toUpperCase())!;
+    if (OVERLAYS.get(type.name)?.wall) continue;
+    const file = `${type.name}.${type.theater ? suffix : 'SHP'}`;
+    const frame = buildingFrame(building, type, shape.read(file).frames.length);
+    const position = buildingPosition(building, type);
+    const x = leptonToPixel(position.centerX), y = leptonToPixel(position.centerY);
+    const remap = REMAP_NAMES.indexOf(buildingRemap(building.house));
+    const sprites = [centred(shape(file, frame), x, y, remap)];
+    // BuildingClass::Read_INI uses COORDA.ASM, Fixed_To_Cardinal, before Draw_It tests hitpoints.
+    const hp = (type.strength * Math.min(building.strength, 256) + 0x80) >> 8;
+    if (type.name === 'WEAP' && hp > 1) {
+      sprites.push(centred(shape('WEAP2.SHP', frame ? 10 : 0), x, y, remap));
+    }
+    result.push({ key: `building:${building.cell}:${type.name}`, sortX: position.sortX, sortY: position.sortY, sprites });
+  }
+  return result;
 }

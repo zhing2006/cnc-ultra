@@ -45,3 +45,8 @@ export function unitRemap(house: string): RemapName {
   if (!entry) throw new Error(`unknown house ${house}`);
   return entry[1];
 }
+
+/** Ported from HOUSE.CPP, HouseClass::Remap_Table: Nod buildings use red in a campaign. */
+export function buildingRemap(house: string): RemapName {
+  return house.toUpperCase() === 'BADGUY' ? 'red' : unitRemap(house);
+}

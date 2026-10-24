@@ -27,6 +27,9 @@ const BOOKMARK_KEYS = ['F7', 'F8', 'F9', 'F10'];
 const MAX_MOVEMENT = 200;
 const LOCK_SETTLE_MS = 150;
 
+/** About two conventional 120-pixel wheel detents per zoom level; trackpad deltas accumulate. */
+const ZOOM_WHEEL_DISTANCE = 240;
+
 /**
  * Mouse and keyboard input for the tactical view. The original runs full screen, so the mouse cannot
  * leave the screen and can be pushed against its edge. Here the page locks the pointer once the player
@@ -49,11 +52,12 @@ export class GameInput {
    * view tells the current view size. onBookmark is called for a bookmark key with the bookmark and
    * whether to record the view instead of jumping to it.
    */
-  constructor(canvas: HTMLCanvasElement, view: () => ViewSize, onBookmark: (index: number, record: boolean) => void) {
+  constructor(canvas: HTMLCanvasElement, view: () => ViewSize, onBookmark: (index: number, record: boolean) => void,
+    onZoom: (step: number, anchor: { x: number; y: number }) => void) {
     this.canvas = canvas;
     this.view = view;
     const listen = <E extends Event>(target: EventTarget, type: string, listener: (event: E) => void) => {
-      target.addEventListener(type, listener as EventListener);
+      target.addEventListener(type, listener as EventListener, { passive: false });
       this.listeners.push([target, type, listener as EventListener]);
     };
 
@@ -70,6 +74,21 @@ export class GameInput {
       if (event.button === 2) this.rightButton = false;
     });
     listen<MouseEvent>(canvas, 'contextmenu', (event) => event.preventDefault());
+    let wheel = 0;
+    listen<WheelEvent>(canvas, 'wheel', (event) => {
+      if (event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      const { scale, width, height } = this.view();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? height : 1);
+      if (wheel * delta < 0) wheel = 0;
+      wheel += delta;
+      if (Math.abs(wheel) < ZOOM_WHEEL_DISTANCE) return;
+      const step = -Math.sign(wheel);
+      wheel %= ZOOM_WHEEL_DISTANCE;
+      const ratio = window.devicePixelRatio / scale;
+      const anchor = this.mouse ?? { x: Math.min(width - 1, event.offsetX * ratio), y: Math.min(height - 1, event.offsetY * ratio) };
+      onZoom(step, anchor);
+    });
     listen<MouseEvent>(document, 'mousemove', (event) => {
       if (document.pointerLockElement !== canvas) return;
       if (event.timeStamp - this.lockedAt < LOCK_SETTLE_MS) return;
@@ -90,6 +109,12 @@ export class GameInput {
       }
     });
     listen<KeyboardEvent>(window, 'keydown', (event) => {
+      if ((event.target as HTMLElement)?.closest('input, select, textarea, button')) return;
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && ['+', '=', '-'].includes(event.key)) {
+        const { width, height } = this.view();
+        onZoom(event.key === '-' ? -1 : 1, { x: width / 2, y: height / 2 });
+        event.preventDefault();
+      }
       if (event.key in ARROWS) {
         this.held.add(event.key);
         event.preventDefault();
@@ -103,6 +128,14 @@ export class GameInput {
     });
     listen<KeyboardEvent>(window, 'keyup', (event) => this.held.delete(event.key));
     listen(window, 'blur', () => this.held.clear());
+  }
+
+  /** A zoom changes image coordinates, while the pointer keeps its position on the screen. */
+  resize(previous: ViewSize) {
+    const next = this.view();
+    this.exactX = Math.max(0, Math.min(next.width - 1, this.exactX * previous.scale / next.scale));
+    this.exactY = Math.max(0, Math.min(next.height - 1, this.exactY * previous.scale / next.scale));
+    if (this.mouse) this.mouse = { x: Math.floor(this.exactX), y: Math.floor(this.exactY) };
   }
 
   /** Puts the pointer where the system pointer is, given in CSS pixels from the canvas corner. */

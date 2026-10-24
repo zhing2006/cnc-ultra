@@ -4,14 +4,14 @@ import {
   framesDigest, parseReferences, PNG_DIRECTORY, REFERENCE_FILE, type Frame, type ReferenceEntry,
 } from '../../../tests/reference/digest.ts';
 import { readIndexedPng } from '../../../tests/reference/png.ts';
-import { DATA_FILES } from '../data-files.ts';
+import { PREVIEW_DATA_FILES } from '../data-files.ts';
 import { decodeIconSet } from './icons.ts';
 import { MixFile, MixSet } from './mix.ts';
 import { decodeShapeLibrary } from './shapes.ts';
 import { decodeShp } from './shp.ts';
 
 const assets = new URL('../../../assets/dev/', import.meta.url);
-const mix = new MixSet(DATA_FILES.map((name) => new MixFile(readFileSync(new URL(name, assets)))));
+const mix = new MixSet(PREVIEW_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(name, assets)))));
 
 // OpenRA's ShpD2Loader gives a shape without a color table Dune II's unit colors, 1 to 4 becoming
 // 0x7F down to 0x7C. The original's mouse code keeps the indices as they are (WWMOUSE.ASM), so the
@@ -46,7 +46,9 @@ function firstDifference(entry: ReferenceEntry, frames: Frame[]): string {
   const directory = new URL(`${name}/`, PNG_DIRECTORY);
   if (!existsSync(directory)) return 'run node refs/export-png.ts to get OpenRA\'s PNGs and find the frame';
   for (let index = 0; index < frames.length; index++) {
-    const png = readIndexedPng(readFileSync(new URL(`${prefix}-${String(index).padStart(4, '0')}.png`, directory)));
+    const path = new URL(`${prefix}-${String(index).padStart(4, '0')}.png`, directory);
+    if (!existsSync(path)) return `frame ${index}: OpenRA omits fully transparent SHP frames`;
+    const png = readIndexedPng(readFileSync(path));
     const frame = frames[index];
     if (png.width !== frame.width || png.height !== frame.height) {
       return `frame ${index} is ${frame.width}×${frame.height}, OpenRA's is ${png.width}×${png.height}`;

@@ -1,25 +1,29 @@
 import { MixFile, MixSet } from './formats/mix.ts';
 
-/** The original MIX files M0 reads, looked up in this order. */
+/** The original MIX files the mission reads, looked up in this order. */
 export const DATA_FILES = ['conquer.mix', 'temperat.mix', 'general.mix', 'cclocal.mix'];
+export const PREVIEW_DATA_FILES = [...DATA_FILES, 'desert.mix'];
 
 /** Thrown when the site does not serve one of the original data files. */
 export class MissingDataError extends Error {}
 
-let loading: Promise<MixSet> | null = null;
+const loading = new Map<boolean, Promise<MixSet>>();
 
 /**
  * Fetches the original MIX files from the data/ directory next to the page (technical constitution,
  * articles 10 and 14). The files are fetched once per page load.
  */
-export function loadData(): Promise<MixSet> {
-  loading ??= Promise.all(DATA_FILES.map(async (name) => {
+export function loadData(preview = false): Promise<MixSet> {
+  const cached = loading.get(preview);
+  if (cached) return cached;
+  const pending = Promise.all((preview ? PREVIEW_DATA_FILES : DATA_FILES).map(async (name) => {
     const response = await fetch(new URL(`data/${name}`, document.baseURI));
     if (!response.ok) throw new MissingDataError(`data/${name}: HTTP ${response.status}`);
     return new MixFile(new Uint8Array(await response.arrayBuffer()));
   })).then((files) => new MixSet(files));
-  loading.catch(() => {
-    loading = null;
+  loading.set(preview, pending);
+  pending.catch(() => {
+    loading.delete(preview);
   });
-  return loading;
+  return pending;
 }

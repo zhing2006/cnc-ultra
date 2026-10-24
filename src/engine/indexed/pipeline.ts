@@ -1,14 +1,15 @@
 import {
   AddEquation, BufferAttribute, CustomBlending, DataTexture, DoubleSide, InstancedBufferGeometry, Mesh,
   MeshBasicNodeMaterial, NearestFilter, OneFactor, OneMinusSrcAlphaFactor, OrthographicCamera, QuadMesh, RedFormat,
-  RenderTarget, RGBAFormat, StorageBufferAttribute, UnsignedByteType, Vector2,
+  RenderTarget, RGBAFormat, StorageBufferAttribute, UnsignedByteType, UnsignedIntType, RedIntegerFormat, Vector2,
   type Node, type Texture, type WebGPURenderer,
 } from 'three/webgpu';
 import {
   Fn, If, Loop, Discard, float, floor, int, ivec2, positionGeometry, screenCoordinate, select, storage, textureLoad,
-  uint, uniform, varying, vec4, instanceIndex,
+  uint, uniform, varying, vec4, instanceIndex, Break,
 } from 'three/tsl';
 import type { AtlasRegion, IndexedImage } from './atlas.ts';
+import { composeFilters } from './filters.ts';
 
 /** The tile value for a cell that draws palette index 0. */
 export const NO_TILE = 0xffffffff;
@@ -36,6 +37,19 @@ export interface Sprite {
   remap: number;
   /** Whether shadow pixels darken what lies under them. Otherwise they are drawn as plain indices. */
   shadow: boolean;
+  /** Apply this filter to the destination, using filters from PaletteSetup. */
+  filter?: number;
+  /** Sample the destination at the offset supplied by PaletteSetup.displacement. */
+  displace?: boolean;
+}
+
+export interface DisplacementInput {
+  local: Node<'ivec2'>;
+  rect: Node<'vec4'>;
+  atlas: Node<'vec4'>;
+  origin: Node<'vec2'>;
+  size: Node<'vec2'>;
+  time: Node<'float'>;
 }
 
 export interface PaletteSetup {
@@ -51,6 +65,9 @@ export interface PaletteSetup {
   spriteAtlas: IndexedImage;
   /** The most sprites setSprites() may be given. */
   spriteCapacity: number;
+  filters?: readonly Uint8Array[];
+  /** Game-supplied pixel offset shader, owned and disposed by this pipeline. */
+  displacement?: { offset(input: DisplacementInput): Node<'ivec2'>; dispose(): void };
 }
 
 /** The part of the world the view shows: top-left in world pixels and size in image pixels. */
@@ -63,6 +80,8 @@ export interface View {
 
 // A sprite pixel can lie under this many shadows at most before more are ignored.
 const MAX_SHADOWS = 4;
+const BIN_SIZE = 64;
+const LOOKUP_WIDTH = 1024;
 
 function indexTexture(image: IndexedImage): DataTexture {
   return dataTexture(image.pixels, image.width, image.height, RedFormat);
@@ -120,14 +139,24 @@ export class PalettePipeline {
   private readonly camera = new OrthographicCamera();
   private readonly capacity: number;
   private readonly renderer: WebGPURenderer;
+  private readonly palette: DataTexture;
+  private readonly time = uniform(0);
+  private readonly count = uniform(0, 'int');
+  private readonly lookup: DataTexture;
+  private readonly binColumns: number;
+  private readonly binRows: number;
+  private readonly worldSprites: Sprite[] = [];
+  private readonly setup: PaletteSetup;
 
   constructor(renderer: WebGPURenderer, setup: PaletteSetup) {
     this.renderer = renderer;
+    this.setup = setup;
     const keep = (texture: DataTexture) => {
       this.textures.push(texture);
       return texture;
     };
     const palette = keep(dataTexture(setup.palette, 256, 1, RGBAFormat));
+    this.palette = palette;
     const shadow = new Uint8Array(512);
     shadow.set(setup.shadowSources.map((value) => (value ? 1 : 0)));
     shadow.set(setup.shadowTable, 256);
@@ -137,12 +166,16 @@ export class PalettePipeline {
     const remapTexture = keep(dataTexture(remaps, 256, setup.remaps.length, RedFormat));
     const tileAtlas = keep(indexTexture(setup.tiles.atlas));
     const spriteAtlas = keep(indexTexture(setup.spriteAtlas));
+    this.binColumns = Math.ceil(setup.tiles.columns * setup.tiles.tileSize / BIN_SIZE);
+    this.binRows = Math.ceil(setup.tiles.rows * setup.tiles.tileSize / BIN_SIZE);
+    this.lookup = keep(new DataTexture(new Uint32Array(LOOKUP_WIDTH), LOOKUP_WIDTH, 1, RedIntegerFormat, UnsignedIntType));
+    this.lookup.needsUpdate = true;
 
     this.tilePass = new QuadMesh(this.tileMaterial(setup.tiles, tileAtlas));
 
-    // Two vec4 per sprite: x, y, width, height; then atlas x, atlas y, remap row, shadow flag.
+    // Three vec4 per sprite: rectangle; atlas position, remap, shadow; filter and displacement flags.
     this.capacity = setup.spriteCapacity;
-    this.instances = new StorageBufferAttribute(new Float32Array(Math.max(1, this.capacity) * 8), 4);
+    this.instances = new StorageBufferAttribute(new Float32Array(Math.max(1, this.capacity) * 12), 4);
     const corners = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
     this.spriteGeometry.setAttribute('position', new BufferAttribute(corners, 3));
     this.spriteGeometry.setIndex([0, 2, 1, 2, 3, 1]);
@@ -150,7 +183,7 @@ export class PalettePipeline {
     this.spriteMesh = new Mesh(this.spriteGeometry, this.spriteMaterial(spriteAtlas, shadowTexture, remapTexture));
     this.spriteMesh.frustumCulled = false;
 
-    this.compositePass = new QuadMesh(this.compositeMaterial(shadowTexture));
+    this.compositePass = new QuadMesh(this.compositeMaterial(shadowTexture, spriteAtlas, remapTexture, keep));
     this.presentPass = new QuadMesh(this.presentMaterial(palette));
   }
 
@@ -180,9 +213,10 @@ export class PalettePipeline {
   }
 
   private spriteMaterial(atlas: DataTexture, shadow: DataTexture, remaps: DataTexture) {
-    const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 2).toReadOnly();
-    const rect = instances.element(instanceIndex.mul(2));
-    const info = instances.element(instanceIndex.mul(2).add(1));
+    const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 3).toReadOnly();
+    const rect = instances.element(instanceIndex.mul(3));
+    const info = instances.element(instanceIndex.mul(3).add(1));
+    const effect = varying(instances.element(instanceIndex.mul(3).add(2))).setInterpolation('flat');
     const flatRect = varying(rect).setInterpolation('flat');
     const flatInfo = varying(info).setInterpolation('flat');
 
@@ -208,15 +242,85 @@ export class PalettePipeline {
       const local = floor(screenCoordinate.xy).add(this.origin).sub(flatRect.xy);
       const source = loadIndex(atlas, int(flatInfo.x.add(local.x)), int(flatInfo.y.add(local.y)));
       Discard(source.equal(0));
+      // A destination-dependent pixel marks the slow path. Later opaque pixels clear that mark.
       const isShadow = flatInfo.w.greaterThan(0.5).and(textureLoad(shadow, ivec2(source, 0)).r.greaterThan(0));
       const remapped = textureLoad(remaps, ivec2(source, int(flatInfo.z))).r;
-      return select(isShadow, vec4(0, 1 / 255, 0, 0), vec4(remapped, 0, 0, 1));
+      return select(effect.x.greaterThan(0).or(effect.y.greaterThan(0)), vec4(0, 0, 1, 1),
+        select(isShadow, vec4(0, 1 / 255, 0, 0), vec4(remapped, 0, 0, 1)));
     })();
     return material;
   }
 
-  private compositeMaterial(shadow: DataTexture) {
+  private compositeMaterial(shadow: DataTexture, atlas: DataTexture, remaps: DataTexture,
+    keep: (texture: DataTexture) => DataTexture) {
     const material = new MeshBasicNodeMaterial();
+    const filters = [this.setup.shadowTable, ...(this.setup.filters ?? [])];
+    const composition = composeFilters(filters);
+    const maps = keep(dataTexture(composition.maps, 256, composition.count, RedFormat));
+    const transitions = keep(dataTexture(composition.transitions, filters.length, composition.count, RedFormat));
+    const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 3).toReadOnly();
+    const entry = (index: Node<'int'>) => int(textureLoad(this.lookup,
+      ivec2(index.mod(LOOKUP_WIDTH), index.div(LOOKUP_WIDTH))).r);
+    // Only bins touched by a displacement/filter are visited. Each bin lists its sprites in draw
+    // order. Following a displacement lowers the order limit, so foreground objects cannot leak in.
+    const resolve = Fn(([start]: [Node<'ivec2'>]) => {
+      const pixel = start.toVar();
+      const limit = this.count.toVar();
+      const mapping = int(0).toVar();
+      const color = int(0).toVar();
+      Loop(this.count.add(1), () => {
+        // The sampled image is the clipped view. A displaced read must not resurrect sprites
+        // beyond its edges, even when the spatial index also contains those sprites.
+        const screen = pixel.sub(ivec2(this.origin));
+        If(screen.x.lessThan(0).or(screen.y.lessThan(0)).or(screen.x.greaterThanEqual(int(this.size.x)))
+          .or(screen.y.greaterThanEqual(int(this.size.y))), () => { Break(); });
+        const found = int(-1).toVar();
+        const source = int(0).toVar();
+        const bin = ivec2(floor(pixel.toVec2().div(BIN_SIZE))).toVar();
+        If(bin.x.greaterThanEqual(0).and(bin.y.greaterThanEqual(0))
+          .and(bin.x.lessThan(this.binColumns)).and(bin.y.lessThan(this.binRows)), () => {
+          const cell = bin.y.mul(this.binColumns).add(bin.x);
+          Loop({ start: entry(cell.add(1)).sub(1), end: entry(cell), condition: '>=', update: '--', type: 'int' }, ({ i }) => {
+            const id = entry(i);
+            If(id.lessThan(limit), () => {
+              const rect = instances.element(id.mul(3));
+              const info = instances.element(id.mul(3).add(1));
+              const local = pixel.sub(ivec2(rect.xy));
+              If(local.x.greaterThanEqual(0).and(local.y.greaterThanEqual(0))
+                .and(local.x.lessThan(int(rect.z))).and(local.y.lessThan(int(rect.w))), () => {
+                const index = loadIndex(atlas, int(info.x).add(local.x), int(info.y).add(local.y));
+                If(index.notEqual(0), () => { found.assign(id); source.assign(index); Break(); });
+              });
+            });
+          });
+        });
+        If(found.lessThan(0), () => {
+          const local = pixel.sub(ivec2(this.origin));
+          color.assign(loadIndex(this.tileTarget.texture, local.x, local.y));
+          Break();
+        });
+        const rect = instances.element(found.mul(3));
+        const info = instances.element(found.mul(3).add(1));
+        const effect = instances.element(found.mul(3).add(2));
+        limit.assign(found);
+        const filter = int(effect.x).sub(1).toVar();
+        If(effect.y.greaterThan(0), () => {
+          if (this.setup.displacement) pixel.addAssign(this.setup.displacement.offset({
+            local: pixel.sub(ivec2(rect.xy)), rect, atlas: info, origin: this.origin, size: this.size, time: this.time,
+          }));
+        }).Else(() => {
+          If(filter.lessThan(0).and(info.w.greaterThan(0.5))
+            .and(textureLoad(shadow, ivec2(source, 0)).r.greaterThan(0)), () => { filter.assign(0); });
+          If(filter.greaterThanEqual(0), () => {
+            mapping.assign(loadIndex(transitions, filter, mapping));
+          }).Else(() => {
+            color.assign(loadIndex(remaps, source, int(info.z)));
+            Break();
+          });
+        });
+      });
+      return loadIndex(maps, color, mapping);
+    });
     material.fragmentNode = Fn(() => {
       const x = int(screenCoordinate.x);
       const y = int(screenCoordinate.y);
@@ -229,6 +333,7 @@ export class PalettePipeline {
           index.assign(loadIndex(shadow, index, int(1)));
         });
       });
+      If(sprite.b.greaterThan(0.5), () => { index.assign(resolve(ivec2(x, y).add(ivec2(this.origin)))); });
       return vec4(float(index).div(255), 0, 0, 1);
     })();
     return material;
@@ -246,8 +351,8 @@ export class PalettePipeline {
 
   /**
    * Writes sprites into the draw list from position first on, and draws the list up to the last of
-   * them. Only the written part is uploaded, so sprites that stay put are written once and later calls
-   * rewrite the few after them.
+   * them. Only that part of the instance buffer is uploaded. When effects are enabled this also
+   * rebuilds the static spatial index; use setOverlay for a cursor that changes every frame.
    */
   setSprites(sprites: readonly Sprite[], first = 0) {
     const count = first + sprites.length;
@@ -258,15 +363,52 @@ export class PalettePipeline {
     sprites.forEach((sprite, index) => {
       const { region } = sprite;
       const shadow = sprite.shadow ? 1 : 0;
-      data.set([sprite.x, sprite.y, region.width, region.height, region.x, region.y, sprite.remap, shadow],
-        (first + index) * 8);
+      data.set([sprite.x, sprite.y, region.width, region.height, region.x, region.y, sprite.remap, shadow,
+        sprite.filter === undefined ? 0 : sprite.filter + 2, sprite.displace ? 1 : 0, 0, 0], (first + index) * 12);
+      this.worldSprites[first + index] = sprite;
     });
     if (sprites.length > 0) {
-      this.instances.addUpdateRange(first * 8, sprites.length * 8);
+      this.instances.addUpdateRange(first * 12, sprites.length * 12);
       this.instances.needsUpdate = true;
     }
     this.spriteGeometry.instanceCount = count;
+    this.count.value = count;
+    this.worldSprites.length = count;
+    if (this.setup.displacement || this.setup.filters?.length) this.indexSprites();
   }
+
+  private indexSprites() {
+    const bins: number[][] = Array.from({ length: this.binColumns * this.binRows }, () => []);
+    this.worldSprites.forEach((sprite, i) => {
+      const left = Math.max(0, Math.floor(sprite.x / BIN_SIZE)), top = Math.max(0, Math.floor(sprite.y / BIN_SIZE));
+      const right = Math.min(this.binColumns - 1, Math.floor((sprite.x + sprite.region.width - 1) / BIN_SIZE));
+      const bottom = Math.min(this.binRows - 1, Math.floor((sprite.y + sprite.region.height - 1) / BIN_SIZE));
+      for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++) bins[y * this.binColumns + x].push(i);
+    });
+    const values = new Array<number>(bins.length + 1);
+    bins.forEach((bin, i) => { values[i] = values.length; values.push(...bin); });
+    values[bins.length] = values.length;
+    const height = Math.max(1, Math.ceil(values.length / LOOKUP_WIDTH));
+    if (this.lookup.image.height !== height) this.lookup.dispose();
+    const data = new Uint32Array(LOOKUP_WIDTH * height);
+    data.set(values);
+    this.lookup.image = { data, width: LOOKUP_WIDTH, height };
+    this.lookup.needsUpdate = true;
+  }
+
+  /** A final screen overlay does not participate in destination lookups behind world sprites. */
+  setOverlay(sprite: Sprite | null) {
+    const first = this.worldSprites.length;
+    if (first + (sprite ? 1 : 0) > this.capacity) throw new Error('no capacity for the overlay');
+    this.spriteGeometry.instanceCount = first + (sprite ? 1 : 0);
+    if (!sprite) return;
+    const r = sprite.region;
+    (this.instances.array as Float32Array).set([sprite.x, sprite.y, r.width, r.height, r.x, r.y, sprite.remap, 0, 0, 0, 0, 0], first * 12);
+    this.instances.addUpdateRange(first * 12, 12);
+    this.instances.needsUpdate = true;
+  }
+
+  setTime(time: number) { this.time.value = time; }
 
   /** Draws the index image of the view, without presenting it. */
   private drawIndices(view: View) {
@@ -283,6 +425,12 @@ export class PalettePipeline {
     this.renderer.setRenderTarget(this.indexTarget);
     this.compositePass.render(this.renderer);
     this.renderer.setRenderTarget(previous);
+  }
+
+  /** Changes presentation colors without changing any index image or sprite data. */
+  setPalette(colors: Uint8Array) {
+    (this.palette.image.data as Uint8Array).set(colors);
+    this.palette.needsUpdate = true;
   }
 
   /** Draws the view and presents it on the canvas, each image pixel as scale × scale device pixels. */
@@ -305,6 +453,7 @@ export class PalettePipeline {
   }
 
   dispose() {
+    this.setup.displacement?.dispose();
     for (const texture of this.textures) texture.dispose();
     for (const target of [this.tileTarget, this.spriteTarget, this.indexTarget]) target.dispose();
     for (const mesh of [this.tilePass, this.compositePass, this.presentPass, this.spriteMesh]) {

@@ -3,10 +3,13 @@
   import { createRenderer, DeviceLostError, type Renderer } from './engine/renderer.ts';
   import { MissingDataError } from './game/data-files.ts';
   import { startGame, type Game } from './game/game.ts';
+  import Preview from './Preview.svelte';
+
+  const preview = new URLSearchParams(location.search).get('preview') === 'assets';
 
   type Status = 'starting' | 'running' | 'unsupported' | 'nodata' | 'failed' | 'lost';
 
-  let canvas: HTMLCanvasElement;
+  let canvas = $state<HTMLCanvasElement>(null!);
   let status: Status = $state('starting');
   let renderer: Renderer | null = null;
   let game: Game | null = null;
@@ -58,6 +61,7 @@
   }
 
   onMount(() => {
+    if (preview) return;
     start();
     return () => {
       unmounted = true;
@@ -67,7 +71,11 @@
   });
 </script>
 
-<canvas bind:this={canvas} data-status={status}></canvas>
+{#if preview}
+  <Preview />
+{:else}
+  <canvas bind:this={canvas} data-status={status}></canvas>
+{/if}
 
 {#if status === 'unsupported'}
   <p class="notice">This browser does not support WebGPU. Open the page in a recent Chrome or Edge.</p>

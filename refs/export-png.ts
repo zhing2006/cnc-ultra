@@ -15,7 +15,13 @@ import { promisify } from 'node:util';
 import { INFANTRY } from '../src/game/data/infantry.ts';
 import { TEMPLATES, THEATER_TEMPERATE } from '../src/game/data/templates.ts';
 import { UNITS } from '../src/game/data/units.ts';
-import { DATA_FILES } from '../src/game/data-files.ts';
+import { PREVIEW_DATA_FILES } from '../src/game/data-files.ts';
+import { BUILDINGS } from '../src/game/data/buildings.ts';
+import { TERRAIN } from '../src/game/data/terrain.ts';
+import { OVERLAYS } from '../src/game/data/overlays.ts';
+import { SMUDGES } from '../src/game/data/smudges.ts';
+import { AIRCRAFT } from '../src/game/data/aircraft.ts';
+import { resolve } from 'node:path';
 import { MixFile, MixSet } from '../src/game/formats/mix.ts';
 import { framesDigest, PNG_DIRECTORY, REFERENCE_FILE, type ReferenceFormat } from '../tests/reference/digest.ts';
 import { readIndexedPng } from '../tests/reference/png.ts';
@@ -35,7 +41,24 @@ if (!existsSync(`${openra}bin/OpenRA.Utility.dll`) || !existsSync(`${openra}bin/
   }
 }
 
-const mix = new MixSet(DATA_FILES.map((name) => new MixFile(readFileSync(new URL(`assets/dev/${name}`, root)))));
+// OpenRA's --png skips padding when a trimmed frame happens to have its original dimensions,
+// even if its origin moved. This shifts edge-touching art one pixel. Correct only that export
+// condition; its independent format decoders are unchanged. Restore the reference source after
+// compiling the command, including when compilation fails.
+const exporter = `${openra}OpenRA.Mods.Common/UtilityCommands/ConvertSpriteToPngCommand.cs`;
+const exporterSource = readFileSync(exporter, 'utf8');
+const paddingCondition = 'if (frameSize != frame.Size)';
+if (!exporterSource.includes(paddingCondition)) throw new Error('the pinned OpenRA PNG exporter has changed');
+try {
+  writeFileSync(exporter, exporterSource.replace(paddingCondition,
+    'if (frameSize != frame.Size || offset.X != 0 || offset.Y != 0)'));
+  execFileSync('dotnet', ['build', 'OpenRA.Mods.Common/OpenRA.Mods.Common.csproj', '-c', 'Release',
+    `-p:TargetPlatform=${process.platform === 'win32' ? 'win-x64' : 'unix-generic'}`], { cwd: openra, stdio: 'inherit' });
+} finally {
+  writeFileSync(exporter, exporterSource);
+}
+
+const mix = new MixSet(PREVIEW_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(`assets/dev/${name}`, root)))));
 
 // Every temperate template, every vehicle and infantry shape, and the mouse pointers. OpenRA's cnc mod
 // reads keyframed shapes and templates; only its ra mod reads the older shape library of MOUSE.SHP.
@@ -43,9 +66,19 @@ const jobs: { name: string; format: ReferenceFormat; mod: string }[] = [];
 const temperate = TEMPLATES.filter((type) => type.theaters & THEATER_TEMPERATE);
 for (const name of new Set(temperate.map((type) => `${type.name}.TEM`))) jobs.push({ name, format: 'tem', mod: 'cnc' });
 for (const name of [...UNITS.keys(), ...INFANTRY.keys()]) jobs.push({ name: `${name}.SHP`, format: 'shp', mod: 'cnc' });
+for (const suffix of ['TEM', 'DES']) {
+  for (const type of BUILDINGS.values()) jobs.push({ name: `${type.name}.${type.theater ? suffix : 'SHP'}`, format: 'shp', mod: 'cnc' });
+  for (const type of OVERLAYS.values()) jobs.push({ name: `${type.name}.${type.theater ? suffix : 'SHP'}`, format: 'shp', mod: 'cnc' });
+  for (const name of [...TERRAIN.keys(), ...SMUDGES]) jobs.push({ name: `${name}.${suffix}`, format: 'shp', mod: 'cnc' });
+}
+for (const name of [...AIRCRAFT, 'WAKE', 'WEAP2', 'LROTOR', 'RROTOR']) jobs.push({ name: `${name}.SHP`, format: 'shp', mod: 'cnc' });
+jobs.push({ name: 'CLEAR1.DES', format: 'tem', mod: 'cnc' });
 jobs.push({ name: 'MOUSE.SHP', format: 'shapes', mod: 'ra' });
-const present = jobs.filter((job) => mix.get(job.name));
+const present = [...new Map(jobs.filter((job) => mix.get(job.name)).map(job => [job.name, job])).values()];
 
+if (resolve(output) !== resolve(fileURLToPath(new URL('refs/openra-png/', root)))) {
+  throw new Error('the export directory must be refs/openra-png/');
+}
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 const palette = `${output}temperat.pal`;
@@ -69,15 +102,23 @@ const lines = present.map((job) => {
   const prefix = name.slice(0, name.lastIndexOf('.'));
   const directory = `${output}${name}/`;
   const files = readdirSync(directory).filter((file) => file.startsWith(`${prefix}-`) && file.endsWith('.png')).sort();
-  files.forEach((file, index) => {
-    const expected = `${prefix}-${String(index).padStart(4, '0')}.png`;
-    if (file !== expected) throw new Error(`${name}: OpenRA skipped frame ${index}`);
+  // ShpTDSprite.TrimmedFrame gives fully transparent frames a zero size, and --png omits them.
+  // Restore only those omitted frames, using the original header's common frame size and count.
+  const source = mix.require(job.name);
+  const header = new DataView(source.buffer, source.byteOffset, source.byteLength);
+  const count = job.format === 'shp' ? header.getUint16(0, true) : files.length;
+  const frames = Array.from({ length: count }, (_, index) => {
+    const file = `${directory}${prefix}-${String(index).padStart(4, '0')}.png`;
+    if (existsSync(file)) return readIndexedPng(readFileSync(file));
+    if (job.format !== 'shp') throw new Error(`${name}: OpenRA skipped frame ${index}`);
+    const width = header.getUint16(6, true), height = header.getUint16(8, true);
+    return { width, height, pixels: new Uint8Array(width * height) };
   });
-  const frames = files.map((file) => readIndexedPng(readFileSync(`${directory}${file}`)));
   return `${name} ${job.format} ${frames.length} ${framesDigest(frames)}`;
 });
 writeFileSync(REFERENCE_FILE, [
   '# Digests of OpenRA\'s --png export of the original files in assets/dev/, written by refs/export-png.ts.',
+  '# PNG padding preserves nonzero frame offsets; fully transparent SHP frames retain the header dimensions.',
   '# Each line: file, format, frame count, SHA-256 over every frame\'s width, height and palette indices.',
   ...lines,
   '',

@@ -7,6 +7,7 @@ import { createServer, type Logger } from 'vite';
 import type { Session } from './browser.ts';
 import { checkShadowComposition } from './palette.ts';
 import { checkDeviceLossRestart, checkNoWebGLFallback } from './renderer.ts';
+import { checkOriginalVisuals } from './visuals.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -51,6 +52,7 @@ try {
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],
     ['restart after the GPU device is lost while starting and while running', checkDeviceLossRestart],
     ['shadows and house colors compose like drawing each sprite in turn', checkShadowComposition],
+    ['original object order, cloaking, integer zoom and the asset preview', checkOriginalVisuals],
   ];
   const results = await Promise.allSettled(checks.map(async ([name, check]) => {
     const start = performance.now();
