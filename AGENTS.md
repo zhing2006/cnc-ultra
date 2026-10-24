@@ -2,7 +2,7 @@
 
 C&C Ultra rebuilds the original Command & Conquer (1995) in the browser. Rendering uses Three.js on WebGPU, and the game simulation runs in WebGPU compute shaders. Overview, requirements and license: [README.md](README.md).
 
-The constitutions in [`docs/constitution/`](docs/constitution/README.md) set the product scope and the technical, design and testing principles. They take precedence over this file and over task descriptions. When a task conflicts with them, stop and ask.
+The constitutions in `docs/` set the product scope and the technical, design and testing principles; [docs/README.md](docs/README.md) lists them. They take precedence over this file and over task descriptions. When a task conflicts with them, stop and ask.
 
 ## Commands
 
@@ -29,7 +29,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 - `src/App.svelte`, `src/main.ts`: the app shell.
 - `assets/dev/`: a few original MIX files for development and tests, stored in LFS with lower-case names.
 - `refs/`: downloaded references. Git ignores everything in it except its index and the fetch scripts.
-- `docs/`: design docs in Chinese, including the constitutions and the plans in `docs/plans/`.
+- `docs/`: docs in Chinese: the constitutions, the roadmap and the writing guide, listed in `docs/README.md`. The task list for each milestone of the roadmap goes in `docs/plans/`.
 
 ## Rules
 
@@ -60,7 +60,7 @@ Reviews follow [REVIEW.md](REVIEW.md): what to report, the three levels, and the
 
 ## Tests
 
-Tests follow the [testing constitution](docs/constitution/testing.md). The core of it:
+Tests follow the [testing constitution](docs/testing.md). The core of it:
 
 - Write only tests that can catch meaningful functional errors. Do not write defensive tests, or negative tests merely because something was removed.
 - Test against the original game, not the current implementation: file formats against the original source and OpenRA's parsers, rules against the original source, rendering against reference images from an independent source, such as captures of the original game or a decoder other than the one under test. Do not record this project's own output as a golden image.

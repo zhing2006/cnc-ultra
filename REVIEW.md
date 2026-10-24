@@ -1,6 +1,6 @@
 # Review instructions
 
-These rules apply to every review of this repository, by people or by agents. AGENTS.md and the constitutions in `docs/constitution/` still apply; this file decides what a review reports and at what level.
+These rules apply to every review of this repository, by people or by agents. AGENTS.md and the constitutions in `docs/` still apply; this file decides what a review reports and at what level.
 
 ## What to report
 
