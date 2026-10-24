@@ -90,10 +90,10 @@ Review tools with fixed level names map must-fix and defects to Important, and s
 C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with the simulation in WebGPU compute shaders.
 
 - Reference: the 1995 original. A claim about it cites the original source in `refs/source/` by file and function, or a capture of the original game. The 2020 Remastered version and OpenRA's behavior do not count; OpenRA's parsers count only for file formats.
-- Planned path and target scale: Ultra mode, the larger maps of the map generator, and the remaining features of the slice in the product constitution.
+- Planned path and target scale: Ultra mode, the larger maps of the map generator, and the remaining features of the first version in the product constitution.
 - Budget: article 7 of the product constitution. Ultra mode runs 20,000 units at 60 frames per second on the development machine, which has an NVIDIA GeForce RTX 5090 D, an AMD Ryzen 9 9950X and the latest Chrome or Edge.
 - Platform: a browser with WebGPU.
-- Core loops and essential features: building, harvesting, combat, movement and pathfinding, selection and orders, and the slice features of the product constitution: a full match on an original map, Ultra mode, the perspective views, and the CPU and GPU comparison.
+- Core loops and essential features: building, harvesting, combat, movement and pathfinding, selection and orders, and the features of the first version in the product constitution: a full match on an original map, the single-player campaigns, Ultra mode, the perspective views, and the CPU and GPU comparison.
 - Hard rules, from AGENTS.md and the constitutions:
   - The simulation is deterministic: no floating point in simulation state or in decisions made from it, no results that depend on thread order or timing, no iteration order that is not fixed feeding the simulation, and no randomness that does not come from the simulation's own seeded generator.
   - No code depends on the WebGL backend.

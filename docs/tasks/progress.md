@@ -9,6 +9,7 @@
 | [里程碑 4：战斗](m4-combat.md) | 未开始 |
 | [里程碑 5：经济和建造](m5-economy-and-building.md) | 未开始 |
 | [里程碑 6：原版地图上的一局对战](m6-full-match.md) | 未开始 |
+| [里程碑 6.5：原版战役](m6.5-campaigns.md) | 未开始 |
 | [里程碑 7：地图生成器](m7-map-generator.md) | 未开始 |
 | [里程碑 8：Ultra 模式](m8-ultra.md) | 未开始 |
 | [里程碑 9：透视视图和对比场景](m9-views-and-comparison.md) | 未开始 |
