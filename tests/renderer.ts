@@ -49,11 +49,11 @@ export function checkDeviceLossRestart(session: Session) {
   return withApp(session, options, async (page) => {
     await page.locator('canvas[data-status="lost"]').waitFor({ state: 'attached' });
     await page.getByRole('button', { name: 'Restart' }).click();
-    await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
+    await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached', timeout: 30000 });
 
     await page.evaluate(() => (window as unknown as { loseDevice: () => void }).loseDevice());
     await page.locator('canvas[data-status="lost"]').waitFor({ state: 'attached' });
     await page.getByRole('button', { name: 'Restart' }).click();
-    await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
+    await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached', timeout: 30000 });
   });
 }

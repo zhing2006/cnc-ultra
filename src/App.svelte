@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { createRenderer, DeviceLostError, type Renderer } from './engine/renderer.ts';
   import { MissingDataError } from './game/data-files.ts';
   import { startGame, type Game } from './game/game.ts';
   import Preview from './Preview.svelte';
+  import Loading from './Loading.svelte';
 
   const preview = new URLSearchParams(location.search).get('preview') === 'assets';
   const simulation = new URLSearchParams(location.search).get('demo') === 'simulation';
+  const combat = new URLSearchParams(location.search).get('demo') === 'combat';
   const units = new URLSearchParams(location.search).get('demo') === 'units';
   let vision = $state(false);
   let flow = $state(false), paused = $state(false), frame = $state(0), digest = $state('');
@@ -15,6 +17,7 @@
 
   let canvas = $state<HTMLCanvasElement>(null!);
   let status: Status = $state('starting');
+  let loadingMessage = $state('Checking graphics support');
   let renderer: Renderer | null = null;
   let game: Game | null = null;
   let unmounted = false;
@@ -34,6 +37,7 @@
   async function start() {
     status = 'starting';
     try {
+      await showProgress('Checking graphics support');
       const created = await createRenderer(canvas, { onDeviceLost: lost });
       if (unmounted) {
         created?.dispose();
@@ -44,7 +48,8 @@
         status = 'unsupported';
         return;
       }
-      const started = await startGame(created, canvas, { simulation, units,
+      const started = await startGame(created, canvas, { simulation, units, combat,
+        onProgress: showProgress,
         onStats: (value, checksum) => { frame = value; digest = checksum; } });
       if (unmounted || renderer !== created) {
         started.dispose();
@@ -68,6 +73,16 @@
     }
   }
 
+  async function showProgress(message: string) {
+    loadingMessage = message;
+    await tick();
+    // Let the browser paint the new stage before CPU-heavy scene and shader preparation.
+    await new Promise<void>(resolve => {
+      if (document.hidden) setTimeout(resolve, 0);
+      else requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+  }
+
   onMount(() => {
     if (preview) return;
     start();
@@ -83,21 +98,22 @@
   <Preview />
 {:else}
   <canvas bind:this={canvas} data-status={status}></canvas>
+  {#if status === 'starting'}<Loading message={loadingMessage} />{/if}
 {/if}
 
-{#if (simulation || units) && !preview && status === 'running'}
+{#if (simulation || units || combat) && !preview && status === 'running'}
   <aside class="simulation-controls" aria-label="Simulation demo">
-    <strong>{units ? 'Units and controls · 28 vehicles, 35 infantry' : 'GPU simulation · 320 tanks'}</strong>
-    {#if units}
-      <div>Click to capture the pointer. Left-click or drag to select, then left-click ground to move. Right-click clears the selection. Esc releases the pointer.</div>
+    <strong>{combat ? 'Ground combat · GDI vs Nod' : units ? 'Units and controls · 28 vehicles, 35 infantry' : 'GPU simulation · 320 tanks'}</strong>
+    {#if units || combat}
+      <div>Click to capture the pointer. Left-click or drag to select, then left-click ground to move. {#if combat}Left-click enemies to attack; Ctrl+click forces an attack. Nod positions are to the east.{/if} Right-click clears the selection. Esc releases the pointer.</div>
     {:else}
       <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
     {/if}
     <div class="controls">
       <button type="button" aria-pressed={flow} onclick={() => { flow = !flow; game?.setFlow(flow); }}>Flow field</button>
-      {#if units}<button type="button" aria-pressed={vision} onclick={() => { vision = !vision; game?.setVision(vision); }}>Sight</button>{/if}
+      {#if units || combat}<button type="button" aria-pressed={vision} onclick={() => { vision = !vision; game?.setVision(vision); }}>Sight</button>{/if}
       <button type="button" aria-pressed={paused} onclick={() => { paused = !paused; game?.setPaused(paused); }}>{paused ? 'Resume' : 'Pause'}</button>
-      <a href={units ? '?demo=units' : '?demo=simulation'}>Reset</a>
+      <a href={combat ? '?demo=combat' : units ? '?demo=units' : '?demo=simulation'}>Reset</a>
       <a href="?">Original map</a>
     </div>
     <div>Tick <span data-tick={frame}>{frame}</span> · 15 ticks/s · pauses in the background</div>

@@ -236,7 +236,7 @@ export async function measureM3Gpu(renderer: WebGPURenderer) {
     const units=new Int32Array(10000*S.WORDS);
     for(let id=0;id<10000;id++){
       const at=id*S.WORDS;units[at]=((id%125)*2+2)*256+128;units[at+1]=(Math.floor(id/125)*2+2)*256+128;
-      units[at+S.UTYPE]=movementType('MTNK');
+      units[at+S.UTYPE]=movementType('MTNK');units[at+S.UHEALTH]=400;
     }
     backend.trackTimestamp=false;
     const attribute=new StorageBufferAttribute(units,1),sight=new GpuSight(renderer,width,width,attribute);

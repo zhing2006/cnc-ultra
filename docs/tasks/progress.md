@@ -6,7 +6,7 @@
 | [里程碑 1：原版画面](m1-original-visuals.md) | 完成 |
 | [里程碑 2：GPU 模拟框架](m2-gpu-simulation.md) | 完成 |
 | [里程碑 3：单位和操作](m3-units-and-controls.md) | 待验收 |
-| [里程碑 4：战斗](m4-combat.md) | 未开始 |
+| [里程碑 4：战斗](m4-combat.md) | 待验收 |
 | [里程碑 5：经济和建造](m5-economy-and-building.md) | 未开始 |
 | [里程碑 6：原版地图上的一局对战](m6-full-match.md) | 未开始 |
 | [里程碑 6.5：原版战役](m6.5-campaigns.md) | 未开始 |

@@ -21,13 +21,14 @@ export class UnitsView {
   readonly cursor = uniform(-1, 'int');
   readonly time = uniform(0, 'int');
   readonly shift = uniform(0, 'int');
+  readonly ctrl = uniform(0, 'int');
   readonly hovered: StorageBufferAttribute;
   readonly indexEffect: (pixel: Node<'ivec2'>, index: Node<'int'>) => Node<'int'>;
   readonly draw: (pixel: Node<'vec2'>, color: Node<'vec4'>) => Node<'vec4'>;
   private readonly textures: DataTexture[] = [];
   private readonly buffers: StorageBufferAttribute[] = [];
   private readonly hover;
-  constructor(private readonly renderer: WebGPURenderer, simulation: GpuUnits, sight: GpuSight, selection: GpuSelection, scene: GameScene, mixFiles: MixSet) {
+  constructor(private readonly renderer: WebGPURenderer, simulation: GpuUnits, sight: GpuSight, selection: GpuSelection, scene: GameScene, mixFiles: MixSet, combat = false) {
     const { width, height } = simulation.setup.grid;
     const cells = width * height;
     const texture = (data: Uint8Array, w: number, h: number, rgba = false) => {
@@ -232,7 +233,10 @@ export class UnitsView {
           frame.assign(this.cursor);
           hot.assign(ivec2(15, 12));
         }).Else(() => {
-          If(hovered.element(0).greaterThanEqual(0), () => {
+          If(int(combat ? 1 : 0).notEqual(0).and(hovered.element(1).greaterThan(0)).and(this.ctrl.notEqual(0)
+            .or(hovered.element(0).greaterThanEqual(0).and(u.element(hovered.element(0).mul(WORDS).add(UOWNER)).notEqual(0)))), () => {
+            frame.assign(int(18).add(this.time.div(67).mod(8))); hot.assign(ivec2(15,12));
+          }).ElseIf(hovered.element(0).greaterThanEqual(0), () => {
             frame.assign(int(12).add(this.time.div(67).mod(6)));
             hot.assign(ivec2(15, 12));
           })

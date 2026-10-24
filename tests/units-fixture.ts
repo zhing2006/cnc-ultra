@@ -15,6 +15,7 @@ import { PalettePipeline } from '../src/engine/indexed/pipeline.ts';
 import { paint } from './reference/paint.ts';
 import * as S from '../src/game/simulation/units-state.ts';
 import { checkM3Regressions, measureM3Gpu } from './m3-regressions.ts';
+import { packUnitScenarios } from './unit-scenarios.ts';
 
 function equal(a:ArrayLike<number>,b:ArrayLike<number>,message:string){
   if(a.length!==b.length)throw new Error(`${message}: lengths ${a.length}/${b.length}`);
@@ -27,31 +28,44 @@ export async function compareUnits(){
   const renderer=wrapper.three;
   try{
     const open=gridEdges(16,9,new Uint8Array(144).fill(1),true);
-    for(const names of [['MTNK'],['E1'],['MTNK','JEEP','E1','E1','HTNK']]){
-      const setup:S.UnitsSetup={grid:open,land:new Uint8Array(144),seed:0x1995,
-        units:names.map((name,i)=>({cell:17+i*16,type:movementType(name),facing:i%2?64:0}))};
+    const worlds=packUnitScenarios([['MTNK'],['E1'],['MTNK','JEEP','E1','E1','HTNK']].map(names=>({
+      label:names.join(','),ticks:100,targets:names.map((_,i)=>30+(i%2)*80),
+      setup:{grid:open,land:new Uint8Array(144),seed:0x1995,
+        units:names.map((name,i)=>({cell:17+i*16,type:movementType(name),facing:i%2?64:0}))},
+    })));
+    for(const {setup,cases,commands:initialCommands} of worlds){
       const cpu=new CpuUnits(setup),gpu=new GpuUnits(renderer,setup),replay=new GpuUnits(renderer,setup);
-      const cpuSight=new CpuSight(16,9,names.length),gpuSight=new GpuSight(renderer,16,9,gpu.units);
+      const cpuSight=new CpuSight(setup.grid.width,setup.grid.height,setup.units.length),gpuSight=new GpuSight(renderer,setup.grid.width,setup.grid.height,gpu.units);
       cpuSight.step(cpu.units);
       try{
         for(let frame=1;frame<=100;frame++){
-          const commands:S.UnitCommand[]=frame===1?names.map((_,i)=>({frame,kind:'move',target:30+(i%2)*80,ids:[i]})):
-            frame===40?[{frame,kind:'move',target:113,ids:[0]}]:frame===70?[{frame,kind:'scatter',ids:[0]}]:[];
+          const commands:S.UnitCommand[]=frame===1?initialCommands:
+            frame===40?cases.map(c=>({frame,kind:'move',target:c.mapCell(113),ids:[c.ids[0]]})):
+            frame===70?cases.map(c=>({frame,kind:'scatter',ids:[c.ids[0]]})):[];
           cpu.step(commands);gpu.step(commands);replay.step(commands);cpuSight.step(cpu.units);gpuSight.step();
           if([1,2,3,16,39,40,60,70,100].includes(frame)){
-            const actual=await gpu.snapshot(),expected=cpu.buffers();actual.forEach((value,i)=>equal(value,expected[i],`${names} tick ${frame} buffer ${i}`));
-            equal(await gpu.checksum(),cpu.checksum(),`${names} checksum ${frame}`);equal(await gpu.checksum(),await replay.checksum(),`${names} replay ${frame}`);
-            equal(new Int32Array(await renderer.getArrayBufferAsync(gpuSight.mapped)),cpuSight.mapped,`mapped ${frame}`);
-            equal(new Int32Array(await renderer.getArrayBufferAsync(gpuSight.current)),cpuSight.current,`current sight ${frame}`);
-            equal(new Int32Array(await renderer.getArrayBufferAsync(gpuSight.shadow)),cpuSight.shadow,`shroud edges ${frame}`);
+            const [actual,digest,repeated,mapped,current,shadow]=await Promise.all([
+              gpu.snapshot(),gpu.checksum(),replay.checksum(),
+              renderer.getArrayBufferAsync(gpuSight.mapped),renderer.getArrayBufferAsync(gpuSight.current),
+              renderer.getArrayBufferAsync(gpuSight.shadow),
+            ]);
+            const expected=cpu.buffers();actual.forEach((value,i)=>equal(value,expected[i],`packed units tick ${frame} buffer ${i}`));
+            equal(digest,cpu.checksum(),`packed units checksum ${frame}`);equal(digest,repeated,`packed units replay ${frame}`);
+            equal(new Int32Array(mapped),cpuSight.mapped,`mapped ${frame}`);
+            equal(new Int32Array(current),cpuSight.current,`current sight ${frame}`);
+            equal(new Int32Array(shadow),cpuSight.shadow,`shroud edges ${frame}`);
           }
         }
         const selection=new GpuSelection(renderer,gpu,gpuSight);
         try{
-          selection.apply({action:'box',x:0,y:0,x2:4096,y2:2304});const selected=await selection.read();
-          if(selected[1]!==names.length)throw new Error('Box selection missed owned units');
-          selection.apply({action:'group',group:0,modifier:2});selection.apply({action:'clear'});
-          selection.apply({action:'group',group:0});if((await selection.read())[1]!==names.length)throw new Error('Group recall missed units');
+          for(const c of cases){
+            const x=c.ids.map(id=>cpu.units[id*S.WORDS]),y=c.ids.map(id=>cpu.units[id*S.WORDS+1]);
+            selection.apply({action:'box',x:Math.min(...x)-16,y:Math.min(...y)-16,x2:Math.max(...x)+16,y2:Math.max(...y)+16});
+            if((await selection.read())[1]!==c.ids.length)throw new Error(`${c.label}: box selection missed owned units`);
+            selection.apply({action:'group',group:0,modifier:2});selection.apply({action:'clear'});
+            selection.apply({action:'group',group:0});
+            if((await selection.read())[1]!==c.ids.length)throw new Error(`${c.label}: group recall missed units`);
+          }
         }finally{selection.dispose();}
       }finally{gpuSight.dispose();gpu.dispose();replay.dispose();}
     }

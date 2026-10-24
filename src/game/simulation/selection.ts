@@ -6,7 +6,7 @@ import { intMin, intMax } from '../../engine/simulation/integer-nodes.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { movementType } from '../data/movement.ts';
 import { unitDistance } from './units-nodes.ts';
-import { WORDS, UOWNER, UTYPE } from './units-state.ts';
+import { WORDS, UOWNER, UTYPE, UHEALTH } from './units-state.ts';
 import type { GpuUnits } from './units-gpu.ts';
 import type { GpuSight } from './sight.ts';
 import { cellEntryNode } from './cell-entry.ts';
@@ -35,7 +35,7 @@ export class GpuSelection {
   private readonly modifier = uniform(0, 'int');
   private readonly group = uniform(0, 'int');
   private readonly attributes: StorageBufferAttribute[] = [];
-  constructor(private readonly renderer: WebGPURenderer, simulation: GpuUnits, sight: GpuSight) {
+  constructor(private readonly renderer: WebGPURenderer, simulation: GpuUnits, sight: GpuSight, combat = false) {
     const count = simulation.setup.units.length;
     const { width, height } = simulation.setup.grid;
     this.result = new StorageBufferAttribute(new Int32Array(8), 1);
@@ -63,6 +63,7 @@ export class GpuSelection {
       const voice = int(0).toVar();
       const center = int(0).toVar();
       Loop(count, ({ i }) => {
+        If(u.element(int(i).mul(WORDS).add(UHEALTH)).lessThanEqual(0), () => { selected.element(int(i)).assign(0); });
         If(first.lessThan(int(0)).and(selected.element(int(i)).notEqual(int(0))), () => {
           first.assign(int(i));
         });
@@ -82,13 +83,20 @@ export class GpuSelection {
           Loop(count, ({ i }) => {
             const at = int(i).mul(int(WORDS));
             const d = unitDistance(ivec2(this.x, this.y), ivec2(u.element(at), u.element(at.add(int(1)))));
-            If(d.lessThan(best), () => {
+            If(d.lessThan(best).and(u.element(at.add(UHEALTH)).greaterThan(0)), () => {
               best.assign(d);
               chosen.assign(int(i));
             });
           });
         });
         If(chosen.greaterThanEqual(int(0)), () => {
+          If(int(combat ? 1 : 0).notEqual(0).and(first.greaterThanEqual(0))
+            .and(u.element(chosen.mul(WORDS).add(UOWNER)).notEqual(0).or(this.modifier.equal(2))), () => {
+            Loop(count, ({i}) => {
+              If(selected.element(int(i)).notEqual(0), () => { pending.element(int(i).mul(2)).assign(3); pending.element(int(i).mul(2).add(1)).assign(chosen); });
+            });
+            voice.assign(3);
+          }).Else(() => {
           // Ported from TECHNO.CPP, What_Action(ObjectClass*), and DISPLAY.CPP, Mouse_Left_Release.
           If(this.modifier.notEqual(int(0)).and(first.greaterThanEqual(int(0))), () => {
             const value = selected.element(chosen);
@@ -100,17 +108,18 @@ export class GpuSelection {
             });
             voice.assign(1);
           });
+          });
         }).Else(() => {
           // Ported from FOOT.CPP, Active_Click_With: MOVE and NOMOVE both assign a mission.
           If(first.greaterThanEqual(int(0)), () => {
             Loop(count, ({ i }) => {
               const at = int(i).mul(int(WORDS));
               If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
-                pending.element(int(i).mul(int(2))).assign(0);
+                pending.element(int(i).mul(int(2))).assign(select(int(combat ? 1 : 0).notEqual(0).and(this.modifier.equal(2)), int(4), int(0)));
                 pending.element(int(i).mul(int(2)).add(int(1))).assign(cell);
               });
             });
-            voice.assign(2);
+            voice.assign(select(int(combat ? 1 : 0).notEqual(int(0)).and(this.modifier.equal(int(2))), int(3), int(2)));
             // Only ACTION_MOVE creates ANIM_MOVE_FLASH. A NOMOVE cursor may be hidden by shroud.
             If(this.modifier.notEqual(int(0)).or(canEnter(first, cell)), () => {
               flash.element(0).assign(this.x);
@@ -127,7 +136,7 @@ export class GpuSelection {
           const at = int(i).mul(int(WORDS));
           const xx = u.element(at);
           const yy = u.element(at.add(int(1)));
-          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(int(UOWNER))).equal(int(0))
+          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0)))
             .and(xx.greaterThanEqual(intMin(this.x, this.x2)))
 
               .and(xx.lessThanEqual(intMax(this.x, this.x2)))
@@ -231,6 +240,11 @@ export class GpuSelection {
     this.modifier.value = command.modifier ?? 0;
     this.group.value = command.group ?? 0;
     this.renderer.compute(this.pass);
+  }
+  /** Compile and execute the selection pipeline before input becomes available. */
+  async prepare() {
+    this.apply({action:'clear'});
+    await this.read();
   }
   async read() {
     return new Int32Array(await this.renderer.getArrayBufferAsync(this.result));

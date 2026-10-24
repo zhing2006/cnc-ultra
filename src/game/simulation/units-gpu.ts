@@ -8,6 +8,7 @@ import { randomNode, intMin, intMax } from '../../engine/simulation/integer-node
 import { GpuChecksum } from '../../engine/simulation/checksum.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { combatTypes } from '../data/combat.ts';
 import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
 import { movePoint } from '../coord.ts';
 import { INFANTRY_SPOTS } from './map.ts';
@@ -16,6 +17,12 @@ import { SPOT_SEQUENCE } from './infantry-spots.ts';
 import { DESTINATION_NEIGHBORS, PATH_DELAY } from './navigation.ts';
 import * as S from './units-state.ts';
 type I = Node<'int'>;
+/** Passes surrounding each movement tick, including ticks submitted in a batch. */
+export interface UnitTickExtension {
+  before: ComputeNode[];
+  after: ComputeNode[];
+  refreshOccupancy?: boolean;
+}
 const PROPOSAL_WORDS = 20;
 const P_CELL = 0;
 const P_MIDDLE = 1;
@@ -35,7 +42,8 @@ const TYPE_SPEED = 1;
 const TYPE_ROTATION = 2;
 const TYPE_STRENGTH = 3;
 const TYPE_LOCOMOTION = 4;
-const TYPE_WORDS = 5;
+const TYPE_CRUSHER = 5;
+const TYPE_WORDS = 6;
 const TRACK_START = 0;
 const TRACK_RAW = 1;
 const TRACK_FACING = 2;
@@ -62,6 +70,8 @@ export class GpuUnits {
   private readonly tick: ComputeNode[];
   private readonly prepare: ComputeNode[];
   private readonly batch: ComputeNode[];
+  private readonly extendedBatches = new WeakMap<UnitTickExtension, {step: ComputeNode[]; batch: ComputeNode[]}>();
+  readonly occupancyPasses: ComputeNode[];
   private readonly command: ComputeNode;
   private readonly ids: StorageBufferAttribute;
   private readonly commandKind = uniform(0, 'int');
@@ -109,7 +119,7 @@ export class GpuUnits {
       constants.push(...values);
       return offset;
     };
-    const typeBase = append(MOVEMENT.flatMap(t => [t.infantry, t.speed, t.rotation, t.strength, t.locomotion]));
+    const typeBase = append(MOVEMENT.flatMap((t, i) => [t.infantry, t.speed, t.rotation, t.strength, t.locomotion, combatTypes[i].crusher]));
     const landBase = append(Array.from(setup.land));
     const edgeBase = append(Array.from(setup.grid.edges));
     const directionsBase = append(DIRECTIONS.flat());
@@ -148,7 +158,7 @@ export class GpuUnits {
     this.resolvePaths = kernel(count, () => {
       const id = int(instanceIndex), at = id.mul(int(S.WORDS)), goal = goals.element(id);
       If(goal.lessThan(int(0)), () => { pathGoals.element(id).assign(-1); })
-        .ElseIf(pathGoals.element(id).lessThan(int(0)), () => {
+        .ElseIf(pathGoals.element(id).equal(int(-1)), () => {
           const target = goal.toVar();
           If(terrainOpen(goal, at).not(), () => {
             const gx = goal.mod(int(setup.grid.width)).toVar(), gy = goal.div(int(setup.grid.width)).toVar();
@@ -209,7 +219,14 @@ export class GpuUnits {
       const at = id.mul(int(S.WORDS)).toVar();
       Loop(5, ({ i: s }) => {
         const owner = atomicLoad(occupancy.element(cell.mul(int(5)).add(s)));
-        const unused = owner.equal(uint(0)).or(owner.equal(uint(id.add(int(1)))));
+        const unused = owner.equal(uint(0)).or(owner.equal(uint(id.add(int(1))))).toVar();
+        // UNIT.CPP, Can_Enter_Cell: crushers may enter enemy infantry reservations.
+        If(owner.greaterThan(uint(0)).and(type(at, TYPE_CRUSHER).notEqual(0)), () => {
+          const other = int(owner).sub(1).mul(S.WORDS).toVar();
+          If(u.element(other.add(S.UKIND)).notEqual(0).and(u.element(other.add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER)))), () => {
+            unused.assign(true);
+          });
+        });
         const physicalOwner = atomicLoad(occupancy.element(physicalCell.mul(int(5)).add(s)));
         const physicalFree = physicalOwner.equal(uint(0)).or(physicalOwner.equal(uint(id.add(int(1)))));
         const progress = unitDistance(point(physicalCell, s), point(cell)).lessThan(unitDistance(position(at), point(cell)));
@@ -248,10 +265,18 @@ export class GpuUnits {
     const lookup = storage(this.flow.lookup, 'int', cells).setName('unit_lookup').toReadOnly();
     const next = storage(this.flow.next, 'int', this.flow.next.count).setName('unit_next').toReadOnly();
     const distance = storage(this.flow.distance, 'int', this.flow.distance.count).setName('unit_distance').toReadOnly();
+    const overrun = (at: I) => {
+      If(type(at, TYPE_INFANTRY).equal(0), () => {
+        u.element(at.add(S.UOVERRUN_CELL)).assign(u.element(at.add(1)).div(256).mul(setup.grid.width).add(u.element(at).div(256)));
+        u.element(at.add(S.UOVERRUN_X)).assign(u.element(at));
+        u.element(at.add(S.UOVERRUN_Y)).assign(u.element(at.add(1)));
+      });
+    };
     const arrive = (id: I, at: I) => {
       u.element(at).assign(u.element(at.add(int(S.UHEAD_X))));
       u.element(at.add(int(1))).assign(u.element(at.add(int(S.UHEAD_Y))));
       u.element(at.add(int(S.UCELL))).assign(u.element(at.add(int(S.UDEST))));
+      overrun(at);
       u.element(at.add(int(S.USLOT))).assign(u.element(at.add(int(S.UDSLOT))));
       u.element(at.add(int(S.UDEST))).assign(-1);
       u.element(at.add(int(S.UMIDDLE))).assign(-1);
@@ -274,7 +299,7 @@ export class GpuUnits {
             arrive(id, at);
           }).Else(() => {
             const dir = int(unitDirection(position(at), head)).toVar();
-            const speed = type(at, TYPE_SPEED).mul(int(255)).add(int(128)).shiftRight(int(8));
+            const speed = type(at, TYPE_SPEED).mul(select(u.element(at.add(S.USPEED)).equal(0), int(255), u.element(at.add(S.USPEED)))).add(int(128)).shiftRight(int(8));
             u.element(at).addAssign(data.element(dir.mul(int(2)).add(int(trigBase))).mul(speed).shiftRight(int(7)));
             u.element(at.add(int(1))).subAssign(data.element(dir.mul(int(2)).add(int(trigBase + 1))).mul(speed).shiftRight(int(7)));
           });
@@ -317,6 +342,7 @@ export class GpuUnits {
                 If(step.equal(data.element(tc.add(int(TRACK_CELL)))), () => {
                   u.element(at.add(int(S.UCELL))).assign(u.element(at.add(int(1))).div(int(256))
                     .mul(int(setup.grid.width)).add(u.element(at).div(int(256))));
+                  overrun(at);
                 });
                 If(step.equal(data.element(tc.add(int(TRACK_JUMP)))), () => {
                   const following = proposal.element(id.mul(int(PROPOSAL_WORDS)).add(int(P_JUMP_NEXT)));
@@ -398,6 +424,7 @@ export class GpuUnits {
       proposal.element(p.add(int(P_WAS_DRIVING))).assign(int(driving));
       proposal.element(p.add(int(P_ROTATED))).assign(0);
       u.element(at.add(int(S.UJUMP))).assign(-1);
+      u.element(at.add(S.UOVERRUN_CELL)).assign(-1);
       u.element(at.add(int(S.UJUMP_TRACK))).assign(-1);
       atomicStore(nudges.element(id), 0);
       If(u.element(at.add(int(S.UWAIT))).greaterThan(int(0)), () => {
@@ -419,7 +446,8 @@ export class GpuUnits {
       atomicStore(occupancy.element(instanceIndex), 0);
       atomicStore(claims.element(instanceIndex), 0x7fffffff);
     });
-    const occupy = kernel(count, () => {
+    // Vehicle reservations take precedence while a crusher shares a cell with infantry.
+    const occupy = [1, 0].map(infantry => kernel(count, () => {
       const id = int(instanceIndex);
       const at = id.mul(int(S.WORDS)).toVar();
       for (const field of [S.UCELL, S.UDEST, S.UMIDDLE]) {
@@ -427,7 +455,8 @@ export class GpuUnits {
         const reserved = field === S.UCELL
           ? u.element(at.add(int(S.UKIND))).equal(int(0)).or(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
           : int(1).equal(int(1));
-        If(cell.greaterThanEqual(int(0)).and(reserved), () => {
+        If(cell.greaterThanEqual(int(0)).and(reserved).and(u.element(at.add(S.UHEALTH)).greaterThan(0))
+          .and(u.element(at.add(S.UKIND)).equal(infantry)), () => {
           const slot = u.element(at.add(field === S.UCELL ? S.USLOT : S.UDSLOT));
           Loop(5, ({ i: s }) => {
             If(u.element(at.add(int(S.UKIND))).equal(int(0)).or(slot.equal(int(s))), () => {
@@ -436,7 +465,7 @@ export class GpuUnits {
           });
         });
       }
-    });
+    }));
     const query = kernel(count, () => {
       const id = int(instanceIndex);
       const p = id.mul(int(PROPOSAL_WORDS)).toVar();
@@ -447,7 +476,12 @@ export class GpuUnits {
       proposal.element(p.add(int(P_FOLLOWING))).assign(-1);
       proposal.element(p.add(int(P_READY))).assign(0);
       proposal.element(p.add(int(P_JUMP_NEXT))).assign(-1);
-      If(goal.greaterThanEqual(int(0)), () => {
+      If(goal.equal(int(S.DIRECT_STEP)), () => {
+        proposal.element(p.add(int(P_READY))).assign(1);
+        // snapshotGoals precedes the proposal query. Reuse it to keep this
+        // kernel within WebGPU's eight-storage-buffer baseline.
+        proposal.element(p.add(int(P_NEXT))).assign(proposal.element(p.add(int(P_GOAL))));
+      }).ElseIf(goal.greaterThanEqual(int(0)), () => {
         const field = lookup.element(goal);
         If(field.greaterThanEqual(int(0)), () => {
           If(meta.element(field.mul(int(FIELD_WORDS)).add(int(1))).notEqual(int(0)), () => {
@@ -807,7 +841,7 @@ export class GpuUnits {
       const at = id.mul(int(S.WORDS)).toVar();
       const p = id.mul(int(2));
       const kind = pending.element(p);
-      If(kind.greaterThanEqual(int(0)), () => {
+      If(kind.greaterThanEqual(int(0)).and(kind.lessThan(3)).and(u.element(at.add(S.UHEALTH)).greaterThan(0)), () => {
         If(kind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
@@ -826,10 +860,11 @@ export class GpuUnits {
     // Start inter-cell moves first, then reserve short infantry steps in the
     // vacated source slots. This preserves same-tick starts without overlapping reservations.
     this.prepare = this.flow.prepareKernels.length ? [this.resolvePaths,...this.flow.prepareKernels] : [];
-    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, occupy,
+    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, ...occupy,
       snapshotGoals, query, propose, prepareInfantry,
-      clearHeads, linkInfantry(true), allocateInfantry, accept, clear, occupy,
-      clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clear, occupy, yieldSpace, this.applyPending];
+      clearHeads, linkInfantry(true), allocateInfantry, accept, clear, ...occupy,
+      clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clear, ...occupy, yieldSpace, this.applyPending];
+    this.occupancyPasses = [clear, ...occupy];
     this.batch = Array.from({length:32},()=>this.tick).flat();
     if (this.prepare.length) renderer.compute(this.prepare);
     renderer.compute([...this.tick, this.command, kernel(1, () => control.element(0).assign(0))]);
@@ -839,6 +874,9 @@ export class GpuUnits {
     if (this.prepare.length) this.renderer.compute(this.prepare);
     this.renderer.compute(this.tick);
     this.frame++;
+    this.applyCommands(commands);
+  }
+  applyCommands(commands: readonly S.UnitCommand[]) {
     for (const command of commands) {
       if (command.frame !== this.frame)
         throw new Error('Commands must be submitted on their recorded tick');
@@ -855,18 +893,38 @@ export class GpuUnits {
     }
   }
   /** Advance command-free ticks in bounded submissions, preserving every compute pass. */
-  stepMany(ticks: number) {
+  stepMany(ticks: number, extension?: UnitTickExtension) {
     // Indirect dispatch arguments must be written in a separate compute pass.
     if (this.prepare.length) {
-      for (let tick = 0; tick < ticks; tick++) this.step();
+      for (let tick = 0; tick < ticks; tick++) {
+        if (extension) this.renderer.compute(extension.before);
+        this.step();
+        if (extension) {
+          this.renderer.compute(extension.after);
+          if (extension.refreshOccupancy) this.refreshOccupancy();
+        }
+      }
       return;
     }
-    for (; ticks >= 32; ticks -= 32) {
-      this.renderer.compute(this.batch);
-      this.frame += 32;
+    let step = this.tick, batch = this.batch;
+    if (extension) {
+      let cached = this.extendedBatches.get(extension);
+      if (!cached) {
+        const step = [...extension.before, ...this.tick, ...extension.after,
+          ...(extension.refreshOccupancy ? this.occupancyPasses : [])];
+        cached = {step, batch:Array.from({length:32}, () => step).flat()};
+        this.extendedBatches.set(extension, cached);
+      }
+      ({step, batch} = cached);
     }
-    for (; ticks > 0; ticks--) this.step();
+    while (ticks > 0) {
+      const count = Math.min(ticks, 32);
+      this.renderer.compute(count === 32 ? batch : count === 1 ? step : batch.slice(0, count * step.length));
+      this.frame += count;
+      ticks -= count;
+    }
   }
+  refreshOccupancy() { this.renderer.compute(this.occupancyPasses); }
   buffers() {
     return [this.control, this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
   }

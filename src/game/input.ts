@@ -9,7 +9,7 @@ export interface ViewSize {
 export interface UnitInput {
   gesture(): void;
   down(position: {x:number;y:number},button:number,shift:boolean): void;
-  up(position: {x:number;y:number},button:number,shift:boolean): void;
+  up(position: {x:number;y:number},button:number,shift:boolean,ctrl:boolean): void;
   key(event: KeyboardEvent): boolean;
   release(): void;
 }
@@ -51,6 +51,7 @@ export class GameInput {
   mouse: { x: number; y: number } | null = null;
   rightButton = false;
   shift = false;
+  ctrl = false;
   private exactX = 0;
   private exactY = 0;
   private lockedAt = 0;
@@ -86,7 +87,7 @@ export class GameInput {
       if (this.mouse) actions?.down(this.mouse,event.button,event.shiftKey);
     });
     listen<MouseEvent>(window, 'mouseup', (event) => {
-      if (document.pointerLockElement === canvas && this.mouse) actions?.up(this.mouse,event.button,event.shiftKey);
+      if (document.pointerLockElement === canvas && this.mouse) actions?.up(this.mouse,event.button,event.shiftKey,event.ctrlKey);
       if (event.button === 2) this.rightButton = false;
     });
     listen<MouseEvent>(canvas, 'contextmenu', (event) => event.preventDefault());
@@ -126,7 +127,7 @@ export class GameInput {
       }
     });
     listen<KeyboardEvent>(window, 'keydown', (event) => {
-      this.shift=event.shiftKey;
+      this.shift=event.shiftKey;this.ctrl=event.ctrlKey;
       if ((event.target as HTMLElement)?.closest('input, select, textarea, button')) return;
       if (event.code === 'Enter' && event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
@@ -150,8 +151,8 @@ export class GameInput {
         event.preventDefault();
       }
     });
-    listen<KeyboardEvent>(window, 'keyup', (event) => {this.shift=event.shiftKey;this.held.delete(event.key);});
-    listen(window, 'blur', () => {this.shift=false;this.held.clear();});
+    listen<KeyboardEvent>(window, 'keyup', (event) => {this.shift=event.shiftKey;this.ctrl=event.ctrlKey;this.held.delete(event.key);});
+    listen(window, 'blur', () => {this.shift=false;this.ctrl=false;this.held.clear();});
   }
 
   /** A zoom changes image coordinates, while the pointer keeps its position on the screen. */

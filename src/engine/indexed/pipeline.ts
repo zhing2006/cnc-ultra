@@ -6,7 +6,7 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, Loop, Discard, float, floor, int, ivec2, positionGeometry, screenCoordinate, select, storage, textureLoad,
-  uint, uniform, varying, vec4, instanceIndex, Break,
+  uint, uniform, varying, vec4, instanceIndex, Break, array,
 } from 'three/tsl';
 import type { AtlasRegion, IndexedImage } from './atlas.ts';
 import { composeFilters } from './filters.ts';
@@ -43,6 +43,8 @@ export interface Sprite {
   filter?: number;
   /** Sample the destination at the offset supplied by PaletteSetup.displacement. */
   displace?: boolean;
+  /** Use the optional source-indexed destination blend table. */
+  blend?: boolean;
 }
 
 export interface DisplacementInput {
@@ -72,6 +74,8 @@ export interface PaletteSetup {
   filters?: readonly Uint8Array[];
   /** Optional ordered filter used at most once along a pixel's contributors, after filters[]. */
   singleUseFilter?: Uint8Array;
+  /** First row selects a destination map per source index (255 means opaque); maps follow. */
+  indexedBlend?: Uint8Array;
   /** Game-supplied pixel offset shader, owned and disposed by this pipeline. */
   displacement?: { offset(input: DisplacementInput): Node<'ivec2'>; dispose(): void };
   dynamicSprites?: { maxWidth: number; maxHeight: number };
@@ -266,7 +270,7 @@ export class PalettePipeline {
       // A destination-dependent pixel marks the slow path. Later opaque pixels clear that mark.
       const isShadow = flatInfo.w.greaterThan(0.5).and(textureLoad(shadow, ivec2(source, 0)).r.greaterThan(0));
       const remapped = textureLoad(remaps, ivec2(source, int(flatInfo.z))).r;
-      return select(effect.x.greaterThan(0).or(effect.y.greaterThan(0)), vec4(0, 0, 1, 1),
+      return select(effect.x.greaterThan(0).or(effect.y.greaterThan(0)).or(effect.z.greaterThan(0)), vec4(0, 0, 1, 1),
         select(isShadow, vec4(0, 1 / 255, 0, 0), vec4(remapped, 0, 0, 1)));
     })();
     return material;
@@ -280,6 +284,8 @@ export class PalettePipeline {
     const maps = keep(dataTexture(composition.maps, 256, composition.count, RedFormat));
     const transitions = keep(dataTexture(composition.transitions, filters.length, composition.count, RedFormat));
     const singleFilter = this.setup.singleUseFilter && keep(dataTexture(this.setup.singleUseFilter, 256, 1, RedFormat));
+    const blendTable = this.setup.indexedBlend && keep(dataTexture(this.setup.indexedBlend, 256, this.setup.indexedBlend.length / 256, RedFormat));
+    const directFilters = blendTable && keep(dataTexture(Uint8Array.from(filters.flatMap(f => Array.from(f))), 256, filters.length, RedFormat));
     const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 3).toReadOnly();
     const staticEntry = (index: Node<'int'>) => int(textureLoad(this.lookup,
       ivec2(index.mod(LOOKUP_WIDTH), index.div(LOOKUP_WIDTH))).r);
@@ -358,6 +364,87 @@ export class PalettePipeline {
       });
       return resolved;
     });
+    // Trace destination-dependent contributors through displacement, then apply
+    // their maps back to front. Scratch is bounded; unusually deep pixels replay
+    // the trace in chunks instead of truncating contributors or growing buffers.
+    const resolveBlended = blendTable && Fn(([start]: [Node<'ivec2'>]) => {
+      const operations = array('int', 32).toVar() as unknown as {element(i:Node<'int'>):Node<'int'>};
+      const color = int(0).toVar(), total = int(0).toVar();
+      const trace = (skip: Node<'int'>, findBase: boolean) => {
+        const pixel = start.toVar(), limit = this.count.toVar(), count = int(0).toVar();
+        Loop(this.count.add(1), () => {
+          const local = pixel.sub(ivec2(this.origin));
+          If(local.x.lessThan(0).or(local.y.lessThan(0)).or(local.x.greaterThanEqual(int(this.size.x)))
+            .or(local.y.greaterThanEqual(int(this.size.y))), () => { if(findBase) color.assign(0); Break(); });
+          const bin = ivec2(floor(pixel.toVec2().div(BIN_SIZE))).toVar();
+          const found = int(-1).toVar(), source = int(0).toVar();
+          If(bin.x.greaterThanEqual(0).and(bin.y.greaterThanEqual(0))
+            .and(bin.x.lessThan(this.binColumns)).and(bin.y.lessThan(this.binRows)), () => {
+            const cell = bin.y.mul(this.binColumns).add(bin.x);
+            Loop({start:entry(cell),end:entry(cell.add(1)),type:'int'}, ({i}) => {
+              const id = spriteAt(i);
+              If(id.lessThan(limit).and(id.greaterThan(found)), () => {
+                const rect=instances.element(id.mul(3)), info=instances.element(id.mul(3).add(1));
+                const at=pixel.sub(ivec2(rect.xy));
+                If(at.x.greaterThanEqual(0).and(at.y.greaterThanEqual(0))
+                  .and(at.x.lessThan(int(rect.z))).and(at.y.lessThan(int(rect.w))), () => {
+                  const ink=loadIndex(atlas,int(info.x).add(at.x),int(info.y).add(at.y));
+                  If(ink.notEqual(0), () => {found.assign(id);source.assign(ink);});
+                });
+              });
+            });
+          });
+          If(found.lessThan(0), () => {
+            if(findBase) color.assign(loadIndex(this.tileTarget.texture,local.x,local.y));
+            Break();
+          });
+          limit.assign(found);
+          const rect=instances.element(found.mul(3)), info=instances.element(found.mul(3).add(1));
+          const effect=instances.element(found.mul(3).add(2));
+          const operation=int(-1).toVar();
+          If(effect.y.greaterThan(0), () => {
+            if(this.setup.displacement) pixel.addAssign(this.setup.displacement.offset({
+              local:pixel.sub(ivec2(rect.xy)),rect,atlas:info,origin:this.origin,size:this.size,time:this.time,frame:this.frame,
+            }));
+          }).Else(() => {
+            If(effect.z.greaterThan(0), () => {
+              const map=loadIndex(blendTable,source,int(0));
+              If(map.notEqual(255), () => {operation.assign(map.add(filters.length+1));});
+            }).ElseIf(effect.x.greaterThan(0), () => {operation.assign(int(effect.x).sub(1));})
+              .ElseIf(info.w.greaterThan(0.5).and(loadIndex(shadow,source,int(0)).notEqual(0)), () => {operation.assign(0);});
+            If(operation.lessThan(0), () => {
+              if(findBase) color.assign(loadIndex(remaps,source,int(info.z)));
+              Break();
+            });
+            If(count.greaterThanEqual(skip).and(count.lessThan(skip.add(32))), () => {
+              operations.element(count.sub(skip)).assign(operation);
+            });
+            count.addAssign(1);
+          });
+        });
+        if(findBase) total.assign(count);
+      };
+      trace(int(0),true);
+      const whiteUsed=int(0).toVar();
+      const apply=(length:Node<'int'>) => {
+        Loop({start:length.sub(1),end:int(0),condition:'>=',update:'--',type:'int'}, ({i}) => {
+          const op=operations.element(i);
+          If(op.lessThan(filters.length), () => {color.assign(loadIndex(directFilters!,color,op));})
+            .ElseIf(op.equal(filters.length), () => {
+              if(singleFilter) If(whiteUsed.equal(0), () => {
+                color.assign(loadIndex(singleFilter,color,int(0)));whiteUsed.assign(1);
+              });
+            }).Else(() => {color.assign(loadIndex(blendTable,color,op.sub(filters.length)));});
+        });
+      };
+      If(total.lessThanEqual(32), () => {apply(total);}).Else(() => {
+        Loop({start:total.sub(1).div(32),end:int(0),condition:'>=',update:'--',type:'int'}, ({i}) => {
+          trace(i.mul(32),false);
+          apply(select(total.sub(i.mul(32)).lessThan(32),total.sub(i.mul(32)),int(32)));
+        });
+      });
+      return color;
+    });
     material.fragmentNode = Fn(() => {
       const x = int(screenCoordinate.x);
       const y = int(screenCoordinate.y);
@@ -370,7 +457,7 @@ export class PalettePipeline {
           index.assign(loadIndex(shadow, index, int(1)));
         });
       });
-      If(sprite.b.greaterThan(0.5), () => { index.assign(resolve(ivec2(x, y).add(ivec2(this.origin)))); });
+      If(sprite.b.greaterThan(0.5), () => { index.assign((resolveBlended ?? resolve)(ivec2(x, y).add(ivec2(this.origin)))); });
       return vec4(float(index).div(255), 0, 0, 1);
     })();
     return material;
@@ -403,7 +490,7 @@ export class PalettePipeline {
       const { region } = sprite;
       const shadow = sprite.shadow ? 1 : 0;
       data.set([sprite.x, sprite.y, region.width, region.height, region.x, region.y, sprite.remap, shadow,
-        sprite.filter === undefined ? 0 : sprite.filter + 2, sprite.displace ? 1 : 0, 0, 0], (first + index) * 12);
+        sprite.filter === undefined ? 0 : sprite.filter + 2, sprite.displace ? 1 : 0, sprite.blend ? 1 : 0, 0], (first + index) * 12);
       this.worldSprites[first + index] = sprite;
     });
     if (sprites.length > 0) {
@@ -413,7 +500,7 @@ export class PalettePipeline {
     this.spriteGeometry.instanceCount = count;
     this.count.value = count;
     this.worldSprites.length = count;
-    if (this.setup.displacement || this.setup.filters?.length) this.indexSprites();
+    if (this.setup.displacement || this.setup.filters?.length || this.setup.indexedBlend) this.indexSprites();
   }
 
   private indexSprites() {

@@ -9,7 +9,7 @@ export interface UnitScenario {
   settleAt?: number;
 }
 interface Rectangle { x:number; y:number; width:number; height:number }
-interface PackedScenario extends UnitScenario { ids:number[] }
+interface PackedScenario extends UnitScenario { ids:number[]; mapCell(cell:number):number }
 interface World { setup:UnitsSetup; cases:PackedScenario[]; commands:UnitCommand[]; free:Rectangle[] }
 
 /** Independent rooms share a GPU program, with an impassable border between scenarios.
@@ -48,7 +48,7 @@ export function packUnitScenarios(scenarios:readonly UnitScenario[]) {
     }
     const first=world.setup.units.length,ids=scenario.setup.units.map((_,id)=>first+id);
     world.setup.units=[...world.setup.units,...scenario.setup.units.map(unit=>({...unit,cell:remap(unit.cell)}))];
-    world.cases.push({...scenario,ids});
+    world.cases.push({...scenario,ids,mapCell:remap});
     world.commands.push(...scenario.targets.map((target,id):UnitCommand=>({frame:1,kind:'move',target:remap(target),ids:[ids[id]]})));
   }
   return worlds;

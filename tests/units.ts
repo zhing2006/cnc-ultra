@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import { withApp,type Session } from './browser.ts';
+import { withInput, withApp,type Session } from './browser.ts';
 
 export async function checkUnits(session:Session){
-  await withApp(session,{},async page=>{
+  await withApp(session,{path:'/tests/fixture.html'},async page=>{
     page.setDefaultTimeout(15000);
     const measured=await page.evaluate(async()=> (await import('../tests/units-fixture.ts')).compareUnits());
     console.log(`M3 environment: Chromium ${session.browser.version()}, ${JSON.stringify(measured)}`);
     writeFileSync('test-results/m3-measurement.json',JSON.stringify({browser:session.browser.version(),...measured},null,2));
     await page.goto(`${session.baseUrl}/?demo=units`);
     await page.locator('canvas[data-status="running"]').waitFor({state:'attached'});
+    await withInput(session,page,async()=>{
     await page.evaluate(async()=>{
       const {GpuUnits}=await import('../src/game/simulation/units-gpu.ts');
       const {GpuSelection}=await import('../src/game/simulation/selection.ts');
@@ -63,5 +64,6 @@ export async function checkUnits(session:Session){
     await page.evaluate(()=>new Promise<void>(resolve=>setTimeout(resolve,180)));
     assert.equal(await page.locator('[data-tick]').textContent(),paused);
     await page.screenshot({path:'test-results/m3-units.png'});
+    });
   });
 }

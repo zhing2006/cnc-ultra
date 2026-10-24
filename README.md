@@ -2,53 +2,59 @@
 
 English | [中文](README_CN.md)
 
-C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with the original art and sound. The game simulation runs in WebGPU compute shaders, so battles can grow far beyond the original engine. A map in the original usually held a few dozen units; here, tens of thousands are meant to fight at once.
+C&C Ultra rebuilds Command & Conquer (1995) in the browser, using the original art, sound and game rules. The goal is to preserve the original feel while expanding battles to tens of thousands of units.
 
-The default page reads the original MIX files and shows GDI mission 8 (scg08eb): terrain, tiberium, walls, ground marks, trees, buildings, vehicles and infantry, with house colors and shadows. Water uses the original palette cycle. The view scrolls at the screen edge or with the arrow keys, and zooms in integer steps. Units and buildings remain still and cannot be selected yet.
+The current version lets you explore an original map, command vehicles and infantry, and try ground combat between GDI and Nod. Base building, full matches, campaigns and Ultra-scale battles are still in development. See the [milestone progress](docs/tasks/progress.md).
 
-## Requirements
+## Try it
 
-- A browser with WebGPU, such as a recent Chrome or Edge.
-- Node.js 24 or later, and pnpm.
-
-## Getting started
+Use a browser with WebGPU, such as a recent Chrome or Edge. To run locally, install Node.js 24 or later and pnpm, then run:
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-Then open http://127.0.0.1:5173 and click the view to let the game take the mouse; Esc gives it back.
+| Page | What to try |
+|---|---|
+| [Original map](http://127.0.0.1:5173/) | Explore GDI mission 8; units remain still. |
+| [Ground combat](http://127.0.0.1:5173/?demo=combat) | Command GDI against a Nod position. |
+| [Unit controls](http://127.0.0.1:5173/?demo=units) | Try selection, movement, groups and sight. |
+| [Simulation demo](http://127.0.0.1:5173/?demo=simulation) | Move a large group of tanks. |
+| [Asset gallery](http://127.0.0.1:5173/?preview=assets) | Browse the original units, buildings and terrain. |
 
-Use the mouse wheel to zoom around the pointer, or `+` / `-` to zoom around the center of the view. The initial scale fits the window height; manual zoom ranges from 1× to 16×.
+Pages show their progress while loading. Click the battlefield to capture the mouse. Left-click or drag to select units, then click ground to move or an enemy to attack. Shift-click adds or removes a unit; Ctrl+click forces an attack. Right-click clears the selection. Use the wheel to zoom and the screen edges to scroll.
 
-Press `Alt+Enter` to toggle fullscreen. This shortcut is not assigned by the original game's tactical controls. Page-initiated fullscreen enables Keyboard Lock for the original group and bookmark keys, so the browser can pass combinations such as `Ctrl+1` to the game. The browser's own fullscreen command (`F11`) does not enable Keyboard Lock. Esc remains available to release the pointer and leave fullscreen.
+## Keyboard shortcuts
 
-## Debug pages
+Unit commands apply to the unit-control and combat demos. Use Alt+Enter to enter fullscreen so the browser passes group and bookmark shortcuts to the game.
 
-Open http://127.0.0.1:5173/?preview=assets for the asset gallery. It tiles the units, buildings or terrain objects, with controls for house colors, facing, building damage and integer scale. Switch between Temperate and Desert to see their native artwork. The cloaking category shows all six visual stages with overlapping trees and buildings.
-
-Open http://127.0.0.1:5173/?demo=simulation for the GPU simulation test on scg08eb, with 320 movable tanks and five stationary tanks showing different cloaking stages. After capturing the pointer, click passable ground to move all movable tanks. Press Esc to use the panel's flow-field toggle, pause/resume and reset controls. The simulation pauses while the page is in the background. This M2 demo keeps the initial tank facings; use the unit-control test below for turning and animation.
-
-Open http://127.0.0.1:5173/?demo=units for the unit-control test, with 28 vehicles and 35 infantry on scg08eb. After capturing the pointer, left-click a unit or drag a selection box, then left-click ground to move the selection. Shift-click toggles a unit; right-click clears the selection. `Ctrl+1`–`Ctrl+9` records groups, a number recalls its group, `Shift+number` adds it to the selection, and `Alt+number` recalls and centers it. Use `Alt+Enter` for fullscreen keyboard capture. `N` selects and centers the next unit (`Shift+N` the previous one), `Home` centers the selection, `H` selects the MCV, `S` stops, and `X` scatters. The panel toggles the selected group's flow field and current sight overlay, pauses or resets the scene. Explored terrain stays revealed; selecting and ordering units plays their original voices.
+| Key | Action |
+|---|---|
+| `Esc` | Release the mouse; leave fullscreen. |
+| `Alt+Enter` | Toggle fullscreen. |
+| Arrow keys | Scroll the map. |
+| `+` / `-` | Zoom in / out. |
+| `Ctrl+1`–`Ctrl+9` | Save a group. |
+| `1`–`9` | Select a group. |
+| `Shift+1`–`Shift+9` | Add a group to the selection. |
+| `Alt+1`–`Alt+9` | Select a group and center the view on it. |
+| `N` / `Shift+N` | Select and center the next / previous unit. |
+| `Home` | Center the view on the selection. |
+| `H` | Select the MCV. |
+| `S` | Stop. |
+| `X` | Scatter. |
+| `Ctrl+F7`–`Ctrl+F10` | Save a view bookmark. |
+| `F7`–`F10` | Jump to a view bookmark. |
 
 ## Deployment
 
-`pnpm build` writes a static site to `dist/` that needs no backend and runs from any path. Serve it over HTTPS or from localhost, with the two headers the page needs for cross-origin isolation:
+Run `pnpm build` and serve `dist/` over HTTPS or localhost. Add a `data/` directory beside `index.html` containing `conquer.mix`, `temperat.mix`, `general.mix`, `cclocal.mix`, `sounds.mix` and `desert.mix` (for the asset gallery). MIX files are not included in the build.
 
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
+The server must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. Vite sets these for development and preview. Deployments containing the original assets are for internal use only.
 
-The build does not include the original game data. Put the MIX files the game reads in a `data/` directory next to `index.html`: `conquer.mix`, `temperat.mix`, `general.mix` and `cclocal.mix` from C&C Gold. The asset gallery also needs `desert.mix`; the unit-control test needs `sounds.mix`. The dev server serves `assets/dev/` at `data/`. The data belongs to Electronic Arts, so keep such a site on an internal network.
+## Game data and license
 
-## Game data and references
+Development uses the original game files in `assets/dev/`. See [game data and references](refs/README.md) for download instructions.
 
-The original art, audio and video are not in this repository, apart from a few MIX files in `assets/dev/` used for development and tests. `refs/fetch.ps1` on Windows or `refs/fetch.sh` elsewhere downloads the 2007 freeware release of C&C Gold and the reference source code into `refs/`; see [refs/README.md](refs/README.md).
-
-## License
-
-The code is licensed under GPL-3.0-or-later; see [LICENSE](LICENSE). Game rules will be ported from the original source code that Electronic Arts released under GPL v3 in 2025, and the ported code is also subject to the additional terms EA attached under section 7 of that license.
-
-Command & Conquer is a trademark of Electronic Arts Inc. This project is not affiliated with or endorsed by Electronic Arts. The original game's art, audio and video belong to Electronic Arts and are not covered by the GPL.
+Code is licensed under [GPL-3.0-or-later](LICENSE); code ported from EA's source is also subject to its additional terms. The original game art and audio belong to Electronic Arts and are not covered by the code license. Command & Conquer is an Electronic Arts trademark. This project is not affiliated with or endorsed by Electronic Arts.

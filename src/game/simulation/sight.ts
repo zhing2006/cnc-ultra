@@ -8,7 +8,7 @@ import { intMax, intMin } from '../../engine/simulation/integer-nodes.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { CARD_SHADOW, DIAG_SHADOW, SIGHT_COUNT, SIGHT_OFFSETS } from '../data/sight.ts';
 import { MOVEMENT } from '../data/movement.ts';
-import { WORDS, UX, UY, UOWNER, UTYPE } from './units-state.ts';
+import { WORDS, UX, UY, UOWNER, UTYPE, UHEALTH } from './units-state.ts';
 /** Ported from DISPLAY.CPP, Cell_Shadow. */
 export function cellShadow(mapped: Int32Array, width: number, height: number, cell: number) {
   const x = cell % width;
@@ -64,7 +64,7 @@ export class CpuSight {
     this.current.fill(0);
     for (let id = 0; id < this.previous.length; id++) {
       const at = id * WORDS;
-      if (units[at + UOWNER] !== 0)
+      if (units[at + UOWNER] !== 0 || units[at + UHEALTH] <= 0)
         continue;
       const radius = MOVEMENT[units[at + UTYPE]].sight;
       if (!radius || radius > 10)
@@ -94,7 +94,7 @@ export class GpuSight {
   readonly current: StorageBufferAttribute;
   readonly shadow: StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[] = [];
-  private readonly kernels: ComputeNode[];
+  readonly kernels: ComputeNode[];
   constructor(private readonly renderer: WebGPURenderer, readonly width: number, readonly height: number, units: StorageBufferAttribute) {
     const count = units.count / WORDS;
     const cells = width * height;
@@ -160,7 +160,7 @@ export class GpuSight {
       const x = u.element(at).div(int(256));
       const y = u.element(at.add(int(1))).div(int(256));
       const center = y.mul(int(width)).add(x);
-      If(u.element(at.add(int(UOWNER))).equal(int(0)).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+      If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
         const unexplored = int(0).toVar();
         Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
           const dx = table.element(o.mul(int(2)).add(int(offsetBase)));
@@ -197,7 +197,7 @@ export class GpuSight {
           const x = u.element(at).div(int(256));
           const y = u.element(at.add(int(1))).div(int(256));
           const center = y.mul(int(width)).add(x);
-          If(u.element(at.add(int(UOWNER))).equal(int(0)).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+          If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
             Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
               const dx = table.element(int(o).mul(int(2)).add(int(offsetBase)));
               const dy = table.element(int(o).mul(int(2)).add(int(offsetBase + 1)));

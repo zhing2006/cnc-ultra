@@ -1,7 +1,7 @@
 import type { Grid } from '../../engine/simulation/state.ts';
 import { MOVEMENT } from '../data/movement.ts';
 import { INFANTRY_SPOTS } from './map.ts';
-export const WORDS = 28;
+export const WORDS = 31;
 export const UX = 0;
 export const UY = 1;
 export const UCELL = 2;
@@ -30,6 +30,12 @@ export const USTARTED = 24;
 export const UROTATED = 25;
 export const UROUTE = 26;
 export const USTALLED = 27;
+/** DRIVE.CPP, Per_Cell_Process: position of this tick's vehicle overrun check. */
+export const UOVERRUN_CELL = 28;
+export const UOVERRUN_X = 29;
+export const UOVERRUN_Y = 30;
+/** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
+export const DIRECT_STEP = -2;
 export interface UnitPlacement {
   cell: number;
   type: number;
@@ -76,6 +82,7 @@ export function initialUnits(setup: UnitsSetup) {
     result[at + UOWNER] = placed.owner ?? 0;
     result[at + UMIDDLE] = -1;
     result[at + URETRIES] = 10;
+    result[at + UOVERRUN_CELL] = -1;
   });
   return result;
 }

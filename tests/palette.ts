@@ -47,7 +47,7 @@ async function composeInPage(): Promise<Composition> {
     { x: 18, y: 24, region: regions[1], remap: REMAP_NAMES.indexOf('yellow'), shadow: true },
   ];
 
-  // A renderer of its own on a small canvas, so that the app's view stays untouched.
+  // This composition fixture only needs a small offscreen renderer.
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'position: fixed; width: 16px; height: 16px';
   document.body.append(canvas);
@@ -113,8 +113,7 @@ async function composeInPage(): Promise<Composition> {
 }
 
 export function checkShadowComposition(session: Session) {
-  return withApp(session, {}, async (page) => {
-    await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
+  return withApp(session, {path:'/tests/fixture.html'}, async (page) => {
     const result = await page.evaluate(composeInPage);
     assert(result.shadowOnTerrain > 0, 'the scene should put shadow pixels on terrain');
     assert(result.shadowOnSprite > 0, 'the scene should put shadow pixels on the other tank');

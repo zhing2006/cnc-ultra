@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { withApp, type Session } from './browser.ts';
+import { withInput, withApp, type Session } from './browser.ts';
 import type { Page } from '@playwright/test';
 
 async function frames(page: Page, count = 8) {
@@ -11,10 +11,11 @@ async function frames(page: Page, count = 8) {
 
 
 export async function checkSimulation(session: Session) {
-  await withApp(session, {}, async page => {
+  await withApp(session, {path:'/tests/fixture.html'}, async page => {
     assert.deepEqual(await page.evaluate(async () => (await import('../tests/simulation-fixture.ts')).compareSimulation()), []);
     await page.goto(`${session.baseUrl}/?demo=simulation`);
     await page.locator('canvas[data-status="running"]').waitFor({state:'attached'});
+    await withInput(session,page,async()=>{
     await page.getByRole('button', {name:'Flow field', exact:true}).click();
     assert.equal(await page.getByRole('button', {name:'Flow field', exact:true}).getAttribute('aria-pressed'), 'true');
     const destination = await page.evaluate(async () => {
@@ -86,5 +87,6 @@ export async function checkSimulation(session: Session) {
       return adapter && {vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description};
     });
     console.log(`Simulation environment: Chromium ${session.browser.version()}, ${JSON.stringify(adapter)}`);
+    });
   });
 }

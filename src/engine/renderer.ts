@@ -18,6 +18,12 @@ export interface RendererOptions {
 /** Thrown by createRenderer when the GPU device is lost before the renderer has started. */
 export class DeviceLostError extends Error {}
 
+/** Startup only: wait until submitted preparation and the first frame have reached the GPU. */
+export async function finishGpuSetup(renderer: WebGPURenderer) {
+  const backend = renderer.backend as unknown as { device: GPUDevice };
+  await backend.device.queue.onSubmittedWorkDone();
+}
+
 /**
  * Starts a WebGPU renderer on the canvas. Resolves to null when the browser has no WebGPU. Rejects
  * with DeviceLostError when the device is lost while starting, and with the original error when

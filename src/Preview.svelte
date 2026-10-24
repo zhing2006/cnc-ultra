@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { createRenderer, type Renderer } from './engine/renderer.ts';
+  import Loading from './Loading.svelte';
+  import { onMount, tick } from 'svelte';
+  import { createRenderer, finishGpuSetup, type Renderer } from './engine/renderer.ts';
   import { PalettePipeline } from './engine/indexed/pipeline.ts';
   import { loadData } from './game/data-files.ts';
   import type { MixSet } from './game/formats/mix.ts';
@@ -12,6 +13,7 @@
   let renderer = $state.raw<Renderer | null>(null);
   let mix = $state.raw<MixSet | null>(null);
   let error = $state('');
+  let loadingMessage = $state('Checking graphics support');
   let group = $state<PreviewSettings['group']>('units');
   let theater = $state<PreviewSettings['theater']>('TEMPERATE');
   let house = $state('GoodGuy');
@@ -32,7 +34,10 @@
       owned = created;
       if (disposed) { created?.dispose(); return; }
       if (!created) { error = 'This preview requires WebGPU.'; return; }
+      loadingMessage = 'Loading game files';
       const data = await loadData(true);
+      loadingMessage = 'Preparing the asset preview';
+      await tick();
       if (disposed) { created.dispose(); return; }
       renderer = created;
       mix = data;
@@ -45,6 +50,7 @@
     if (!active || !mix) return;
     const settings = { group, theater, house, facing, buildingState, cloak };
     let pipeline: PalettePipeline | undefined;
+    let cancelled = false, drawn = false;
     try {
       const gallery = buildPreview(mix, settings);
       ({ width, height, stride, entries } = gallery);
@@ -58,16 +64,24 @@
         if (palette.update(time - start)) pipeline!.setPalette(palette.colors);
         pipeline!.setTime(time - start);
         pipeline!.render({ x: 0, y: 0, width: gallery.width, height: gallery.height }, scale);
+        if (!drawn) {
+          drawn = true;
+          void finishGpuSetup(active.three).then(
+            () => { if (!cancelled) ready = true; },
+            reason => { if (!cancelled) error = String(reason); },
+          );
+        }
       });
-      ready = true;
       error = '';
     } catch (reason) {
       error = String(reason);
       ready = false;
     }
-    return () => { active.setFrame(null); pipeline?.dispose(); };
+    return () => { cancelled = true; active.setFrame(null); pipeline?.dispose(); };
   });
 </script>
+
+{#if !ready && !error}<Loading message={loadingMessage} />{/if}
 
 <main>
   <header>

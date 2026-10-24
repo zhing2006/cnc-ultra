@@ -9,6 +9,8 @@ import { checkShadowComposition } from './palette.ts';
 import { checkDeviceLossRestart, checkNoWebGLFallback } from './renderer.ts';
 import { checkOriginalVisuals } from './visuals.ts';
 import { checkSimulation } from './simulation.ts';
+import { checkCombat } from './combat.ts';
+import { checkSelectionReady } from './startup.ts';
 import { checkUnits } from './units.ts';
 
 const started = performance.now();
@@ -51,6 +53,8 @@ try {
   const session: Session = { browser, baseUrl: `http://127.0.0.1:${address.port}` };
 
   const checks: [string, (session: Session) => Promise<void>][] = [
+    ['loading stages and selection ready before first input', checkSelectionReady],
+    ['ground combat, deterministic impacts and survivors', checkCombat],
     ['original unit movement, multiple targets, sight and controls', checkUnits],
     ['integer CPU/GPU simulation, contention and deterministic replay', checkSimulation],
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],

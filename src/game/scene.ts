@@ -86,7 +86,7 @@ interface Drawn {
 }
 
 /** Builds an original scenario, or a supplied static scenario for the asset preview. */
-export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakStage | ReadonlyMap<number, CloakStage> = 'normal', animated = false): GameScene {
+export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakStage | ReadonlyMap<number, CloakStage> = 'normal', animated = false, extraShapes: readonly string[] = []): GameScene {
   const scenario = typeof source === 'string'
     ? readScenario(new TextDecoder('latin1').decode(mix.require(`${source}.INI`)), mix.require(`${source}.BIN`))
     : source;
@@ -133,6 +133,12 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
       const shape = loader.read(`${name}.SHP`);
       frameIds.set(name, shape.frames.map((_, i) => loader(`${name}.SHP`, i).image));
     }
+    for (const name of extraShapes) {
+      const file = mix.get(`${name}.SHP`) ? `${name}.SHP` : `${name}.${theater.suffix}`;
+      if (!mix.get(file)) continue;
+      const shape = loader.read(file);
+      frameIds.set(name, shape.frames.map((_, i) => loader(file, i).image));
+    }
     for (let i = 0; i < mouse.length; i++) mouseIds.push(images.add(`MOUSE.SHP:${i}`, () => mouse[i]));
     const shroud = loader.read('SHADOW.SHP');
     for (let i = 0; i < shroud.frames.length; i++) shroudIds.push(loader('SHADOW.SHP', i).image);
@@ -155,6 +161,7 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
       mouse: mouseIds.map(i => regions[i]), shroud: shroudIds.map(i => regions[i]) } : undefined,
     setup: {
       palette, shadowSources, shadowTable, remaps, tiles: terrain(mix, scenario, theater.suffix), spriteAtlas: atlas,
+      indexedBlend: extraShapes.length ? mix.require(`${theater.suffix[0]}TRANS.MRF`) : undefined,
       filters: [specialGhost(mix.require(`${theater.root}.PAL`))],
       singleUseFilter: animated ? mix.require(`${theater.suffix[0]}WHITE.MRF`).slice(256,512) : undefined,
       displacement: sprites.some(sprite => sprite.displace) ? cloakDisplacement(atlas) : undefined,

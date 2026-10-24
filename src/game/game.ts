@@ -1,5 +1,6 @@
 import { PalettePipeline } from '../engine/indexed/pipeline.ts';
-import type { Renderer } from '../engine/renderer.ts';
+import { finishGpuSetup, type Renderer, type FrameCallback } from '../engine/renderer.ts';
+import { Vector2 } from 'three/webgpu';
 import { CELL_LEPTONS, CELL_PIXELS, leptonToPixel, pixelToLepton } from './coord.ts';
 import { loadData } from './data-files.ts';
 import { ORIGINAL_MAP_SIZE } from './formats/scenario.ts';
@@ -23,6 +24,10 @@ import { GpuSight } from './simulation/sight.ts';
 import { GpuSelection, type SelectionCommand } from './simulation/selection.ts';
 import { UnitsView } from './simulation/units-view.ts';
 import { UnitVoices } from './voices.ts';
+import { GpuCombat } from './simulation/combat-gpu.ts';
+import { combatScene } from './simulation/combat-scene.ts';
+import { CombatView, combatExtraSprites } from './simulation/combat-view.ts';
+import { CombatAudio } from './simulation/combat-audio.ts';
 import { MOVEMENT } from './data/movement.ts';
 
 /** The default scenario: GDI mission 8, map B. */
@@ -44,37 +49,52 @@ export interface Game {
 export interface GameOptions {
   simulation?: boolean;
   units?: boolean;
+  combat?: boolean;
+  onProgress?: (message: string) => void | Promise<void>;
   onStats?: (frame: number, checksum: string) => void;
 }
 
 /** Loads the original data and shows scg08eb on the renderer's canvas. */
 export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, options: GameOptions = {}): Promise<Game> {
-  const data = await loadData(false, options.units);
-  const unitDemo = options.units ? unitsScene(data) : undefined;
+  await options.onProgress?.('Loading game files');
+  const data = await loadData(false, options.units || options.combat);
+  await options.onProgress?.('Building the battlefield');
+  const battleDemo = options.combat ? combatScene(data) : undefined;
+  const unitDemo = battleDemo ?? (options.units ? unitsScene(data) : undefined);
   const demo = options.simulation ? simulationScene(data) : undefined;
   const scene = unitDemo?.scene ?? demo?.scene ?? buildScene(data, SCENARIO);
+  await options.onProgress?.('Preparing units and controls');
+  const battle = battleDemo && new GpuCombat(renderer.three, battleDemo.setup);
   const simulation = demo && new GpuSimulation(renderer.three, demo.setup);
-  const units = unitDemo && new GpuUnits(renderer.three, unitDemo.setup);
-  const active = units ?? simulation;
-  const sight = units && new GpuSight(renderer.three, units.setup.grid.width, units.setup.grid.height, units.units);
-  const selection = units && sight && new GpuSelection(renderer.three, units, sight);
-  const unitView = units && sight && selection && new UnitsView(renderer.three,units,sight,selection,scene,data);
+  const units = battle?.movement ?? (unitDemo && new GpuUnits(renderer.three, unitDemo.setup));
+  const active = battle ?? units ?? simulation;
+  const sight = battle?.sight ?? (units && new GpuSight(renderer.three, units.setup.grid.width, units.setup.grid.height, units.units));
+  const selection = units && sight && new GpuSelection(renderer.three, units, sight, !!battle);
+  await selection?.prepare();
+  await options.onProgress?.('Preparing graphics and sound');
+  const unitView = units && sight && selection && new UnitsView(renderer.three,units,sight,selection,scene,data,!!battle);
+  const combatAudio = battle && new CombatAudio(renderer.three, battle, data);
   const voices = units && new UnitVoices(data);
   const layout = unitDemo ? groundLayout(scene, initialUnits(unitDemo.setup), WORDS, true) : demo && groundLayout(scene, unitState(demo.setup));
   const flow = simulation && flowOverlay(simulation);
-  const spriteSize = scene.sprites.reduce((size, sprite) => ({
+  const spriteSize = [...scene.sprites, ...[...(scene.animation?.frames.values() ?? [])].flat().map(region => ({region}))].reduce((size, sprite) => ({
     maxWidth: Math.max(size.maxWidth, sprite.region.width), maxHeight: Math.max(size.maxHeight, sprite.region.height),
   }), {maxWidth:1,maxHeight:1});
-  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: (layout?.count ?? scene.sprites.length) + 1,
+  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: (layout?.count ?? scene.sprites.length) + 1 + (battle ? combatExtraSprites(battle.setup,scene) : 0),
     ...(layout && { dynamicSprites: spriteSize, overlay: unitView?.draw ?? flow!.draw }),
     ...(unitView && { indexEffect: unitView.indexEffect }) });
   const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, unitDemo ? scene : undefined,
     selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined);
+  const combatView = battle && ground && battleDemo && new CombatView(renderer.three, battle, ground, pipeline, scene, battleDemo.decalStart);
   const checksum = active && ground && new GpuChecksum(renderer.three,
-    [...active.buffers(), ...(units ? [] : [ground.order.order]), ...(sight ? [sight.mapped] : [])]);
+    [...active.buffers(), ...(units ? [] : [ground.order.order]), ...(sight && !battle ? [sight.mapped] : [])]);
+  // Compile the periodic diagnostic before play, alongside the first selection.
+  await checksum?.read();
   const clock = new SimulationClock(LOGIC_HZ);
   const readback = new DelayedReadback<Uint32Array>();
   let paused = false, target: number | undefined, digest = '';
+  let shakeUntil = 0;
+  if (combatAudio) combatAudio.onShake = () => { shakeUntil=performance.now()+100; };
   const visibility = () => { clock.pause(); };
   document.addEventListener('visibilitychange', visibility);
   const { scenario } = scene;
@@ -107,16 +127,16 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
     y: Math.max(0, Math.floor((view.height - scenario.height * CELL_PIXELS) / 2)),
   });
   const unitActions: UnitInput | undefined = unitView && selection ? {
-    gesture() { voices?.unlock(); },
+    gesture() { voices?.unlock(); combatAudio?.unlock(); },
     down(position,button) {
       if (button === 2) { bandStart = null; act({action:'clear'}); }
       if (button === 0) { const origin=viewOrigin();bandStart={x:position.x+origin.x,y:position.y+origin.y}; }
     },
-    up(position,button,shift) {
+    up(position,button,shift,ctrl) {
       if (button !== 0 || !bandStart) return;
       const origin=viewOrigin(),x=position.x+origin.x,y=position.y+origin.y;
       if(Math.abs(x-bandStart.x)>4 || Math.abs(y-bandStart.y)>4) act({action:'box',x:pixelToLepton(bandStart.x),y:pixelToLepton(bandStart.y),x2:pixelToLepton(x),y2:pixelToLepton(y)});
-      else act({action:'point',x:pixelToLepton(x),y:pixelToLepton(y),modifier:shift?1:0});
+      else act({action:'point',x:pixelToLepton(x),y:pixelToLepton(y),modifier:ctrl?2:shift?1:0});
       bandStart=null;
     },
     key(event) {
@@ -171,7 +191,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
   // The original-map viewer uploads static sprites once; the demo writes them on the GPU.
   if (!active) pipeline.setSprites(scene.sprites);
 
-  renderer.setFrame((width, height, time) => {
+  const drawFrame: FrameCallback = (width, height, time) => {
     renderFrame++;
     bufferWidth = width;
     bufferHeight = height;
@@ -194,10 +214,12 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
       // rendered with the order computed from the previous tick's positions.
       ground.sort();
-      if (units) { units.step(); sight!.step(); }
+      if (battle) battle.step();
+      else if (units) { units.step(); sight!.step(); }
       else simulation!.step(target === undefined ? [] : [{ frame: simulation!.frame + 1, target }]);
       target = undefined;
-      ground.updateSprites();
+      ground.updateSprites(); combatView?.update();
+      combatAudio?.update(scroller.x, scroller.y, pixelToLepton(view.width), pixelToLepton(view.height));
       if (active.frame % 15 === 0 && checksum) readback.request(active.frame, () => checksum.read());
       const completed = readback.take(active.frame);
       if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
@@ -220,7 +242,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       const {value}=responses.shift()!;
       if(value[0]>=0 && unitDemo){
         const placed=unitDemo.setup.units[value[0]],type=MOVEMENT[placed.type];
-        if(value[2]) voices?.play(type.name,!!type.infantry,type.infantry?value[0]-scene.scenario.units.length:value[0],value[2]===2,active!.frame);
+        if(value[2]) voices?.play(type.name,!!type.infantry,type.infantry?value[0]-scene.scenario.units.length:value[0],value[2],active!.frame);
         if(value[7]) scroller.setPosition(Math.floor((value[3]+value[5])/2)-pixelToLepton(view.width/2),Math.floor((value[4]+value[6])/2)-pixelToLepton(view.height/2));
       }
     }
@@ -232,7 +254,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
     if(unitView){
       unitView.pointer.value.set(input.mouse?x+input.mouse.x:-1,input.mouse?y+input.mouse.y:-1);
       unitView.time.value=Math.floor(time-startTime);
-      unitView.shift.value=input.shift?1:0;
+      unitView.shift.value=input.shift?1:0;unitView.ctrl.value=input.ctrl?1:0;
       const pointerIndex=scene.cursors.scroll.indexOf(cursor),blockedIndex=scene.cursors.blocked.indexOf(cursor);
       unitView.cursor.value=pointerIndex>=0?pointerIndex+1:blockedIndex>=0?blockedIndex+130:-1;
       if(bandStart && input.mouse && (Math.abs(x+input.mouse.x-bandStart.x)>4 || Math.abs(y+input.mouse.y-bandStart.y)>4))
@@ -241,8 +263,17 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       unitView.update();pipeline.setOverlay(null);
     }else pipeline.setOverlay(mouse || null);
     pipeline.setTime(time - startTime);
+    // UNIT.CPP Take_Damage requests three shakes. The visual offset is local UI state.
+    canvas.style.transform=time<shakeUntil?`translateY(${Math.ceil((shakeUntil-time)*60/1000)%2?2:-2}px)`:'';
     pipeline.render({ x, y, width: viewWidth, height: viewHeight }, scale);
-  });
+  };
+
+  await options.onProgress?.('Drawing the battlefield');
+  const size = renderer.three.getDrawingBufferSize(new Vector2());
+  drawFrame(size.x, size.y, performance.now());
+  await finishGpuSetup(renderer.three);
+  clock.pause();
+  renderer.setFrame(drawFrame);
 
   return {
     setFlow(enabled) { if (flow) flow.enabled.value = enabled ? 1 : 0; if(unitView) unitView.flow.value=enabled?1:0; },
@@ -256,7 +287,8 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       checksum?.dispose();
       ground?.dispose();
       simulation?.dispose();
-      units?.dispose();sight?.dispose();selection?.dispose();unitView?.dispose();voices?.dispose();
+      canvas.style.transform='';combatView?.dispose();combatAudio?.dispose();battle?.dispose();
+      if (!battle) { units?.dispose(); sight?.dispose(); } selection?.dispose();unitView?.dispose();voices?.dispose();
       pipeline.dispose();
     },
   };

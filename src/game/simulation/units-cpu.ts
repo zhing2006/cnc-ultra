@@ -4,6 +4,7 @@ import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { checksum, randomWord } from '../../engine/simulation/fixed.ts';
 import { desiredFacing256, dirFacing, distance, movePoint } from '../coord.ts';
 import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { combatTypes } from '../data/combat.ts';
 import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
 import { INFANTRY_SPOTS } from './map.ts';
 import { entryPoint, entrySpot, freeSpot } from './infantry-spots.ts';
@@ -36,11 +37,14 @@ export class CpuUnits {
   ] {
     return [cell % this.setup.grid.width * 256 + INFANTRY_SPOTS[slot][0], Math.floor(cell / this.setup.grid.width) * 256 + INFANTRY_SPOTS[slot][1]];
   }
-  private occupy() {
+  occupy() {
     this.occupancy.fill(0);
     const u = this.units;
-    for (let id = 0; id < this.goals.length; id++) {
+    // UNIT.CPP, Can_Enter_Cell: a vehicle reserving a crushable cell still blocks
+    // another vehicle. Keep its reservation even while enemy infantry remain alive.
+    for (const infantry of [true, false]) for (let id = 0; id < this.goals.length; id++) {
       const at = id * S.WORDS;
+      if (u[at + S.UHEALTH] <= 0 || !!u[at + S.UKIND] !== infantry) continue;
       for (const offset of [S.UCELL, S.UDEST, S.UMIDDLE]) {
         // INFANTRY.CPP, Start_Driver releases the old spot when reserving headto.
         if (offset === S.UCELL && u[at + S.UKIND] && u[at + S.UDEST] >= 0) continue;
@@ -60,7 +64,10 @@ export class CpuUnits {
     let mask = 0;
     for (let slot = 0; slot < 5; slot++) {
       const owner = this.occupancy[cell * 5 + slot];
-      if (!owner || owner === id + 1)
+      const other = (owner - 1) * S.WORDS;
+      const crushable = owner > 0 && combatTypes[this.units[at + S.UTYPE]].crusher &&
+        this.units[other + S.UKIND] && this.units[other + S.UOWNER] !== this.units[at + S.UOWNER];
+      if (!owner || owner === id + 1 || crushable)
         mask |= 1 << slot;
     }
     return infantry ? freeSpot(mask, entrySpot(this.units[at], this.units[at + 1], ...this.point(cell)), randomWord(this.setup.seed, this.frame, id, 2) % 4) : mask === 31 ? 0 : -1;
@@ -71,6 +78,12 @@ export class CpuUnits {
   private next(cell: number, goal: number) {
     const field = goal < 0 ? -1 : this.flow.lookup[goal];
     return field < 0 || !this.flow.fields[field * FIELD_WORDS + 1] ? -1 : this.flow.next[field * this.setup.grid.edges.length + cell];
+  }
+  private overrun(at: number) {
+    if (this.units[at + S.UKIND]) return;
+    this.units[at + S.UOVERRUN_CELL] = Math.floor(this.units[at + 1] / 256) * this.setup.grid.width + Math.floor(this.units[at] / 256);
+    this.units[at + S.UOVERRUN_X] = this.units[at];
+    this.units[at + S.UOVERRUN_Y] = this.units[at + 1];
   }
   /** Ported from DRIVE.CPP, Smooth_Turn and While_Moving; INFANTRY.CPP, AI. */
   private advance(id: number, addSpeed = true) {
@@ -85,7 +98,7 @@ export class CpuUnits {
         this.arrive(id);
       else {
         const dir = desiredFacing256(u[at], u[at + 1], u[at + S.UHEAD_X], u[at + S.UHEAD_Y]);
-        [u[at], u[at + 1]] = movePoint(u[at], u[at + 1], dir, (type.speed * 255 + 128) >> 8);
+        [u[at], u[at + 1]] = movePoint(u[at], u[at + 1], dir, (type.speed * (u[at + S.USPEED] || 255) + 128) >> 8);
       }
       return;
     }
@@ -123,6 +136,7 @@ export class CpuUnits {
       if (step === RAW_TRACKS[control[0]][2]) {
         // DRIVE.CPP, While_Moving / Per_Cell_Process(false): release the cell behind the curve.
         u[at + S.UCELL] = Math.floor(u[at + 1] / 256) * this.setup.grid.width + Math.floor(u[at] / 256);
+        this.overrun(at);
       }
       // Ported from DRIVE.CPP, While_Moving: reserve the next cell before changing tracks.
       if (step === RAW_TRACKS[control[0]][0]) {
@@ -147,6 +161,7 @@ export class CpuUnits {
     u[at] = u[at + S.UHEAD_X];
     u[at + 1] = u[at + S.UHEAD_Y];
     u[at + S.UCELL] = u[at + S.UDEST];
+    this.overrun(at);
     u[at + S.USLOT] = u[at + S.UDSLOT];
     u[at + S.UDEST] = -1;
     u[at + S.UMIDDLE] = -1;
@@ -157,14 +172,14 @@ export class CpuUnits {
       this.goals[id] = -1;
     if (this.pathGoals[id] === u[at + S.UCELL]) this.pathGoals[id] = -1;
   }
-  private scatter(id: number) {
+  scatter(id: number, facing?: number) {
     const at = id * S.WORDS;
     const cell = this.units[at + S.UCELL];
-    let start = dirFacing(this.units[at + S.UFACE]);
+    let start = facing ?? dirFacing(this.units[at + S.UFACE]);
     if (this.units[at + S.UKIND]) {
       const x = this.units[at] % 256;
       const y = this.units[at + 1] % 256;
-      if (x !== 128 || y !== 128)
+      if (facing === undefined && (x !== 128 || y !== 128))
         start = dirFacing(desiredFacing256(128, 128, x, y));
       start = (start + randomWord(this.setup.seed, this.frame, id, 1) % 5 + 6) & 7;
     }
@@ -192,7 +207,7 @@ export class CpuUnits {
     this.frame++;
     for (let id = 0; id < this.goals.length; id++) {
       if (this.goals[id] < 0) this.pathGoals[id] = -1;
-      else if (this.pathGoals[id] < 0) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
+      else if (this.pathGoals[id] === -1) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
     }
     this.flow.step(this.pathGoals);
     const u = this.units;
@@ -201,6 +216,7 @@ export class CpuUnits {
     for (let id = 0; id < this.goals.length; id++) {
       const at = id * S.WORDS;
       const type = MOVEMENT[u[at + S.UTYPE]];
+      u[at + S.UOVERRUN_CELL] = -1;
       u[at + S.UJUMP] = -1;
       u[at + S.UJUMP_TRACK] = -1;
       if (u[at + S.UWAIT] > 0)
@@ -232,6 +248,7 @@ export class CpuUnits {
       const at = id * S.WORDS;
       const goal = this.goals[id];
       const type = MOVEMENT[u[at + S.UTYPE]];
+      if (u[at + S.UHEALTH] <= 0) continue;
       if (u[at + S.UJUMP] >= 0) {
         const cell = u[at + S.UJUMP];
         if (this.free(cell, id) >= 0) {
@@ -244,8 +261,9 @@ export class CpuUnits {
       if (goal < 0 || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
         continue;
       const field = this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
-      if (field < 0 || !this.flow.fields[field * FIELD_WORDS + 1]) continue;
-      let cell = u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id]);
+      const direct=this.pathGoals[id]===S.DIRECT_STEP;
+      if (!direct && (field < 0 || !this.flow.fields[field * FIELD_WORDS + 1])) continue;
+      let cell = direct ? goal : u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id]);
       if (cell < 0) {
         if (field >= 0 && this.flow.fields[field * FIELD_WORDS + 1])
           this.failedPath(id);
@@ -443,7 +461,7 @@ export class CpuUnits {
       for (let id = 0; id < this.goals.length; id++)
         if (command.ids.includes(id)) {
           const at = id * S.WORDS;
-          if (u[at + S.UOWNER] !== 0)
+          if (u[at + S.UOWNER] !== 0 || u[at + S.UHEALTH] <= 0)
             continue;
           if (command.kind === 'scatter')
             this.scatter(id);
