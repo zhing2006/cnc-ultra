@@ -16,7 +16,7 @@ import { GpuSelection } from '../src/game/simulation/selection.ts';
 import { verifyCombatComposition } from './combat-composition.ts';
 import { verifyCombatAudio } from './combat-audio.ts';
 import { combatHotspots } from './combat-performance.ts';
-export async function compareCombat() {
+export async function compareCombat(beforePerformance: () => Promise<void> = () => Promise.resolve()) {
   const renderer = new WebGPURenderer();
   await renderer.init();
   try {
@@ -101,6 +101,7 @@ export async function compareCombat() {
       device: GPUDevice;
     };
     const gpuMs: number[] = [];
+    await beforePerformance();
     let hotspots:Awaited<ReturnType<typeof combatHotspots>>|undefined;
     if (backend.device.features.has('timestamp-query')) {
       const large: CombatSetup = { grid: gridEdges(256, 256, new Uint8Array(256 * 256).fill(1), true), land: new Uint8Array(256 * 256), seed: 0x1995,

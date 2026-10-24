@@ -11,11 +11,14 @@ The constitutions in `docs/` set the product scope and the technical, design and
 - `pnpm check`: type-check TypeScript and Svelte with svelte-check.
 - `pnpm test`: run the unit tests (Vitest), `src/**/*.test.ts`.
 - `pnpm test:e2e`: run the browser checks with `tests/run.ts`. It starts Vite in-process on a free port, launches one full Chromium, which has WebGPU in new headless mode, and runs the checks side by side. Install Chromium once with `pnpm exec playwright install chromium`.
+- `pnpm test:acceptance`: run the same browser checks on NVIDIA and AMD in turn, sharing one Vite server. It discovers Windows adapters at run time and verifies the actual WebGPU vendor. Reports and screenshots are saved separately under `test-results/nvidia/` and `test-results/amd/`.
 - `pnpm build`: type-check, then build into `dist/`.
 - `refs/fetch.ps1` on Windows, `refs/fetch.sh` elsewhere: download the game data and the reference source code into `refs/`.
 - `node refs/export-png.ts`: export OpenRA's decoding of the original shapes and templates into `refs/openra-png/` and write their digests to `tests/reference/openra.txt`, which the format tests compare against. It builds OpenRA first if needed, which takes the .NET SDK.
 
 Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2e`, and report what each one printed, failures included.
+
+At the end of every milestone, run `pnpm test:acceptance` in place of the single-GPU `pnpm test:e2e` run. Both NVIDIA and AMD must pass the functional and CPU/GPU determinism checks. Record both GPUs, driver versions, browser version and measured GPU costs in that milestone's task file. A missing AMD adapter or an unverified GPU selection is an incomplete acceptance run, not a pass. The product constitution's 60 FPS budget still targets the specified NVIDIA development GPU; AMD measurements must not be presented as full-frame performance unless rendering was measured too.
 
 ## Stack
 

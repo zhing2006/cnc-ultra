@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import type { Browser, Page } from '@playwright/test';
+import type { GpuEnvironment } from './gpu.ts';
 
 export interface Session {
   browser: Browser;
   baseUrl: string;
+  gpu?: GpuEnvironment;
+  /** Performance samples wait until other checks stop using the GPU. */
+  performanceReady?: Promise<void>;
 }
 
 export interface AppOptions {

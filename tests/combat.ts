@@ -3,8 +3,10 @@ import { writeFileSync } from 'node:fs';
 export async function checkCombat(session: Session) {
   await withApp(session, {path:'/tests/fixture.html'}, async (page) => {
     page.setDefaultTimeout(30000);
-    const measured = await page.evaluate(async () => (await import('../tests/combat-fixture.ts')).compareCombat());
-    writeFileSync('test-results/m4-measurement.json', JSON.stringify({ browser: session.browser.version(), ...measured }, null, 2));
+    await page.exposeFunction('waitForGpuBenchmarks', () => session.performanceReady ?? Promise.resolve());
+    const measured = await page.evaluate(async () => (await import('../tests/combat-fixture.ts')).compareCombat(
+      () => (window as unknown as { waitForGpuBenchmarks(): Promise<void> }).waitForGpuBenchmarks()));
+    writeFileSync('test-results/m4-measurement.json', JSON.stringify({ browser: session.browser.version(), gpu: session.gpu, ...measured }, null, 2));
     console.log(`M4 environment: Chromium ${session.browser.version()}, ${JSON.stringify(measured)}`);
     await page.goto(`${session.baseUrl}/?demo=combat`);
     await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
