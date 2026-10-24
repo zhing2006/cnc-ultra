@@ -43,6 +43,8 @@
 
 OpenRA 的 `OpenRA.Mods.Cnc/FileFormats/AudReader.cs`：AUD 格式，只用来对照。
 
+单位的语音和音效在 `sounds.mix` 里，开工时把 `refs/cnc-gold/gdi/sounds.mix` 加进 `assets/dev/`。
+
 ## 验收标准
 
 - 同一辆车在空地上走同一段直路，用的逻辑帧数和按原版数值算出来的一样。（自动测试）
@@ -50,7 +52,3 @@ OpenRA 的 `OpenRA.Mods.Cnc/FileFormats/AudReader.cs`：AUD 格式，只用来�
 - 一个单位揭开的格子，和按 `MapClass::Sight_From` 的规则算出来的相同。（自动测试）
 - AUD 的解码结果和 OpenRA 解出来的采样相同。（自动测试）
 - 点选、框选、下命令的方式和光标的变化都和原版一致，单位接到命令会回话。（试玩检查）
-
-## 待定问题
-
-- 单位的语音和音效在 `sounds.mix` 里，不在 `assets/dev/` 的三个 MIX 里。AUD 的测试要用 `sounds.mix` 的话，得把它加进 `assets/dev/`，入库之前要先经过同意。

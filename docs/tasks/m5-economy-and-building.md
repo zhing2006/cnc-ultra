@@ -39,6 +39,8 @@
 - `SIDEBAR.CPP` 和 `RADAR.CPP`：侧边栏和雷达。
 - `AUDIO.CPP` 的 `Speak`：EVA 的语音。
 
+EVA 的语音在 `speech.mix` 里，开工时把 `refs/cnc-gold/openra/speech.mix` 加进 `assets/dev/`。光盘上的 `speech.mix` 装在 InstallShield 的安装包里，所以这个文件取自 OpenRA 的素材包（`refs/README.md`）。
+
 ## 验收标准
 
 - 从一辆 MCV 开局，展开、造电厂和精炼厂、采矿、造兵，每一样东西的价格和建造时间都和原版的数值一致。（自动测试）
@@ -46,7 +48,3 @@
 - 泰伯利亚矿的生长和蔓延，在很多个逻辑帧里统计出来的比例符合原版的规则和概率。（自动测试）
 - 打开矿区密度的透视层，能看到每一格的矿量。（试玩检查）
 - 侧边栏、雷达和 EVA 的提示都和原版一致。（试玩检查）
-
-## 待定问题
-
-- EVA 的语音在 `speech.mix` 里，不在 `assets/dev/` 的三个 MIX 里。测试如果要用到，得把它加进 `assets/dev/`，入库之前要先经过同意。
