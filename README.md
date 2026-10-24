@@ -24,13 +24,6 @@ Then open http://127.0.0.1:5173.
 
 The original art, audio and video are not in this repository, apart from a few MIX files in `assets/dev/` used for development and tests. `refs/fetch.ps1` on Windows or `refs/fetch.sh` elsewhere downloads the 2007 freeware release of C&C Gold and the reference source code into `refs/`; see [refs/README.md](refs/README.md).
 
-## Documents
-
-The documents are in Chinese.
-
-- [Constitution](docs/constitution/README.md): the product scope and the technical, design and testing principles.
-- [Writing guide](docs/writing.md)
-
 ## License
 
 The code is licensed under GPL-3.0-or-later; see [LICENSE](LICENSE). Game rules will be ported from the original source code that Electronic Arts released under GPL v3 in 2025, and the ported code is also subject to the additional terms EA attached under section 7 of that license.

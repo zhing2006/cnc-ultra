@@ -24,11 +24,6 @@ pnpm dev
 
 仓库里没有原版的美术、音效和视频，只有 `assets/dev/` 里开发和测试要用的几个 MIX 文件。在 Windows 上运行 `refs/fetch.ps1`，在其他系统上运行 `refs/fetch.sh`，就会把 2007 年发布的 C&C Gold 免费版和参考源码下载到 `refs/`，详见 [refs/README.md](refs/README.md)。
 
-## 文档
-
-- [项目宪法](docs/constitution/README.md)：产品范围，以及技术、设计和测试原则。
-- [中文写作规范](docs/writing.md)
-
 ## 许可证
 
 代码采用 GPL-3.0-or-later，见 [LICENSE](LICENSE)。游戏规则将从 Electronic Arts 在 2025 年以 GPL v3 公开的原版源码移植过来，移植的代码还要遵守 EA 在该许可证第 7 条下附加的条款。
