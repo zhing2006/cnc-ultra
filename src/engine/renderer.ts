@@ -1,9 +1,12 @@
-import { Color, OrthographicCamera, Scene, WebGPURenderer } from 'three/webgpu';
+import { LinearSRGBColorSpace, NoToneMapping, Vector2, WebGPURenderer } from 'three/webgpu';
 
-// Windows 10/11 accent blue: a placeholder until the game draws something.
-const BACKGROUND = 0x0078d4;
+/** Draws one frame. width and height are the canvas size in device pixels. */
+export type FrameCallback = (width: number, height: number, time: number) => void;
 
 export interface Renderer {
+  readonly three: WebGPURenderer;
+  /** Sets what to draw on every animation frame, or null to draw nothing. */
+  setFrame(frame: FrameCallback | null): void;
   dispose(): void;
 }
 
@@ -51,9 +54,11 @@ export async function createRenderer(canvas: HTMLCanvasElement, options: Rendere
     throw new DeviceLostError(starting.lostMessage);
   }
 
-  const scene = new Scene();
-  scene.background = new Color(BACKGROUND);
-  const camera = new OrthographicCamera();
+  // Colors leave the shaders as they are: palette colors are already what the screen should show, so
+  // no color space conversion or tone mapping may touch them.
+  renderer.outputColorSpace = LinearSRGBColorSpace;
+  renderer.toneMapping = NoToneMapping;
+  renderer.setClearColor(0x000000, 0);
 
   const resize = () => {
     renderer.setPixelRatio(window.devicePixelRatio);
@@ -77,7 +82,18 @@ export async function createRenderer(canvas: HTMLCanvasElement, options: Rendere
     options.onDeviceLost(message);
   };
 
-  renderer.setAnimationLoop(() => renderer.render(scene, camera));
+  let frame: FrameCallback | null = null;
+  const drawingBuffer = new Vector2();
+  renderer.setAnimationLoop((time) => {
+    const size = renderer.getDrawingBufferSize(drawingBuffer);
+    frame?.(size.x, size.y, time);
+  });
 
-  return { dispose: stop };
+  return {
+    three: renderer,
+    setFrame(callback) {
+      frame = callback;
+    },
+    dispose: stop,
+  };
 }
