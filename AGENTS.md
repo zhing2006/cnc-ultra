@@ -34,7 +34,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 ## Rules
 
 - Comments and output messages in code, scripts and config files are in English, as are this file and `REVIEW.md`. `README.md` is in English and `README_CN.md` in Chinese; keep the two in sync, each with a language switch at the top. Other docs are in Chinese.
-- Game rules are ported from EA's original source in `refs/`, cross-checked against the Nyerguds fork. OpenRA and Vanilla Conquer are references for file formats and for cross-checking; do not copy their code.
+- Game rules are ported from EA's original source in `refs/`, cross-checked against the Nyerguds fork. Parts the 1995 original lacks, such as a computer opponent that builds a base, may be ported from the 2020 remaster's source in `refs/`; they still use the 1995 rules and values. OpenRA and Vanilla Conquer are references for file formats and for cross-checking; do not copy their code.
 - Ported code carries a comment naming the original file and function, such as `// Ported from UNIT.CPP, UnitClass::AI`.
 - Simulation state is integer fixed-point and deterministic. No floating point in simulation state or in decisions made from it; rendering may use floats. The details are in the technical constitution.
 - The game needs no backend: it builds to a static site with relative asset paths. The page is cross-origin isolated (`vite.config.ts` sets COOP and COEP), so it can only load resources from other origins that send CORP or CORS headers; do not add external resources.
