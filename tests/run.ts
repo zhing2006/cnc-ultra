@@ -8,6 +8,7 @@ import type { Session } from './browser.ts';
 import { checkShadowComposition } from './palette.ts';
 import { checkDeviceLossRestart, checkNoWebGLFallback } from './renderer.ts';
 import { checkOriginalVisuals } from './visuals.ts';
+import { checkSimulation } from './simulation.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -49,6 +50,7 @@ try {
   const session: Session = { browser, baseUrl: `http://127.0.0.1:${address.port}` };
 
   const checks: [string, (session: Session) => Promise<void>][] = [
+    ['integer CPU/GPU simulation, contention and deterministic replay', checkSimulation],
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],
     ['restart after the GPU device is lost while starting and while running', checkDeviceLossRestart],
     ['shadows and house colors compose like drawing each sprite in turn', checkShadowComposition],

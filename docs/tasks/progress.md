@@ -4,7 +4,7 @@
 |---|---|
 | [里程碑 0：调色板管线](m0-palette-pipeline.md) | 完成 |
 | [里程碑 1：原版画面](m1-original-visuals.md) | 完成 |
-| [里程碑 2：GPU 模拟框架](m2-gpu-simulation.md) | 未开始 |
+| [里程碑 2：GPU 模拟框架](m2-gpu-simulation.md) | 完成 |
 | [里程碑 3：单位和操作](m3-units-and-controls.md) | 未开始 |
 | [里程碑 4：战斗](m4-combat.md) | 未开始 |
 | [里程碑 5：经济和建造](m5-economy-and-building.md) | 未开始 |

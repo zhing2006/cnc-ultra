@@ -4,7 +4,7 @@ English | [中文](README_CN.md)
 
 C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with the original art and sound. The game simulation runs in WebGPU compute shaders, so battles can grow far beyond the original engine. A map in the original usually held a few dozen units; here, tens of thousands are meant to fight at once.
 
-The page reads the original MIX files and shows GDI mission 8 (scg08eb): terrain, tiberium, walls, ground marks, trees, buildings, vehicles and infantry, with house colors and shadows. Water uses the original palette cycle. The view scrolls at the screen edge or with the arrow keys, and zooms in integer steps. Units and buildings remain still and cannot be selected yet.
+The default page reads the original MIX files and shows GDI mission 8 (scg08eb): terrain, tiberium, walls, ground marks, trees, buildings, vehicles and infantry, with house colors and shadows. Water uses the original palette cycle. The view scrolls at the screen edge or with the arrow keys, and zooms in integer steps. Units and buildings remain still and cannot be selected yet.
 
 ## Requirements
 
@@ -22,7 +22,11 @@ Then open http://127.0.0.1:5173 and click the view to let the game take the mous
 
 Use the mouse wheel to zoom around the pointer, or `+` / `-` to zoom around the center of the view. The initial scale fits the window height; manual zoom ranges from 1× to 16×.
 
+## Debug pages
+
 Open http://127.0.0.1:5173/?preview=assets for the asset gallery. It tiles the units, buildings or terrain objects, with controls for house colors, facing, building damage and integer scale. Switch between Temperate and Desert to see their native artwork. The cloaking category shows all six visual stages with overlapping trees and buildings.
+
+Open http://127.0.0.1:5173/?demo=simulation for the GPU simulation test on scg08eb, with 320 movable tanks and five stationary tanks showing different cloaking stages. After capturing the pointer, click passable ground to move all movable tanks. Press Esc to use the panel's flow-field toggle, pause/resume and reset controls. The simulation pauses while the page is in the background. Tanks keep their initial facing; turning and animation are planned for M3.
 
 ## Deployment
 

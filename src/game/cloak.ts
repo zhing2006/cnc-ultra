@@ -65,7 +65,7 @@ export function cloakDisplacement(atlas: IndexedImage) {
   texture.minFilter = texture.magFilter = NearestFilter;
   texture.generateMipmaps = false;
   texture.needsUpdate = true;
-  const offset = ({ local, rect, atlas: info, origin, size, time }: DisplacementInput) => Fn(() => {
+  const offset = ({ local, rect, atlas: info, origin, size, time, frame }: DisplacementInput) => Fn(() => {
     const corner = ivec2(info.xy);
     const first = ivec2(max(origin.sub(rect.xy), 0));
     const right = int(min(rect.z, origin.x.add(size.x).sub(rect.x)));
@@ -73,13 +73,12 @@ export function cloakDisplacement(atlas: IndexedImage) {
     const rank = sum(right, local.y).sub(sum(first.x, local.y)).sub(sum(right, first.y)).add(sum(first.x, first.y))
       .add(sum(local.x, local.y.add(1))).sub(sum(first.x, local.y.add(1)))
       .sub(sum(local.x, local.y)).add(sum(first.x, local.y));
-    const phase = int(time.div(1000).mul(15)).mod(8);
+    const phase = select(frame.greaterThanEqual(0), frame, int(time.div(1000).mul(15))).mod(8);
     const index = phase.add(rank).mod(8);
     const positive = array([int(1), int(3), int(2), int(5), int(2), int(3), int(4), int(1)]);
     const negative = array([int(-1), int(-3), int(-2), int(-5), int(-2), int(-4), int(-3), int(-1)]);
-    // A preview phase is not the total logic Frame. The original's Frame == 0 startup exception
-    // must use that real frame counter when simulation is connected, not a phase wrapping to zero.
-    const reversed = rect.x.add(floor(rect.z.div(2))).sub(origin.x).greaterThan(size.x.div(2));
+    // CONQUER.CPP negates Frame on the right. Negating zero cannot select the negative table.
+    const reversed = frame.notEqual(0).and(rect.x.add(floor(rect.z.div(2))).sub(origin.x).greaterThan(size.x.div(2)));
     return ivec2(select(reversed, negative.element(index), positive.element(index)), select(reversed, int(1), int(0)));
   })();
   return { offset, dispose: () => texture.dispose() };

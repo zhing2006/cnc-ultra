@@ -8,6 +8,14 @@ import { buildScene, type CursorImage } from './scene.ts';
 import { Scroller } from './scroll.ts';
 import { PaletteCycle } from './palette-cycle.ts';
 import { initialZoom, MAX_ZOOM, zoomOrigin } from './zoom.ts';
+import { SimulationClock, DelayedReadback } from '../engine/simulation/clock.ts';
+import { GpuSimulation } from '../engine/simulation/gpu.ts';
+import { GpuChecksum } from '../engine/simulation/checksum.ts';
+import { unitState } from '../engine/simulation/state.ts';
+import { simulationScene } from './simulation/scene.ts';
+import { GpuGround, groundLayout } from './simulation/ground.ts';
+import { flowOverlay } from './simulation/overlay.ts';
+import { LOGIC_HZ } from './simulation/map.ts';
 
 /** The default scenario: GDI mission 8, map B. */
 const SCENARIO = 'SCG08EB';
@@ -20,12 +28,35 @@ const MAX_STEPS = 6;
 
 export interface Game {
   dispose(): void;
+  setFlow(enabled: boolean): void;
+  setPaused(paused: boolean): void;
+}
+
+export interface GameOptions {
+  simulation?: boolean;
+  onStats?: (frame: number, checksum: string) => void;
 }
 
 /** Loads the original data and shows scg08eb on the renderer's canvas. */
-export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement): Promise<Game> {
-  const scene = buildScene(await loadData(), SCENARIO);
-  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: scene.sprites.length + 1 });
+export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, options: GameOptions = {}): Promise<Game> {
+  const data = await loadData();
+  const demo = options.simulation ? simulationScene(data) : undefined;
+  const scene = demo?.scene ?? buildScene(data, SCENARIO);
+  const simulation = demo && new GpuSimulation(renderer.three, demo.setup);
+  const layout = demo && groundLayout(scene, unitState(demo.setup));
+  const flow = simulation && flowOverlay(simulation);
+  const spriteSize = scene.sprites.reduce((size, sprite) => ({
+    maxWidth: Math.max(size.maxWidth, sprite.region.width), maxHeight: Math.max(size.maxHeight, sprite.region.height),
+  }), {maxWidth:1,maxHeight:1});
+  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: (layout?.count ?? scene.sprites.length) + 1,
+    ...(layout && { dynamicSprites: spriteSize, overlay: flow!.draw }) });
+  const ground = simulation && layout && new GpuGround(renderer.three, simulation, pipeline, layout);
+  const checksum = simulation && ground && new GpuChecksum(renderer.three, [...simulation.buffers(), ground.order.order]);
+  const clock = new SimulationClock(LOGIC_HZ);
+  const readback = new DelayedReadback<Uint32Array>();
+  let paused = false, target: number | undefined, digest = '';
+  const visibility = () => { clock.pause(); };
+  document.addEventListener('visibilitychange', visibility);
   const { scenario } = scene;
   const scroller = new Scroller(scenario);
   const palette = new PaletteCycle(scene.setup.palette);
@@ -73,14 +104,20 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement): 
     resize();
     const inset = padding();
     scroller.setPosition(pixelToLepton(x + inset.x), pixelToLepton(y + inset.y));
+  }, (position) => {
+    if (!demo) return;
+    const origin = viewOrigin(), x = Math.floor((position.x + origin.x) / CELL_PIXELS), y = Math.floor((position.y + origin.y) / CELL_PIXELS);
+    if (x >= 0 && y >= 0 && x < demo.setup.grid.width && y < demo.setup.grid.height && demo.passable[y * demo.setup.grid.width + x]) {
+      target = y * demo.setup.grid.width + x;
+    }
   });
 
   let started = false;
   let lastTick = 0;
   let startTime = 0;
   let cursor: CursorImage = scene.cursors.normal;
-  // Nothing on the map moves yet, so its sprites go up once and each frame rewrites only the mouse.
-  pipeline.setSprites(scene.sprites);
+  // The original-map viewer uploads static sprites once; the demo writes them on the GPU.
+  if (!simulation) pipeline.setSprites(scene.sprites);
 
   renderer.setFrame((width, height, time) => {
     bufferWidth = width;
@@ -99,6 +136,19 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement): 
     }
 
     if (palette.update(time - startTime)) pipeline.setPalette(palette.colors);
+
+    if (simulation && ground && !paused && !document.hidden) clock.advance(time, () => {
+      // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
+      // rendered with the order computed from the previous tick's positions.
+      ground.sort();
+      simulation.step(target === undefined ? [] : [{ frame: simulation.frame + 1, target }]);
+      target = undefined;
+      ground.updateSprites();
+      if (simulation.frame % 15 === 0 && checksum) readback.request(simulation.frame, () => checksum.read());
+      const completed = readback.take(simulation.frame);
+      if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
+      options.onStats?.(simulation.frame, digest);
+    });
 
     for (let steps = 0; time - lastTick >= TICK; steps++) {
       if (steps === MAX_STEPS) {
@@ -123,9 +173,15 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement): 
   });
 
   return {
+    setFlow(enabled) { if (flow) flow.enabled.value = enabled ? 1 : 0; },
+    setPaused(value) { paused = value; clock.pause(); },
     dispose() {
       renderer.setFrame(null);
       input.dispose();
+      document.removeEventListener('visibilitychange', visibility);
+      checksum?.dispose();
+      ground?.dispose();
+      simulation?.dispose();
       pipeline.dispose();
     },
   };

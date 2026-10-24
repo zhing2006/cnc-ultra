@@ -46,7 +46,7 @@ export interface GameScene {
   /** Cell graphics followed by objects in the order the original draws them. */
   sprites: Sprite[];
   /** Object draw ranges, also used to inspect their ordering in rendering checks. */
-  objects: { key: string; first: number; count: number }[];
+  objects: { key: string; first: number; count: number; sortX: number; sortY: number }[];
   cursors: { normal: CursorImage; scroll: CursorImage[]; blocked: CursorImage[] };
   /** The remap row for images drawn without remapping, such as the mouse pointer. */
   plainRemap: number;
@@ -134,7 +134,7 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
   const objects = ordered.map(({ object }) => {
     const first = sprites.length;
     sprites.push(...object.sprites.map(convert));
-    return { key: object.key, first, count: object.sprites.length };
+    return { key: object.key, first, count: object.sprites.length, sortX: object.sortX, sortY: object.sortY };
   });
 
   return {

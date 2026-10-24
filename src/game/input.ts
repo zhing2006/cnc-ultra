@@ -53,7 +53,8 @@ export class GameInput {
    * whether to record the view instead of jumping to it.
    */
   constructor(canvas: HTMLCanvasElement, view: () => ViewSize, onBookmark: (index: number, record: boolean) => void,
-    onZoom: (step: number, anchor: { x: number; y: number }) => void) {
+    onZoom: (step: number, anchor: { x: number; y: number }) => void,
+    onMove?: (position: { x: number; y: number }) => void) {
     this.canvas = canvas;
     this.view = view;
     const listen = <E extends Event>(target: EventTarget, type: string, listener: (event: E) => void) => {
@@ -69,6 +70,7 @@ export class GameInput {
         return;
       }
       if (event.button === 2) this.rightButton = true;
+      if (event.button === 0 && this.mouse) onMove?.(this.mouse);
     });
     listen<MouseEvent>(window, 'mouseup', (event) => {
       if (event.button === 2) this.rightButton = false;

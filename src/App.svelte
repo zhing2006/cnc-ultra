@@ -6,6 +6,8 @@
   import Preview from './Preview.svelte';
 
   const preview = new URLSearchParams(location.search).get('preview') === 'assets';
+  const simulation = new URLSearchParams(location.search).get('demo') === 'simulation';
+  let flow = $state(false), paused = $state(false), frame = $state(0), digest = $state('');
 
   type Status = 'starting' | 'running' | 'unsupported' | 'nodata' | 'failed' | 'lost';
 
@@ -40,12 +42,15 @@
         status = 'unsupported';
         return;
       }
-      const started = await startGame(created, canvas);
+      const started = await startGame(created, canvas, { simulation,
+        onStats: (value, checksum) => { frame = value; digest = checksum; } });
       if (unmounted || renderer !== created) {
         started.dispose();
         return;
       }
       game = started;
+      game.setFlow(flow);
+      game.setPaused(paused);
       status = 'running';
     } catch (error) {
       if (error instanceof DeviceLostError) {
@@ -77,6 +82,21 @@
   <canvas bind:this={canvas} data-status={status}></canvas>
 {/if}
 
+{#if simulation && !preview && status === 'running'}
+  <aside class="simulation-controls" aria-label="Simulation demo">
+    <strong>GPU simulation · 320 tanks</strong>
+    <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
+    <div class="controls">
+      <button type="button" aria-pressed={flow} onclick={() => { flow = !flow; game?.setFlow(flow); }}>Flow field</button>
+      <button type="button" aria-pressed={paused} onclick={() => { paused = !paused; game?.setPaused(paused); }}>{paused ? 'Resume' : 'Pause'}</button>
+      <a href="?demo=simulation">Reset</a>
+      <a href="?">Original map</a>
+    </div>
+    <div>Tick <span data-tick={frame}>{frame}</span> · 15 ticks/s · pauses in the background</div>
+    {#if digest}<code title="Asynchronous simulation checksum">{digest}</code>{/if}
+  </aside>
+{/if}
+
 {#if status === 'unsupported'}
   <p class="notice">This browser does not support WebGPU. Open the page in a recent Chrome or Edge.</p>
 {:else if status === 'nodata'}
@@ -93,6 +113,23 @@
 {/if}
 
 <style>
+  .simulation-controls {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    max-width: 420px;
+    padding: 12px 16px;
+    background: #101b25ed;
+    border: 1px solid #527184;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .controls { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .controls button { cursor: pointer; padding: 4px 8px; }
+  .controls button[aria-pressed='true'] { background: #82ddd8; }
+  .controls a { color: #a8e2ff; }
+  code { color: #9cbdc9; font-size: 10px; }
   canvas {
     display: block;
     width: 100%;

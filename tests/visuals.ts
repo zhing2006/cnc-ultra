@@ -102,9 +102,11 @@ async function gameView() {
 
 async function checkCamera(page: Page) {
   // The shared page is 720 pixels high, so starts at 1x. Continue with keyboard zoom and screenshots.
+  // Startup can finish before the first animation frame has initialized the camera scale.
+  await page.evaluate(gameView);
   for (const scale of [2, 3]) {
     await page.keyboard.press('=');
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    assert.equal((await page.evaluate(gameView)).scale, scale);
     const png = (await page.screenshot()).toString('base64');
     const blocks = await page.evaluate(nearestBlocks, { png, scale });
     assert.equal(blocks.mismatches, 0, `every ${scale}x block must be a single original pixel`);

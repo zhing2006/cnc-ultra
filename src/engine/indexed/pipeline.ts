@@ -10,6 +10,8 @@ import {
 } from 'three/tsl';
 import type { AtlasRegion, IndexedImage } from './atlas.ts';
 import { composeFilters } from './filters.ts';
+import { BIN_SIZE, GpuSpatialIndex } from './spatial-index.ts';
+import { releaseStorage } from '../simulation/resources.ts';
 
 /** The tile value for a cell that draws palette index 0. */
 export const NO_TILE = 0xffffffff;
@@ -50,6 +52,8 @@ export interface DisplacementInput {
   origin: Node<'vec2'>;
   size: Node<'vec2'>;
   time: Node<'float'>;
+  /** Negative in time-driven asset previews; otherwise the actual simulation tick. */
+  frame: Node<'int'>;
 }
 
 export interface PaletteSetup {
@@ -68,6 +72,9 @@ export interface PaletteSetup {
   filters?: readonly Uint8Array[];
   /** Game-supplied pixel offset shader, owned and disposed by this pipeline. */
   displacement?: { offset(input: DisplacementInput): Node<'ivec2'>; dispose(): void };
+  dynamicSprites?: { maxWidth: number; maxHeight: number };
+  /** Optional diagnostic overlay in world pixel coordinates, applied after palette lookup. */
+  overlay?: (pixel: Node<'vec2'>, color: Node<'vec4'>) => Node<'vec4'>;
 }
 
 /** The part of the world the view shows: top-left in world pixels and size in image pixels. */
@@ -80,7 +87,6 @@ export interface View {
 
 // A sprite pixel can lie under this many shadows at most before more are ignored.
 const MAX_SHADOWS = 4;
-const BIN_SIZE = 64;
 const LOOKUP_WIDTH = 1024;
 
 function indexTexture(image: IndexedImage): DataTexture {
@@ -130,6 +136,7 @@ export class PalettePipeline {
   private readonly size = uniform(new Vector2(1, 1));
   private readonly scale = uniform(1);
   private readonly textures: DataTexture[] = [];
+  private readonly buffers: StorageBufferAttribute[] = [];
   private readonly instances: StorageBufferAttribute;
   private readonly spriteGeometry = new InstancedBufferGeometry();
   private readonly spriteMesh: Mesh;
@@ -141,12 +148,17 @@ export class PalettePipeline {
   private readonly renderer: WebGPURenderer;
   private readonly palette: DataTexture;
   private readonly time = uniform(0);
+  private readonly frame = uniform(-1, 'int');
   private readonly count = uniform(0, 'int');
   private readonly lookup: DataTexture;
   private readonly binColumns: number;
   private readonly binRows: number;
   private readonly worldSprites: Sprite[] = [];
   private readonly setup: PaletteSetup;
+  private readonly spatial?: GpuSpatialIndex;
+  private dynamicCount = 0;
+
+  get spriteBuffer() { return this.instances; }
 
   constructor(renderer: WebGPURenderer, setup: PaletteSetup) {
     this.renderer = renderer;
@@ -176,6 +188,9 @@ export class PalettePipeline {
     // Three vec4 per sprite: rectangle; atlas position, remap, shadow; filter and displacement flags.
     this.capacity = setup.spriteCapacity;
     this.instances = new StorageBufferAttribute(new Float32Array(Math.max(1, this.capacity) * 12), 4);
+    this.buffers.push(this.instances);
+    if (setup.dynamicSprites) this.spatial = new GpuSpatialIndex(renderer, this.instances, this.capacity,
+      this.binColumns, this.binRows, setup.dynamicSprites.maxWidth, setup.dynamicSprites.maxHeight);
     const corners = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
     this.spriteGeometry.setAttribute('position', new BufferAttribute(corners, 3));
     this.spriteGeometry.setIndex([0, 2, 1, 2, 3, 1]);
@@ -188,7 +203,9 @@ export class PalettePipeline {
   }
 
   private tileMaterial(tiles: TileMap, atlas: DataTexture) {
-    const cells = storage(new StorageBufferAttribute(tiles.cells, 1), 'uint', tiles.cells.length).toReadOnly();
+    const attribute = new StorageBufferAttribute(tiles.cells, 1);
+    this.buffers.push(attribute);
+    const cells = storage(attribute, 'uint', tiles.cells.length).toReadOnly();
     const perRow = Math.floor(tiles.atlas.width / tiles.tileSize);
     const material = new MeshBasicNodeMaterial();
     material.fragmentNode = Fn(() => {
@@ -259,8 +276,12 @@ export class PalettePipeline {
     const maps = keep(dataTexture(composition.maps, 256, composition.count, RedFormat));
     const transitions = keep(dataTexture(composition.transitions, filters.length, composition.count, RedFormat));
     const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 3).toReadOnly();
-    const entry = (index: Node<'int'>) => int(textureLoad(this.lookup,
+    const staticEntry = (index: Node<'int'>) => int(textureLoad(this.lookup,
       ivec2(index.mod(LOOKUP_WIDTH), index.div(LOOKUP_WIDTH))).r);
+    const offsets = this.spatial && storage(this.spatial.offsets, 'uint', this.spatial.offsets.count).toReadOnly();
+    const items = this.spatial && storage(this.spatial.items, 'uint', this.spatial.items.count).toReadOnly();
+    const entry = (index: Node<'int'>) => offsets ? int(offsets.element(index)) : staticEntry(index);
+    const spriteAt = (index: Node<'int'>) => items ? int(items.element(index)) : staticEntry(index);
     // Only bins touched by a displacement/filter are visited. Each bin lists its sprites in draw
     // order. Following a displacement lowers the order limit, so foreground objects cannot leak in.
     const resolve = Fn(([start]: [Node<'ivec2'>]) => {
@@ -281,15 +302,18 @@ export class PalettePipeline {
           .and(bin.x.lessThan(this.binColumns)).and(bin.y.lessThan(this.binRows)), () => {
           const cell = bin.y.mul(this.binColumns).add(bin.x);
           Loop({ start: entry(cell.add(1)).sub(1), end: entry(cell), condition: '>=', update: '--', type: 'int' }, ({ i }) => {
-            const id = entry(i);
-            If(id.lessThan(limit), () => {
+            const id = spriteAt(i);
+            If(id.lessThan(limit).and(id.greaterThan(found)), () => {
               const rect = instances.element(id.mul(3));
               const info = instances.element(id.mul(3).add(1));
               const local = pixel.sub(ivec2(rect.xy));
               If(local.x.greaterThanEqual(0).and(local.y.greaterThanEqual(0))
                 .and(local.x.lessThan(int(rect.z))).and(local.y.lessThan(int(rect.w))), () => {
                 const index = loadIndex(atlas, int(info.x).add(local.x), int(info.y).add(local.y));
-                If(index.notEqual(0), () => { found.assign(id); source.assign(index); Break(); });
+                If(index.notEqual(0), () => {
+                  found.assign(id); source.assign(index);
+                  if (!this.spatial) Break();
+                });
               });
             });
           });
@@ -306,7 +330,7 @@ export class PalettePipeline {
         const filter = int(effect.x).sub(1).toVar();
         If(effect.y.greaterThan(0), () => {
           if (this.setup.displacement) pixel.addAssign(this.setup.displacement.offset({
-            local: pixel.sub(ivec2(rect.xy)), rect, atlas: info, origin: this.origin, size: this.size, time: this.time,
+            local: pixel.sub(ivec2(rect.xy)), rect, atlas: info, origin: this.origin, size: this.size, time: this.time, frame: this.frame,
           }));
         }).Else(() => {
           If(filter.lessThan(0).and(info.w.greaterThan(0.5))
@@ -344,7 +368,8 @@ export class PalettePipeline {
     material.fragmentNode = Fn(() => {
       const pixel = floor(screenCoordinate.xy.div(this.scale));
       const index = loadIndex(this.indexTarget.texture, int(pixel.x), int(pixel.y));
-      return vec4(textureLoad(palette, ivec2(index, 0)).rgb, 1);
+      const color = vec4(textureLoad(palette, ivec2(index, 0)).rgb, 1);
+      return this.setup.overlay ? this.setup.overlay(pixel.add(this.origin), color) : color;
     })();
     return material;
   }
@@ -398,7 +423,7 @@ export class PalettePipeline {
 
   /** A final screen overlay does not participate in destination lookups behind world sprites. */
   setOverlay(sprite: Sprite | null) {
-    const first = this.worldSprites.length;
+    const first = this.spatial ? this.dynamicCount : this.worldSprites.length;
     if (first + (sprite ? 1 : 0) > this.capacity) throw new Error('no capacity for the overlay');
     this.spriteGeometry.instanceCount = first + (sprite ? 1 : 0);
     if (!sprite) return;
@@ -409,6 +434,16 @@ export class PalettePipeline {
   }
 
   setTime(time: number) { this.time.value = time; }
+
+  setFrame(frame: number) { this.frame.value = frame; }
+
+  /** Call after compute has written the draw list, once per simulation tick. */
+  updateGpuSprites(count: number) {
+    if (!this.spatial || count > this.capacity) throw new Error('Invalid dynamic sprite count');
+    this.dynamicCount = count; this.count.value = count;
+    this.spriteGeometry.instanceCount = count;
+    this.spatial.rebuild(count);
+  }
 
   /** Draws the index image of the view, without presenting it. */
   private drawIndices(view: View) {
@@ -453,6 +488,7 @@ export class PalettePipeline {
   }
 
   dispose() {
+    this.spatial?.dispose();
     this.setup.displacement?.dispose();
     for (const texture of this.textures) texture.dispose();
     for (const target of [this.tileTarget, this.spriteTarget, this.indexTarget]) target.dispose();
@@ -460,5 +496,6 @@ export class PalettePipeline {
       (mesh.material as MeshBasicNodeMaterial).dispose();
     }
     this.spriteGeometry.dispose();
+    releaseStorage(this.renderer, this.buffers);
   }
 }
