@@ -1,8 +1,17 @@
+import { fullscreenControls } from './fullscreen.ts';
+
 /** The size of the view in image pixels and how many device pixels each image pixel covers. */
 export interface ViewSize {
   width: number;
   height: number;
   scale: number;
+}
+export interface UnitInput {
+  gesture(): void;
+  down(position: {x:number;y:number},button:number,shift:boolean): void;
+  up(position: {x:number;y:number},button:number,shift:boolean): void;
+  key(event: KeyboardEvent): boolean;
+  release(): void;
 }
 
 /** Arrow key to x and y step. */
@@ -37,9 +46,11 @@ const ZOOM_WHEEL_DISTANCE = 240;
  * article 3). Esc releases the lock, as the browser decides.
  */
 export class GameInput {
+  private readonly fullscreen = fullscreenControls();
   /** The pointer position in image pixels while the pointer is locked, otherwise null. */
   mouse: { x: number; y: number } | null = null;
   rightButton = false;
+  shift = false;
   private exactX = 0;
   private exactY = 0;
   private lockedAt = 0;
@@ -54,7 +65,7 @@ export class GameInput {
    */
   constructor(canvas: HTMLCanvasElement, view: () => ViewSize, onBookmark: (index: number, record: boolean) => void,
     onZoom: (step: number, anchor: { x: number; y: number }) => void,
-    onMove?: (position: { x: number; y: number }) => void) {
+    onMove?: (position: { x: number; y: number }) => void, actions?: UnitInput) {
     this.canvas = canvas;
     this.view = view;
     const listen = <E extends Event>(target: EventTarget, type: string, listener: (event: E) => void) => {
@@ -63,6 +74,7 @@ export class GameInput {
     };
 
     listen<MouseEvent>(canvas, 'mousedown', (event) => {
+      actions?.gesture();
       if (document.pointerLockElement !== canvas) {
         this.place(event.offsetX, event.offsetY);
         // A rejected request, for example while the browser still holds a recent release, changes nothing.
@@ -71,8 +83,10 @@ export class GameInput {
       }
       if (event.button === 2) this.rightButton = true;
       if (event.button === 0 && this.mouse) onMove?.(this.mouse);
+      if (this.mouse) actions?.down(this.mouse,event.button,event.shiftKey);
     });
     listen<MouseEvent>(window, 'mouseup', (event) => {
+      if (document.pointerLockElement === canvas && this.mouse) actions?.up(this.mouse,event.button,event.shiftKey);
       if (event.button === 2) this.rightButton = false;
     });
     listen<MouseEvent>(canvas, 'contextmenu', (event) => event.preventDefault());
@@ -108,10 +122,18 @@ export class GameInput {
       } else {
         this.mouse = null;
         this.rightButton = false;
+        actions?.release();
       }
     });
     listen<KeyboardEvent>(window, 'keydown', (event) => {
+      this.shift=event.shiftKey;
       if ((event.target as HTMLElement)?.closest('input, select, textarea, button')) return;
+      if (event.code === 'Enter' && event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        if (!event.repeat) this.fullscreen.toggle().catch(() => {});
+        return;
+      }
+      if (actions?.key(event)) { event.preventDefault(); return; }
       if (!event.ctrlKey && !event.metaKey && !event.altKey && ['+', '=', '-'].includes(event.key)) {
         const { width, height } = this.view();
         onZoom(event.key === '-' ? -1 : 1, { x: width / 2, y: height / 2 });
@@ -128,8 +150,8 @@ export class GameInput {
         event.preventDefault();
       }
     });
-    listen<KeyboardEvent>(window, 'keyup', (event) => this.held.delete(event.key));
-    listen(window, 'blur', () => this.held.clear());
+    listen<KeyboardEvent>(window, 'keyup', (event) => {this.shift=event.shiftKey;this.held.delete(event.key);});
+    listen(window, 'blur', () => {this.shift=false;this.held.clear();});
   }
 
   /** A zoom changes image coordinates, while the pointer keeps its position on the screen. */
@@ -163,6 +185,7 @@ export class GameInput {
   }
 
   dispose() {
+    this.fullscreen.dispose();
     for (const [target, type, listener] of this.listeners) target.removeEventListener(type, listener);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
   }

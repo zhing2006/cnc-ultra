@@ -1,0 +1,469 @@
+// Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { CpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
+import { DIRECTIONS } from '../../engine/simulation/state.ts';
+import { checksum, randomWord } from '../../engine/simulation/fixed.ts';
+import { desiredFacing256, dirFacing, distance, movePoint } from '../coord.ts';
+import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
+import { INFANTRY_SPOTS } from './map.ts';
+import { entryPoint, entrySpot, freeSpot } from './infantry-spots.ts';
+import { pathDestination, PATH_DELAY } from './navigation.ts';
+import * as S from './units-state.ts';
+/** Ported from FACING.H, Difference, and FACING.CPP, Rotation_Adjust. */
+export function rotateFacing(current: number, desired: number, rate: number) {
+  const difference = ((desired - current + 128) & 255) - 128;
+  return (current + Math.sign(difference) * Math.min(Math.abs(difference), Math.min(127, rate))) & 255;
+}
+export class CpuUnits {
+  readonly units: Int32Array;
+  readonly goals: Int32Array;
+  /** Basic_Path's effective destination, separate from the player's NavCom. */
+  readonly pathGoals: Int32Array;
+  readonly occupancy: Int32Array;
+  readonly flow: CpuFlowFields;
+  frame = 0;
+  constructor(readonly setup: S.UnitsSetup) {
+    this.units = S.initialUnits(setup);
+    this.goals = new Int32Array(setup.units.length).fill(-1);
+    this.pathGoals = new Int32Array(setup.units.length).fill(-1);
+    this.occupancy = new Int32Array(setup.grid.edges.length * 5);
+    this.flow = new CpuFlowFields(setup.grid, setup.units.length);
+    this.occupy();
+  }
+  point(cell: number, slot = 0): [
+    number,
+    number
+  ] {
+    return [cell % this.setup.grid.width * 256 + INFANTRY_SPOTS[slot][0], Math.floor(cell / this.setup.grid.width) * 256 + INFANTRY_SPOTS[slot][1]];
+  }
+  private occupy() {
+    this.occupancy.fill(0);
+    const u = this.units;
+    for (let id = 0; id < this.goals.length; id++) {
+      const at = id * S.WORDS;
+      for (const offset of [S.UCELL, S.UDEST, S.UMIDDLE]) {
+        // INFANTRY.CPP, Start_Driver releases the old spot when reserving headto.
+        if (offset === S.UCELL && u[at + S.UKIND] && u[at + S.UDEST] >= 0) continue;
+        const cell = u[at + offset];
+        if (cell < 0)
+          continue;
+        const slot = u[at + (offset === S.UCELL ? S.USLOT : S.UDSLOT)];
+        for (let j = 0; j < 5; j++)
+          if (!u[at + S.UKIND] || slot === j)
+            this.occupancy[cell * 5 + j] = id + 1;
+      }
+    }
+  }
+  private free(cell: number, id: number) {
+    const at = id * S.WORDS;
+    const infantry = this.units[at + S.UKIND];
+    let mask = 0;
+    for (let slot = 0; slot < 5; slot++) {
+      const owner = this.occupancy[cell * 5 + slot];
+      if (!owner || owner === id + 1)
+        mask |= 1 << slot;
+    }
+    return infantry ? freeSpot(mask, entrySpot(this.units[at], this.units[at + 1], ...this.point(cell)), randomWord(this.setup.seed, this.frame, id, 2) % 4) : mask === 31 ? 0 : -1;
+  }
+  private neighbor(cell: number, dir: number) {
+    return this.setup.grid.edges[cell] & (1 << dir) ? cell + DIRECTIONS[dir][1] * this.setup.grid.width + DIRECTIONS[dir][0] : -1;
+  }
+  private next(cell: number, goal: number) {
+    const field = goal < 0 ? -1 : this.flow.lookup[goal];
+    return field < 0 || !this.flow.fields[field * FIELD_WORDS + 1] ? -1 : this.flow.next[field * this.setup.grid.edges.length + cell];
+  }
+  /** Ported from DRIVE.CPP, Smooth_Turn and While_Moving; INFANTRY.CPP, AI. */
+  private advance(id: number, addSpeed = true) {
+    const u = this.units;
+    const at = id * S.WORDS;
+    const type = MOVEMENT[u[at + S.UTYPE]];
+    if (u[at + S.UDEST] < 0)
+      return;
+    if (type.infantry) {
+      u[at + S.UWALK]++;
+      if (distance(u[at], u[at + 1], u[at + S.UHEAD_X], u[at + S.UHEAD_Y]) < 16)
+        this.arrive(id);
+      else {
+        const dir = desiredFacing256(u[at], u[at + 1], u[at + S.UHEAD_X], u[at + S.UHEAD_Y]);
+        [u[at], u[at + 1]] = movePoint(u[at], u[at + 1], dir, (type.speed * 255 + 128) >> 8);
+      }
+      return;
+    }
+    // Ported from COORDA.ASM, Fixed_To_Cardinal: round before converting to leptons.
+    let actual = u[at + S.UACCUM] + (addSpeed ? ((type.speed * u[at + S.USPEED] + 128) >> 8) : 0);
+    const control = TRACK_CONTROL[u[at + S.UTRACK]];
+    const track = TRACKS[control[0]];
+    // DISPLAY.H defines PIXEL_LEPTON_W as integer 256 / 24, independently of track offsets.
+    while (actual > 10) {
+      actual -= 10;
+      const step = u[at + S.UTRACK_STEP];
+      const point = track[step];
+      if ((!point[0] && !point[1]) && step) {
+        this.arrive(id);
+        actual = 0;
+        break;
+      }
+      let [x, y, dir] = point;
+      if (control[3] & 1) {
+        [x, y] = [y, x];
+        dir = 192 - dir;
+      }
+      if (control[3] & 2) {
+        x = -x;
+        dir = -dir;
+      }
+      if (control[3] & 4) {
+        y = -y;
+        dir = 128 - dir;
+      }
+      u[at] = u[at + S.UHEAD_X] + x;
+      u[at + 1] = u[at + S.UHEAD_Y] + y;
+      u[at + S.UFACE] = u[at + S.UDESIRED] = dir & 255;
+      u[at + S.UTRACK_STEP]++;
+      if (step === RAW_TRACKS[control[0]][2]) {
+        // DRIVE.CPP, While_Moving / Per_Cell_Process(false): release the cell behind the curve.
+        u[at + S.UCELL] = Math.floor(u[at + 1] / 256) * this.setup.grid.width + Math.floor(u[at] / 256);
+      }
+      // Ported from DRIVE.CPP, While_Moving: reserve the next cell before changing tracks.
+      if (step === RAW_TRACKS[control[0]][0]) {
+        const following = this.next(u[at + S.UDEST], this.pathGoals[id]);
+        if (following >= 0) {
+          const face = dirFacing(desiredFacing256(...this.point(u[at + S.UDEST]), ...this.point(following)));
+          const candidate = dirFacing(control[2]) * 8 + face;
+          const raw = TRACK_CONTROL[candidate][0];
+          if (face !== dirFacing(control[2]) && raw >= 0 && RAW_TRACKS[raw][1]) {
+            u[at + S.UJUMP] = following;
+            u[at + S.UJUMP_TRACK] = candidate;
+            break;
+          }
+        }
+      }
+    }
+    u[at + S.UACCUM] = actual;
+  }
+  private arrive(id: number) {
+    const u = this.units;
+    const at = id * S.WORDS;
+    u[at] = u[at + S.UHEAD_X];
+    u[at + 1] = u[at + S.UHEAD_Y];
+    u[at + S.UCELL] = u[at + S.UDEST];
+    u[at + S.USLOT] = u[at + S.UDSLOT];
+    u[at + S.UDEST] = -1;
+    u[at + S.UMIDDLE] = -1;
+    u[at + S.UTRACK] = -1;
+    u[at + S.UTRACK_STEP] = 0;
+    u[at + S.UWALK] = 0;
+    if (this.goals[id] === u[at + S.UCELL])
+      this.goals[id] = -1;
+    if (this.pathGoals[id] === u[at + S.UCELL]) this.pathGoals[id] = -1;
+  }
+  private scatter(id: number) {
+    const at = id * S.WORDS;
+    const cell = this.units[at + S.UCELL];
+    let start = dirFacing(this.units[at + S.UFACE]);
+    if (this.units[at + S.UKIND]) {
+      const x = this.units[at] % 256;
+      const y = this.units[at + 1] % 256;
+      if (x !== 128 || y !== 128)
+        start = dirFacing(desiredFacing256(128, 128, x, y));
+      start = (start + randomWord(this.setup.seed, this.frame, id, 1) % 5 + 6) & 7;
+    }
+    // Ported from UNIT.CPP / INFANTRY.CPP, Scatter: choose a free adjacent cell.
+    for (let i = 0; i < 8; i++) {
+      const other = this.neighbor(cell, (start + i) & 7);
+      if (other >= 0 && this.free(other, id) >= 0)
+        this.goals[id] = other;
+    }
+    this.units[at + S.UROUTE] = -1;
+    this.units[at + S.USTALLED] = 0;
+    this.pathGoals[id] = -1;
+  }
+  /** Ported from DRIVE.CPP, Start_Of_Move, and INFANTRY.CPP, AI; FOOT.H PATH_RETRY/PATH_DELAY. */
+  private failedPath(id: number) {
+    const at = id * S.WORDS;
+    this.units[at + S.UWAIT] = PATH_DELAY;
+    if (this.units[at + S.URETRIES] === 0 || distance(this.units[at], this.units[at + 1], ...this.point(this.goals[id])) < 0x280)
+      this.goals[id] = -1;
+    else
+      this.units[at + S.URETRIES]--;
+  }
+  /** Ported from DRIVE.CPP, Start_Of_Move; INFANTRY.CPP, AI; UNIT.CPP, Can_Enter_Cell. */
+  step(commands: readonly S.UnitCommand[] = []) {
+    this.frame++;
+    for (let id = 0; id < this.goals.length; id++) {
+      if (this.goals[id] < 0) this.pathGoals[id] = -1;
+      else if (this.pathGoals[id] < 0) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
+    }
+    this.flow.step(this.pathGoals);
+    const u = this.units;
+    const rotated = new Uint8Array(this.goals.length);
+    const wasDriving = new Uint8Array(this.goals.length);
+    for (let id = 0; id < this.goals.length; id++) {
+      const at = id * S.WORDS;
+      const type = MOVEMENT[u[at + S.UTYPE]];
+      u[at + S.UJUMP] = -1;
+      u[at + S.UJUMP_TRACK] = -1;
+      if (u[at + S.UWAIT] > 0)
+        u[at + S.UWAIT]--;
+      wasDriving[id] = u[at + S.UDEST] >= 0 ? 1 : 0;
+      if (wasDriving[id])
+        this.advance(id);
+      else if (u[at + S.UFACE] !== u[at + S.UDESIRED]) {
+        u[at + S.UFACE] = rotateFacing(u[at + S.UFACE], u[at + S.UDESIRED], type.rotation);
+        rotated[id] = 1;
+        if (!u[at + S.UROTATED])
+          u[at + S.UROTATED] = this.frame;
+      }
+    }
+    this.occupy();
+    const proposals: {
+      id: number;
+      cell: number;
+      middle: number;
+      slot: number;
+      track: number;
+      jump: boolean;
+      approach?: number;
+    }[] = [];
+    const previousGoals = this.goals.slice();
+    const claims = new Int32Array(this.occupancy.length).fill(0x7fffffff);
+    const scatter = new Set<number>();
+    for (let id = 0; id < this.goals.length; id++) {
+      const at = id * S.WORDS;
+      const goal = this.goals[id];
+      const type = MOVEMENT[u[at + S.UTYPE]];
+      if (u[at + S.UJUMP] >= 0) {
+        const cell = u[at + S.UJUMP];
+        if (this.free(cell, id) >= 0) {
+          proposals.push({ id, cell, middle: -1, slot: 0, track: u[at + S.UJUMP_TRACK], jump: true });
+          for (let slot = 0; slot < 5; slot++)
+            claims[cell * 5 + slot] = Math.min(claims[cell * 5 + slot], id);
+        }
+        continue;
+      }
+      if (goal < 0 || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
+        continue;
+      const field = this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
+      if (field < 0 || !this.flow.fields[field * FIELD_WORDS + 1]) continue;
+      let cell = u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id]);
+      if (cell < 0) {
+        if (field >= 0 && this.flow.fields[field * FIELD_WORDS + 1])
+          this.failedPath(id);
+        continue;
+      }
+      const from = this.point(u[at + S.UCELL]);
+      const to = this.point(cell);
+      const dir = dirFacing(desiredFacing256(...from, ...to));
+      if (!type.infantry && u[at + S.UFACE] !== dir * 32) {
+        u[at + S.UDESIRED] = dir * 32;
+        u[at + S.UACCUM] = 0;
+        continue;
+      }
+      let slot = this.free(cell, id);
+      let middle = -1;
+      let track = dir * 8 + dir;
+      if (slot < 0) {
+        const blockers = new Set(Array.from(this.occupancy.subarray(cell * 5, cell * 5 + 5)).filter(x => x && x !== id + 1));
+        // Ported from UNIT.CPP, Can_Enter_Cell: nearby opposing traffic returns MOVE_NO.
+        const headOn = Array.from(blockers).some(x => {
+          const other = (x - 1) * S.WORDS;
+          return u[other + S.UOWNER] === u[at + S.UOWNER] && previousGoals[x - 1] >= 0 &&
+            dirFacing(u[at + S.UFACE]) === (dirFacing(u[other + S.UFACE]) ^ 4) && distance(u[at], u[at + 1], u[other], u[other + 1]) <= 0x1ff;
+        });
+        const moving = !headOn && Array.from(blockers).some(x => u[(x - 1) * S.WORDS + S.UDEST] >= 0 || previousGoals[x - 1] >= 0);
+        if (distance(u[at], u[at + 1], ...this.point(goal)) < 512) {
+          this.goals[id] = -1;
+          continue;
+        }
+        if (moving) {
+          // Replan a flow route after a full path-delay interval without progress.
+          u[at + S.USTALLED] = Math.min(PATH_DELAY, u[at + S.USTALLED] + 1);
+          if (u[at + S.USTALLED] < PATH_DELAY) continue;
+        }
+        // DRIVE.CPP, Start_Of_Move: MOVE_TEMP asks stationary allies to scatter.
+        // It must not become an endless series of successful detours around them.
+        if (!moving && !headOn) {
+          for (const blocker of blockers)
+            if (u[(blocker - 1) * S.WORDS + S.UOWNER] === u[at + S.UOWNER]) scatter.add(blocker - 1);
+          u[at + S.UROUTE] = -1;
+          this.failedPath(id);
+          continue;
+        }
+        const base = field * this.setup.grid.edges.length;
+        let alternative = -1;
+        let best = 0x7fffffff;
+        for (let d = 0; d < 8; d++) {
+          const other = this.neighbor(u[at + S.UCELL], d);
+          // A one-step detour must make progress in the shared distance field.
+          // Otherwise its reverse is equally eligible on the next tick.
+          if (other < 0 || this.free(other, id) < 0 || this.flow.distance[base + other] >= this.flow.distance[base + u[at + S.UCELL]])
+            continue;
+          const cost = this.flow.distance[base + other] + (d & 1 ? 362 : 256);
+          if (cost < best) {
+            best = cost;
+            alternative = other;
+          }
+        }
+        if (alternative < 0) {
+          u[at + S.UROUTE] = -1;
+          if (headOn) this.failedPath(id);
+          else u[at + S.UWAIT] = PATH_DELAY;
+          continue;
+        }
+        cell = alternative;
+        slot = this.free(cell, id);
+        u[at + S.UROUTE] = cell;
+        const face = dirFacing(desiredFacing256(...from, ...this.point(cell)));
+        track = face * 8 + face;
+        if (!type.infantry && u[at + S.UFACE] !== face * 32) {
+          u[at + S.UDESIRED] = face * 32;
+          continue;
+        }
+      }
+      else if (!type.infantry) {
+        const following = this.next(cell, this.pathGoals[id]);
+        if (following >= 0) {
+          const nextdir = dirFacing(desiredFacing256(...to, ...this.point(following)));
+          const candidate = dir * 8 + nextdir;
+          if (TRACK_CONTROL[candidate][0] >= 0 && (TRACK_CONTROL[candidate][3] & 8)) {
+            if (this.free(following, id) >= 0) {
+              middle = cell;
+              cell = following;
+              track = candidate;
+            }
+          }
+        }
+      }
+      proposals.push({ id, cell, middle, slot, track, jump: false });
+      if (!type.infantry)
+        for (const c of [cell, middle])
+          if (c >= 0)
+            for (let s = 0; s < 5; s++)
+              claims[c * 5 + s] = Math.min(claims[c * 5 + s], id);
+    }
+    // Closest_Free_Spot queries the approach cell, but masks the backed-up
+    // coordinate to choose the physical stopping cell (which may be the source).
+    for (const p of proposals) if (u[p.id * S.WORDS + S.UKIND]) {
+      const at = p.id * S.WORDS;
+      const head = entryPoint(u[at], u[at + 1], ...this.point(p.cell));
+      p.approach = p.cell;
+      p.cell = Math.floor(head[1] / 256) * this.setup.grid.width + Math.floor(head[0] / 256);
+      p.slot = -1;
+    }
+    // Reserve departures first, then reuse their vacated spots for short steps
+    // within the source cell. Both stages belong to the same logical tick.
+    for (let pass = 0; pass < 2; pass++) {
+      for (const p of proposals) if (p.cell >= 0 && p.approach !== undefined && (pass || p.cell !== u[p.id * S.WORDS + S.UCELL])) {
+        let mask = 0;
+        const at = p.id * S.WORDS;
+        for (let slot = 0; slot < 5; slot++) {
+          const owner = this.occupancy[p.cell * 5 + slot], queried = this.occupancy[p.approach * 5 + slot];
+          const progress = distance(...this.point(p.cell, slot), ...this.point(p.approach)) < distance(u[at], u[at + 1], ...this.point(p.approach));
+          if (progress && (!owner || owner === p.id + 1) && (!queried || queried === p.id + 1) && claims[p.cell * 5 + slot] > p.id)
+            mask |= 1 << slot;
+        }
+        p.slot = freeSpot(mask, entrySpot(u[at], u[at + 1], ...this.point(p.approach)), randomWord(this.setup.seed, this.frame, p.id, 2) % 4);
+        if (p.slot >= 0)
+          claims[p.cell * 5 + p.slot] = p.id;
+      }
+      for (const p of proposals) {
+        const at = p.id * S.WORDS;
+        const type = MOVEMENT[u[at + S.UTYPE]];
+        if (p.cell < 0 || p.slot < 0)
+          continue;
+        if ([p.cell, p.middle].some(c => c >= 0 && [0, 1, 2, 3, 4].some(s => (!type.infantry || s === p.slot) && claims[c * 5 + s] !== p.id)))
+          continue;
+        if (p.jump) {
+          u[at + S.UMIDDLE] = u[at + S.UDEST];
+          u[at + S.UDEST] = p.cell;
+          u[at + S.UTRACK] = p.track;
+          u[at + S.UCELL] = Math.floor(u[at + 1] / 256) * this.setup.grid.width + Math.floor(u[at] / 256);
+          u[at + S.UTRACK_STEP] = RAW_TRACKS[TRACK_CONTROL[p.track][0]][1];
+          [u[at + S.UHEAD_X], u[at + S.UHEAD_Y]] = this.point(p.cell);
+          p.cell = -1;
+          continue;
+        }
+        // Ported from DRIVE.CPP, Start_Of_Move; INFANTRY.CPP, Start_Driver.
+        u[at + S.UROUTE] = p.approach !== undefined && p.cell !== p.approach ? p.approach : -1;
+        u[at + S.USTALLED] = 0;
+        u[at + S.URETRIES] = 10;
+        u[at + S.UDEST] = p.cell;
+        u[at + S.UMIDDLE] = p.middle;
+        u[at + S.UDSLOT] = p.slot;
+        u[at + S.UTRACK] = p.track;
+        u[at + S.UTRACK_STEP] = 0;
+        [u[at + S.UHEAD_X], u[at + S.UHEAD_Y]] = this.point(p.cell, p.slot);
+        if (!u[at + S.USTARTED])
+          u[at + S.USTARTED] = this.frame;
+        if (type.infantry) {
+          u[at + S.UFACE] = u[at + S.UDESIRED] = dirFacing(desiredFacing256(u[at], u[at + 1], u[at + S.UHEAD_X], u[at + S.UHEAD_Y])) * 32;
+          u[at + S.UWALK] = 0;
+        }
+        else {
+          let speed = GROUND_SPEED[this.setup.land[p.middle < 0 ? p.cell : p.middle]][type.locomotion];
+          if (u[at + S.UHEALTH] < (type.strength >> 1))
+            speed -= speed >> 2;
+          u[at + S.USPEED] = speed;
+          this.advance(p.id);
+        }
+        p.cell = -1;
+      }
+      if (!pass) {
+        this.occupy();
+        claims.fill(0x7fffffff);
+      }
+    }
+    for (const p of proposals) if (p.cell >= 0 && p.approach !== undefined) {
+      // A failed subcell reservation is not a successful zero-length path.
+      const at = p.id * S.WORDS;
+      let moving = false;
+      for (const cell of [p.cell, p.approach]) for (let slot = 0; slot < 5; slot++) {
+        const owner = this.occupancy[cell * 5 + slot] - 1;
+        if (owner < 0 || owner === p.id) continue;
+        if (previousGoals[owner] >= 0) moving = true;
+        else if (u[owner * S.WORDS + S.UOWNER] === u[at + S.UOWNER]) scatter.add(owner);
+      }
+      if (moving && distance(u[at], u[at + 1], ...this.point(this.goals[p.id])) >= 0x280) u[at + S.UWAIT] = PATH_DELAY;
+      else this.failedPath(p.id);
+    }
+    for (let id = 0; id < this.goals.length; id++)
+      if (u[id * S.WORDS + S.UJUMP] >= 0) {
+        this.advance(id, false);
+        u[id * S.WORDS + S.UJUMP] = -1;
+        u[id * S.WORDS + S.UJUMP_TRACK] = -1;
+      }
+    this.occupy();
+    for (const id of scatter)
+      if (this.goals[id] < 0)
+        this.scatter(id);
+    // Ported from CONQUER.CPP, Main_Loop / QUEUE.CPP, Queue_AI_Normal: commands execute after Logic.AI.
+    for (const command of commands) {
+      if (command.frame !== this.frame)
+        throw new Error('Commands must be submitted on their recorded tick');
+      for (let id = 0; id < this.goals.length; id++)
+        if (command.ids.includes(id)) {
+          const at = id * S.WORDS;
+          if (u[at + S.UOWNER] !== 0)
+            continue;
+          if (command.kind === 'scatter')
+            this.scatter(id);
+          else {
+            this.goals[id] = command.kind === 'stop' ? -1 : command.target!;
+            this.pathGoals[id] = -1;
+            u[at + S.USTALLED] = 0;
+            u[at + S.UROUTE] = -1;
+            u[at + S.UWAIT] = 0;
+            u[at + S.URETRIES] = 10;
+            u[at + S.USTARTED] = 0;
+            u[at + S.UROTATED] = 0;
+          }
+        }
+    }
+  }
+  buffers() {
+    return [new Int32Array([this.frame, this.setup.seed]), this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
+  }
+  checksum() {
+    return checksum(this.buffers());
+  }
+}

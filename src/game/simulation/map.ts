@@ -20,6 +20,7 @@ export const LOGIC_HZ = 15;
  */
 export function movementMap(mix: MixSet, scenario: Scenario) {
   const width = ORIGINAL_MAP_SIZE, passable = new Uint8Array(width * width);
+  const lands = new Uint8Array(width * width);
   const suffix = scenario.theater.toUpperCase() === 'TEMPERATE' ? 'TEM' : scenario.theater.toUpperCase().slice(0,3);
   const maps = new Map<number, Uint8Array>();
   for (let y = scenario.y; y < scenario.y + scenario.height; y++) for (let x = scenario.x; x < scenario.x + scenario.width; x++) {
@@ -39,6 +40,7 @@ export function movementMap(mix: MixSet, scenario: Scenario) {
       }
     }
     passable[cell] = WALKABLE_LAND[land] ? 1 : 0;
+    lands[cell] = land;
   }
   const block = (cell: number, offsets: readonly (readonly [number, number])[]) => {
     const x = cell % width, y = Math.floor(cell / width);
@@ -50,10 +52,14 @@ export function movementMap(mix: MixSet, scenario: Scenario) {
     // ODATA.CPP: V12..V18 are rock; road, concrete and tiberium replace the underlying ground.
     if (type.wall || /^V1[2-8]$/.test(type.name)) passable[overlay.cell] = 0;
     else if (type.tiberium || type.name === 'ROAD' || type.name === 'CONC') passable[overlay.cell] = 1;
+    if (type.wall) lands[overlay.cell] = 4;
+    else if (/^V1[2-8]$/.test(type.name)) lands[overlay.cell] = 3;
+    else if (type.tiberium) lands[overlay.cell] = 5;
+    else if (type.name === 'ROAD' || type.name === 'CONC') lands[overlay.cell] = 1;
   }
   for (const object of scenario.terrain) block(object.cell, TERRAIN.get(object.type.toUpperCase())!.occupy);
   for (const object of scenario.buildings) block(object.cell, BUILDINGS.get(object.type.toUpperCase())!.occupy);
   // UnitClass::Can_Enter_Cell ignores facing. DriveClass::Start_Of_Move checks the destination
   // cell for diagonal steps as well; it does not require both orthogonal neighbors to be clear.
-  return { passable, grid: gridEdges(width, width, passable, true) };
+  return { passable, land: lands, grid: gridEdges(width, width, passable, true) };
 }

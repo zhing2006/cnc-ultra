@@ -35,7 +35,7 @@ export function paint(scene: GameScene, sprites: readonly Sprite[], view: View, 
         const sx = dx + (reverse ? negative : positive)[ordinal++ % 8], sy = dy + (reverse ? 1 : 0);
         image[at] = sx < 0 || sy < 0 || sx >= view.width || sy >= view.height ? 0 : image[sy * view.width + sx];
       } else if (sprite.filter !== undefined) {
-        image[at] = filters![sprite.filter][image[at]];
+        image[at] = (filters?.[sprite.filter] ?? scene.setup.singleUseFilter!)[image[at]];
       } else if (sprite.shadow && shadowSources[source]) {
         image[at] = remaps[sprite.remap][shadowTable[image[at]]];
       } else {

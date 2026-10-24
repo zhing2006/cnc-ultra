@@ -70,11 +70,15 @@ export interface PaletteSetup {
   /** The most sprites setSprites() may be given. */
   spriteCapacity: number;
   filters?: readonly Uint8Array[];
+  /** Optional ordered filter used at most once along a pixel's contributors, after filters[]. */
+  singleUseFilter?: Uint8Array;
   /** Game-supplied pixel offset shader, owned and disposed by this pipeline. */
   displacement?: { offset(input: DisplacementInput): Node<'ivec2'>; dispose(): void };
   dynamicSprites?: { maxWidth: number; maxHeight: number };
   /** Optional diagnostic overlay in world pixel coordinates, applied after palette lookup. */
   overlay?: (pixel: Node<'vec2'>, color: Node<'vec4'>) => Node<'vec4'>;
+  /** Game-supplied indexed effect, before the palette lookup (for example unexplored terrain). */
+  indexEffect?: (pixel: Node<'ivec2'>, index: Node<'int'>) => Node<'int'>;
 }
 
 /** The part of the world the view shows: top-left in world pixels and size in image pixels. */
@@ -275,6 +279,7 @@ export class PalettePipeline {
     const composition = composeFilters(filters);
     const maps = keep(dataTexture(composition.maps, 256, composition.count, RedFormat));
     const transitions = keep(dataTexture(composition.transitions, filters.length, composition.count, RedFormat));
+    const singleFilter = this.setup.singleUseFilter && keep(dataTexture(this.setup.singleUseFilter, 256, 1, RedFormat));
     const instances = storage(this.instances, 'vec4', Math.max(1, this.capacity) * 3).toReadOnly();
     const staticEntry = (index: Node<'int'>) => int(textureLoad(this.lookup,
       ivec2(index.mod(LOOKUP_WIDTH), index.div(LOOKUP_WIDTH))).r);
@@ -288,6 +293,7 @@ export class PalettePipeline {
       const pixel = start.toVar();
       const limit = this.count.toVar();
       const mapping = int(0).toVar();
+      const outerMapping = int(-1).toVar();
       const color = int(0).toVar();
       Loop(this.count.add(1), () => {
         // The sampled image is the clipped view. A displaced read must not resurrect sprites
@@ -336,14 +342,21 @@ export class PalettePipeline {
           If(filter.lessThan(0).and(info.w.greaterThan(0.5))
             .and(textureLoad(shadow, ivec2(source, 0)).r.greaterThan(0)), () => { filter.assign(0); });
           If(filter.greaterThanEqual(0), () => {
-            mapping.assign(loadIndex(transitions, filter, mapping));
+            if(singleFilter){
+              If(filter.equal(filters.length),()=>{outerMapping.assign(mapping);mapping.assign(0);})
+                .Else(()=>{mapping.assign(loadIndex(transitions,filter,mapping));});
+            }else mapping.assign(loadIndex(transitions, filter, mapping));
           }).Else(() => {
             color.assign(loadIndex(remaps, source, int(info.z)));
             Break();
           });
         });
       });
-      return loadIndex(maps, color, mapping);
+      const resolved=loadIndex(maps,color,mapping).toVar();
+      if(singleFilter) If(outerMapping.greaterThanEqual(0),()=>{
+        resolved.assign(loadIndex(maps,loadIndex(singleFilter,resolved,int(0)),outerMapping));
+      });
+      return resolved;
     });
     material.fragmentNode = Fn(() => {
       const x = int(screenCoordinate.x);
@@ -367,7 +380,8 @@ export class PalettePipeline {
     const material = new MeshBasicNodeMaterial();
     material.fragmentNode = Fn(() => {
       const pixel = floor(screenCoordinate.xy.div(this.scale));
-      const index = loadIndex(this.indexTarget.texture, int(pixel.x), int(pixel.y));
+      const sampled = loadIndex(this.indexTarget.texture, int(pixel.x), int(pixel.y));
+      const index = this.setup.indexEffect ? this.setup.indexEffect(ivec2(pixel.add(this.origin)), sampled) : sampled;
       const color = vec4(textureLoad(palette, ivec2(index, 0)).rgb, 1);
       return this.setup.overlay ? this.setup.overlay(pixel.add(this.origin), color) : color;
     })();

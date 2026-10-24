@@ -7,6 +7,8 @@
 
   const preview = new URLSearchParams(location.search).get('preview') === 'assets';
   const simulation = new URLSearchParams(location.search).get('demo') === 'simulation';
+  const units = new URLSearchParams(location.search).get('demo') === 'units';
+  let vision = $state(false);
   let flow = $state(false), paused = $state(false), frame = $state(0), digest = $state('');
 
   type Status = 'starting' | 'running' | 'unsupported' | 'nodata' | 'failed' | 'lost';
@@ -42,7 +44,7 @@
         status = 'unsupported';
         return;
       }
-      const started = await startGame(created, canvas, { simulation,
+      const started = await startGame(created, canvas, { simulation, units,
         onStats: (value, checksum) => { frame = value; digest = checksum; } });
       if (unmounted || renderer !== created) {
         started.dispose();
@@ -50,6 +52,7 @@
       }
       game = started;
       game.setFlow(flow);
+      game.setVision(vision);
       game.setPaused(paused);
       status = 'running';
     } catch (error) {
@@ -82,14 +85,19 @@
   <canvas bind:this={canvas} data-status={status}></canvas>
 {/if}
 
-{#if simulation && !preview && status === 'running'}
+{#if (simulation || units) && !preview && status === 'running'}
   <aside class="simulation-controls" aria-label="Simulation demo">
-    <strong>GPU simulation · 320 tanks</strong>
-    <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
+    <strong>{units ? 'Units and controls · 28 vehicles, 35 infantry' : 'GPU simulation · 320 tanks'}</strong>
+    {#if units}
+      <div>Click to capture the pointer. Left-click or drag to select, then left-click ground to move. Right-click clears the selection. Esc releases the pointer.</div>
+    {:else}
+      <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
+    {/if}
     <div class="controls">
       <button type="button" aria-pressed={flow} onclick={() => { flow = !flow; game?.setFlow(flow); }}>Flow field</button>
+      {#if units}<button type="button" aria-pressed={vision} onclick={() => { vision = !vision; game?.setVision(vision); }}>Sight</button>{/if}
       <button type="button" aria-pressed={paused} onclick={() => { paused = !paused; game?.setPaused(paused); }}>{paused ? 'Resume' : 'Pause'}</button>
-      <a href="?demo=simulation">Reset</a>
+      <a href={units ? '?demo=units' : '?demo=simulation'}>Reset</a>
       <a href="?">Original map</a>
     </div>
     <div>Tick <span data-tick={frame}>{frame}</span> · 15 ticks/s · pauses in the background</div>
