@@ -20,6 +20,17 @@ pnpm dev
 
 然后打开 http://127.0.0.1:5173。
 
+## 部署
+
+`pnpm build` 会在 `dist/` 里生成一个静态网站，不需要后端，放在任何路径下都能运行。网站要通过 HTTPS 或 localhost 访问，服务器还要返回下面两个响应头，因为页面需要跨源隔离：
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+构建产物里不包含原版游戏数据。
+
 ## 游戏数据和参考资料
 
 仓库里没有原版的美术、音效和视频，只有 `assets/dev/` 里开发和测试要用的几个 MIX 文件。在 Windows 上运行 `refs/fetch.ps1`，在其他系统上运行 `refs/fetch.sh`，就会把 2007 年发布的 C&C Gold 免费版和参考源码下载到 `refs/`，详见 [refs/README.md](refs/README.md)。

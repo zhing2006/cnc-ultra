@@ -37,6 +37,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 - Game rules are ported from EA's original source in `refs/`, cross-checked against the Nyerguds fork. OpenRA and Vanilla Conquer are references for file formats and for cross-checking; do not copy their code.
 - Ported code carries a comment naming the original file and function, such as `// Ported from UNIT.CPP, UnitClass::AI`.
 - Simulation state is integer fixed-point and deterministic. No floating point in simulation state or in decisions made from it; rendering may use floats. The details are in the technical constitution.
+- The game needs no backend: it builds to a static site with relative asset paths. The page is cross-origin isolated (`vite.config.ts` sets COOP and COEP), so it can only load resources from other origins that send CORP or CORS headers; do not add external resources.
 - Read original data at run time through the format parsers in `src/game/`. Do not commit converted or extracted copies of original assets, except reference images for tests.
 - Never commit anything from `refs/` other than its index and fetch scripts, and never commit original game files outside `assets/dev/`.
 - Ask first before adding a dependency, changing a constitution, moving code across the engine/game boundary or committing new binary files.

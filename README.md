@@ -20,6 +20,17 @@ pnpm dev
 
 Then open http://127.0.0.1:5173.
 
+## Deployment
+
+`pnpm build` writes a static site to `dist/` that needs no backend and runs from any path. Serve it over HTTPS or from localhost, with the two headers the page needs for cross-origin isolation:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+The build does not include the original game data.
+
 ## Game data and references
 
 The original art, audio and video are not in this repository, apart from a few MIX files in `assets/dev/` used for development and tests. `refs/fetch.ps1` on Windows or `refs/fetch.sh` elsewhere downloads the 2007 freeware release of C&C Gold and the reference source code into `refs/`; see [refs/README.md](refs/README.md).
