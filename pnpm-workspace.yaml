@@ -1,1 +1,3 @@
 saveExact: true
+# Stop instead of quietly adding releases that are too new to minimumReleaseAgeExclude.
+minimumReleaseAgeStrict: true

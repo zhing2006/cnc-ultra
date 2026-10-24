@@ -20,7 +20,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 
 - TypeScript, Svelte 5 with bits-ui for headless UI components, Vite, Vitest, Playwright, pnpm, Node.js 24 or later.
 - Three.js `WebGPURenderer` from `three/webgpu`, with shaders and compute kernels in TSL. WebGPU only: there is no WebGL fallback, and no code may depend on the WebGL backend.
-- Dependency versions are pinned exactly. Use the latest release of each package unless it conflicts with another; TypeScript stays on 6.x because svelte-check does not support 7. pnpm refuses releases younger than a day; take the previous release instead of adding a `minimumReleaseAgeExclude` entry.
+- Dependency versions are pinned exactly. Use the latest release of each package unless it conflicts with another; TypeScript stays on 6.x because svelte-check does not support 7. pnpm refuses releases younger than a day (`minimumReleaseAgeStrict`); when it does, pin the previous release instead of adding a `minimumReleaseAgeExclude` entry.
 
 ## Layout
 
