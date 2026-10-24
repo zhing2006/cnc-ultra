@@ -18,7 +18,7 @@ export const randomNode = Fn(([seed, frame, object, stream]: [Node<'uint'>, Node
 
 const magnitude = Fn(([v]: [Node<'int'>]) => {
   const result = uint(v).toVar();
-  If(v.lessThan(0), () => result.assign(uint(0).sub(result)));
+  If(v.lessThan(0), () => { result.assign(uint(0).sub(result)); });
   return result;
 });
 
@@ -33,7 +33,7 @@ export const fixedMulNode = Fn(([a, b]: [Node<'int'>, Node<'int'>]) => {
     .add(cross2.shiftRight(16)).add(mid.shiftRight(16));
   const result = low.bitAnd(65535).shiftRight(8).bitOr(mid.bitAnd(65535).shiftLeft(8))
     .bitOr(high.shiftLeft(24)).toVar();
-  If(a.bitXor(b).lessThan(0), () => result.assign(uint(0).sub(result)));
+  If(a.bitXor(b).lessThan(0), () => { result.assign(uint(0).sub(result)); });
   return int(result);
 });
 
@@ -43,7 +43,7 @@ export const fixedDivNode = Fn(([a, b]: [Node<'int'>, Node<'int'>]) => {
   const remainder = uint(0).toVar(), quotient = uint(0).toVar();
   Loop({ start: 39, end: 0, condition: '>=', update: '--', type: 'int' }, ({ i }) => {
     const bit = uint(0).toVar();
-    If(i.greaterThanEqual(8), () => bit.assign(numerator.shiftRight(uint(i.sub(8))).bitAnd(1)));
+    If(i.greaterThanEqual(8), () => { bit.assign(numerator.shiftRight(uint(i.sub(8))).bitAnd(1)); });
     const carry = remainder.shiftRight(31).toVar();
     remainder.assign(remainder.shiftLeft(1).bitOr(bit));
     quotient.assign(quotient.shiftLeft(1));
@@ -52,6 +52,6 @@ export const fixedDivNode = Fn(([a, b]: [Node<'int'>, Node<'int'>]) => {
       quotient.bitOrAssign(1);
     });
   });
-  If(a.bitXor(b).lessThan(0), () => quotient.assign(uint(0).sub(quotient)));
+  If(a.bitXor(b).lessThan(0), () => { quotient.assign(uint(0).sub(quotient)); });
   return int(quotient);
 });

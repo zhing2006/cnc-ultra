@@ -41,7 +41,7 @@ export class GpuOrder {
         const i = instanceIndex, winner = source.element(i).toVar();
         If(i.greaterThanEqual(offset).and(i.lessThan(this.size)), () => {
           const previous = source.element(i.sub(offset));
-          If(less(order.element(winner), order.element(previous)), () => winner.assign(previous));
+          If(less(order.element(winner), order.element(previous)), () => { winner.assign(previous); });
         });
         destination.element(i).assign(winner);
       })().compute(capacity));
@@ -55,13 +55,13 @@ export class GpuOrder {
         const selected = greatest.toVar();
         If(i.add(1).lessThan(this.size), () => {
           const next = order.element(i.add(1));
-          If(less(next, greatest), () => selected.assign(next));
+          If(less(next, greatest), () => { selected.assign(next); });
         });
         result.element(i).assign(selected);
       });
     })().compute(capacity));
     const copy = Fn(() => {
-      If(instanceIndex.lessThan(this.size), () => order.element(instanceIndex).assign(result.element(instanceIndex)));
+      If(instanceIndex.lessThan(this.size), () => { order.element(instanceIndex).assign(result.element(instanceIndex)); });
     })().compute(capacity);
     this.sweep.push(copy);
     this.insertion = [

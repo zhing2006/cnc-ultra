@@ -51,7 +51,7 @@ export class GpuSpatialIndex {
       const source = src, destination = dst, offset = stride;
       this.passes.push(Fn(() => {
         const i = instanceIndex, sum = source.element(i).toVar();
-        If(i.greaterThanEqual(offset), () => sum.addAssign(source.element(i.sub(offset))));
+        If(i.greaterThanEqual(offset), () => { sum.addAssign(source.element(i.sub(offset))); });
         destination.element(i).assign(sum);
       })().compute(bins));
       [src, dst] = [dst, src];
@@ -59,9 +59,9 @@ export class GpuSpatialIndex {
     const sums = src;
     this.passes.push(Fn(() => {
       const i = instanceIndex, start = uint(0).toVar();
-      If(i.greaterThan(0), () => start.assign(sums.element(i.sub(1))));
+      If(i.greaterThan(0), () => { start.assign(sums.element(i.sub(1))); });
       offsets.element(i).assign(start); atomicStore(counters.element(i), start);
-      If(i.equal(bins - 1), () => offsets.element(bins).assign(sums.element(i)));
+      If(i.equal(bins - 1), () => { offsets.element(bins).assign(sums.element(i)); });
     })().compute(bins));
     this.passes.push(visit(true));
   }

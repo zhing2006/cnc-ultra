@@ -19,9 +19,9 @@ export function flowOverlay(simulation: GpuSimulation) {
         const along = local.dot(direction), across = abs(local.x.mul(direction.y).sub(local.y.mul(direction.x)));
         const stem = abs(along).lessThanEqual(6).and(across.lessThan(0.8));
         const head = along.greaterThanEqual(2).and(along.lessThanEqual(7)).and(abs(across.sub(float(7).sub(along))).lessThan(0.8));
-        If(stem.or(head), () => result.assign(mix(result, vec4(0.1, 1, 0.95, 1), 0.85)));
+        If(stem.or(head), () => { result.assign(mix(result, vec4(0.1, 1, 0.95, 1), 0.85)); });
       });
-      If(id.equal(control.element(TARGET)).and(abs(local.x).lessThan(4)).and(abs(local.y).lessThan(4)), () => result.assign(vec4(1,0.3,0.9,1)));
+      If(id.equal(control.element(TARGET)).and(abs(local.x).lessThan(4)).and(abs(local.y).lessThan(4)), () => { result.assign(vec4(1,0.3,0.9,1)); });
     });
     return result;
   })();

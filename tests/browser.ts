@@ -15,7 +15,7 @@ export interface AppOptions {
   path?: string;
   /** Runs in the page before any of its scripts. */
   init?: () => void;
-  /** Console and page errors the check causes on purpose. Any other error fails the check. */
+  /** Console errors, TSL warnings and page errors caused on purpose. Other issues fail the check. */
   expectedErrors?: RegExp[];
 }
 
@@ -37,7 +37,8 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(`${message.text()} (${message.location().url})`);
+    if (message.type() === 'error' || (message.type() === 'warning' && message.text().startsWith('THREE.TSL:')))
+      errors.push(`${message.text()} (${message.location().url})`);
   });
   try {
     if (options.init) await page.addInitScript(options.init);
@@ -47,5 +48,5 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
     await page.close();
   }
   const expected = options.expectedErrors ?? [];
-  assert.deepEqual(errors.filter((text) => !expected.some((pattern) => pattern.test(text))), [], 'unexpected errors in the page');
+  assert.deepEqual(errors.filter((text) => !expected.some((pattern) => pattern.test(text))), [], 'unexpected errors or TSL warnings in the page');
 }

@@ -75,7 +75,7 @@ export class GpuSimulation {
     });
     const relaxAB = relax(distance, temporary), relaxBA = relax(temporary, distance);
     const finishFlow = kernel(1, () => {
-      If(control.element(TARGET).greaterThanEqual(0).and(atomicLoad(changed.element(0)).equal(0)), () => control.element(READY).assign(1));
+      If(control.element(TARGET).greaterThanEqual(0).and(atomicLoad(changed.element(0)).equal(0)), () => { control.element(READY).assign(1); });
     });
     const directions = kernel(cells, () => {
       const cell = int(instanceIndex);
@@ -85,7 +85,7 @@ export class GpuSimulation {
           for (let d = 0; d < 8; d++) {
             const [dx, dy] = DIRECTIONS[d], neighbor = cell.add(dy * setup.grid.width + dx);
             If(chosen.lessThan(0).and(edges.element(cell).bitAnd(uint(1 << d)).notEqual(0)), () => {
-              If(distance.element(neighbor).add(d & 1 ? 362 : 256).equal(distance.element(cell)), () => chosen.assign(neighbor));
+              If(distance.element(neighbor).add(d & 1 ? 362 : 256).equal(distance.element(cell)), () => { chosen.assign(neighbor); });
             });
           }
         });
@@ -131,10 +131,10 @@ export class GpuSimulation {
         const first = cell.mul(slots), chosen = int(-1).toVar(), free = int(0).toVar();
         Loop(slots, ({ i: slot }) => {
           If(atomicLoad(occupancy.element(first.add(int(slot)))).equal(0), () => {
-            free.addAssign(1); If(chosen.lessThan(0), () => chosen.assign(int(slot)));
+            free.addAssign(1); If(chosen.lessThan(0), () => { chosen.assign(int(slot)); });
           });
         });
-        If(u.element(i.add(KIND)).equal(0).and(free.notEqual(slots)), () => chosen.assign(-1));
+        If(u.element(i.add(KIND)).equal(0).and(free.notEqual(slots)), () => { chosen.assign(-1); });
         If(chosen.greaterThanEqual(0), () => {
           proposals.element(id).assign(first.add(chosen));
           Loop(slots, ({ i: slot }) => {
@@ -151,7 +151,7 @@ export class GpuSimulation {
         const cell = proposal.div(slots), chosen = proposal.mod(slots), won = int(1).toVar();
         Loop(slots, ({ i: slot }) => {
           If(u.element(i.add(KIND)).equal(0).or(int(slot).equal(chosen)), () => {
-            If(atomicLoad(claims.element(cell.mul(slots).add(int(slot)))).notEqual(id), () => won.assign(0));
+            If(atomicLoad(claims.element(cell.mul(slots).add(int(slot)))).notEqual(id), () => { won.assign(0); });
           });
         });
         If(won.notEqual(0), () => {

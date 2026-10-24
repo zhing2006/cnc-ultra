@@ -16,7 +16,7 @@ export class GpuChecksum {
       const base = offset, length = attribute.count;
       this.kernels.push(Fn(() => {
         const index = instanceIndex.add(base), word = uint(length).toVar();
-        If(instanceIndex.lessThan(length), () => word.assign(source.element(instanceIndex)));
+        If(instanceIndex.lessThan(length), () => { word.assign(source.element(instanceIndex)); });
         atomicXor(digest.element(index.bitAnd(3)), hashNode(word.bitXor(hashNode(index))));
       })().compute(length + 1));
       offset += length + 1;
