@@ -10,7 +10,7 @@ The constitutions in [`docs/constitution/`](docs/constitution/README.md) set the
 - `pnpm dev`: start the dev server at http://127.0.0.1:5173.
 - `pnpm check`: type-check TypeScript and Svelte with svelte-check.
 - `pnpm test`: run the unit tests (Vitest), `src/**/*.test.ts`.
-- `pnpm test:e2e`: run the browser tests (Playwright) in `tests/`. They need full Chromium, which has WebGPU in new headless mode; install it once with `pnpm exec playwright install chromium`.
+- `pnpm test:e2e`: run the browser checks with `tests/run.ts`. It starts Vite in-process on a free port, launches one full Chromium, which has WebGPU in new headless mode, and runs the checks side by side. Install Chromium once with `pnpm exec playwright install chromium`.
 - `pnpm build`: type-check, then build into `dist/`.
 - `refs/fetch.ps1` on Windows, `refs/fetch.sh` elsewhere: download the game data and the reference source code into `refs/`.
 
@@ -64,6 +64,7 @@ Tests follow the [testing constitution](docs/constitution/testing.md). The core 
 - Write only tests that can catch meaningful functional errors. Do not write defensive tests, or negative tests merely because something was removed.
 - Test against the original game, not the current implementation: file formats against the original source and OpenRA's parsers, rules against the original source, rendering against reference images from an independent source, such as captures of the original game or a decoder other than the one under test. Do not record this project's own output as a golden image.
 - When fixing a defect, first write a test that reproduces it and see it fail.
+- Run checks in parallel and share state: one Vite server and one browser for all checks, and a page carries on from the previous check's state when that state is the next one's starting point. Prepare separate state only when preconditions conflict. Add browser checks to the list in `tests/run.ts`; `tests/browser.ts` opens a page and fails the check on any console or page error it did not expect.
 - Name tests in English.
 
 ## Writing
