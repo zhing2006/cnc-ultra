@@ -47,7 +47,7 @@ The budget comes from article 7 of the product constitution: Ultra mode runs 20,
 
 - Per-frame CPU work that grows with the number of units on the Ultra path: per-unit JavaScript loops, per-unit draw calls, per-unit uploads to the GPU.
 - Reading simulation state back to the CPU every frame, or waiting for a readback inside the frame loop.
-- Work quadratic in the number of units, such as checking all pairs for collisions instead of using the spatial hash.
+- Work quadratic in the number of units, such as checking every pair of units for targets or blocking instead of looking them up in the occupancy grid.
 - Creating buffers, textures, pipelines or shaders every frame, or anything that recompiles shaders during play.
 - Blocking the main thread long enough to drop frames during play, such as decoding a MIX file synchronously in the middle of a match.
 - Memory that grows without bound over a session: GPU resources never disposed, listeners never removed, caches without a limit.
