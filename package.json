@@ -10,10 +10,10 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "node node_modules/vite/bin/vite.js",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "build": "pnpm run check && vite build",
-    "preview": "vite preview",
+    "preview": "node node_modules/vite/bin/vite.js preview",
     "test": "vitest run",
     "test:e2e": "node tests/run.ts"
   },

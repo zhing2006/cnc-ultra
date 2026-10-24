@@ -7,7 +7,7 @@ The constitutions in `docs/` set the product scope and the technical, design and
 ## Commands
 
 - `pnpm install`: install dependencies.
-- `pnpm dev`: start the dev server at http://127.0.0.1:5173.
+- `pnpm dev`: start the dev server at http://127.0.0.1:5173. The `dev` and `preview` scripts start Vite with `node` instead of through the `vite` binary, because on Windows that binary is a batch file, and Ctrl+C then leaves cmd's "Terminate batch job (Y/N)?" on screen.
 - `pnpm check`: type-check TypeScript and Svelte with svelte-check.
 - `pnpm test`: run the unit tests (Vitest), `src/**/*.test.ts`.
 - `pnpm test:e2e`: run the browser checks with `tests/run.ts`. It starts Vite in-process on a free port, launches one full Chromium, which has WebGPU in new headless mode, and runs the checks side by side. Install Chromium once with `pnpm exec playwright install chromium`.
