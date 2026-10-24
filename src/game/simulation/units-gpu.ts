@@ -895,6 +895,10 @@ export class GpuUnits {
     renderer.compute([...this.tick, this.command, kernel(1, () => control.element(0).assign(0))]);
     this.digest = new GpuChecksum(renderer, this.buffers());
   }
+  /** Compile every movement/command path without changing the simulation clock. */
+  async prepareForPlay() {
+    await this.renderer.compileComputeAsync(this.kernels);
+  }
   step(commands: readonly S.UnitCommand[] = []) {
     if (this.unitsVersion !== this.units.version) this.refreshOccupancy();
     if (this.prepare.length) this.renderer.compute(this.prepare);

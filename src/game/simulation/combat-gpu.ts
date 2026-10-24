@@ -1176,6 +1176,11 @@ export class GpuCombat {
   }
   get units() { return this.movement.units; }
   get frame() { return this.movement.frame; }
+  /** The first displayed frame has no logic tick; compile combat before exposing input. */
+  async prepareForPlay() {
+    await this.movement.prepareForPlay();
+    await this.renderer.compileComputeAsync(this.kernels);
+  }
   step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
     this.stepMany(1);
     if (commands.length) {

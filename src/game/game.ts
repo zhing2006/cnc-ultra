@@ -71,10 +71,13 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
   const sight = battle?.sight ?? (units && new GpuSight(renderer.three, units.setup.grid.width, units.setup.grid.height, units.units));
   const selection = units && sight && new GpuSelection(renderer.three, units, sight, !!battle);
   await selection?.prepare();
+  if (battle) await battle.prepareForPlay();
+  else await units?.prepareForPlay();
   await options.onProgress?.('Preparing graphics and sound');
   const unitView = units && sight && selection && new UnitsView(renderer.three,units,sight,selection,scene,data,!!battle);
   const combatAudio = battle && new CombatAudio(renderer.three, battle, data);
   const voices = units && new UnitVoices(data);
+  await combatAudio?.prepareForPlay();
   const layout = unitDemo ? groundLayout(scene, initialUnits(unitDemo.setup), WORDS, true) : demo && groundLayout(scene, unitState(demo.setup));
   const flow = simulation && flowOverlay(simulation);
   const spriteSize = [...scene.sprites, ...[...(scene.animation?.frames.values() ?? [])].flat().map(region => ({region}))].reduce((size, sprite) => ({

@@ -133,6 +133,9 @@ export class CombatAudio {
     })().compute(names.length);
     this.passes = [clear, collect, deaths, finish];
   }
+  async prepareForPlay() {
+    await this.renderer.compileComputeAsync(this.passes);
+  }
   unlock() {
     if (this.context.state === 'suspended')
       void this.context.resume();
