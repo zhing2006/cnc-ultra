@@ -1,0 +1,35 @@
+{
+  "name": "cnc-ultra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Command & Conquer (1995) rebuilt in the browser on Three.js and WebGPU.",
+  "license": "GPL-3.0-or-later",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "build": "pnpm run check && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "bits-ui": "2.20.1",
+    "svelte": "5.57.2",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/node": "24.19.2",
+    "@types/three": "0.186.0",
+    "svelte-check": "4.7.7",
+    "typescript": "6.0.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}
