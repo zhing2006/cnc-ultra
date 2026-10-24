@@ -1,0 +1,80 @@
+# Store and check out text with LF endings, whatever core.autocrlf says.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Everything below goes through LFS. No lockable: the team is small.
+
+# ---- Original C&C data (Westwood formats) ----
+# From the 2007 freeware release of C&C Gold. MIX files are archives; SHP, PAL, AUD,
+# VQA and the rest may also be committed after extraction.
+# The original file names are upper case. core.ignorecase lets CONQUER.MIX match *.mix
+# on Windows but not on Linux or macOS, so lower-case the names before committing.
+# A map is an .ini (text, stays in git) plus a .bin of the same name (terrain, LFS).
+*.mix     filter=lfs diff=lfs merge=lfs -text
+*.shp     filter=lfs diff=lfs merge=lfs -text
+*.pal     filter=lfs diff=lfs merge=lfs -text
+*.aud     filter=lfs diff=lfs merge=lfs -text
+*.vqa     filter=lfs diff=lfs merge=lfs -text
+*.vqp     filter=lfs diff=lfs merge=lfs -text
+*.cps     filter=lfs diff=lfs merge=lfs -text
+*.wsa     filter=lfs diff=lfs merge=lfs -text
+*.fnt     filter=lfs diff=lfs merge=lfs -text
+*.bin     filter=lfs diff=lfs merge=lfs -text
+# Terrain templates take the theater as extension: temperate, winter, desert.
+*.tem     filter=lfs diff=lfs merge=lfs -text
+*.win     filter=lfs diff=lfs merge=lfs -text
+*.des     filter=lfs diff=lfs merge=lfs -text
+
+# ---- Installers, disc images and archives ----
+*.iso     filter=lfs diff=lfs merge=lfs -text
+*.exe     filter=lfs diff=lfs merge=lfs -text
+*.zip     filter=lfs diff=lfs merge=lfs -text
+*.7z      filter=lfs diff=lfs merge=lfs -text
+*.rar     filter=lfs diff=lfs merge=lfs -text
+*.gz      filter=lfs diff=lfs merge=lfs -text
+*.tgz     filter=lfs diff=lfs merge=lfs -text
+*.tar     filter=lfs diff=lfs merge=lfs -text
+
+# ---- Images, including screenshots and test reference images ----
+*.png     filter=lfs diff=lfs merge=lfs -text
+*.jpg     filter=lfs diff=lfs merge=lfs -text
+*.jpeg    filter=lfs diff=lfs merge=lfs -text
+*.webp    filter=lfs diff=lfs merge=lfs -text
+*.gif     filter=lfs diff=lfs merge=lfs -text
+*.bmp     filter=lfs diff=lfs merge=lfs -text
+*.tga     filter=lfs diff=lfs merge=lfs -text
+*.ico     filter=lfs diff=lfs merge=lfs -text
+*.ktx2    filter=lfs diff=lfs merge=lfs -text
+*.basis   filter=lfs diff=lfs merge=lfs -text
+
+# ---- Art sources, for when the original art is replaced ----
+*.psd       filter=lfs diff=lfs merge=lfs -text
+*.psb       filter=lfs diff=lfs merge=lfs -text
+*.aseprite  filter=lfs diff=lfs merge=lfs -text
+*.ase       filter=lfs diff=lfs merge=lfs -text
+*.kra       filter=lfs diff=lfs merge=lfs -text
+
+# ---- Audio ----
+*.wav     filter=lfs diff=lfs merge=lfs -text
+*.mp3     filter=lfs diff=lfs merge=lfs -text
+*.ogg     filter=lfs diff=lfs merge=lfs -text
+*.opus    filter=lfs diff=lfs merge=lfs -text
+*.flac    filter=lfs diff=lfs merge=lfs -text
+*.m4a     filter=lfs diff=lfs merge=lfs -text
+
+# ---- Video, including screen recordings ----
+*.mp4     filter=lfs diff=lfs merge=lfs -text
+*.webm    filter=lfs diff=lfs merge=lfs -text
+*.mov     filter=lfs diff=lfs merge=lfs -text
+*.mkv     filter=lfs diff=lfs merge=lfs -text
+*.avi     filter=lfs diff=lfs merge=lfs -text
+
+# ---- Fonts, models and other binaries ----
+*.ttf     filter=lfs diff=lfs merge=lfs -text
+*.otf     filter=lfs diff=lfs merge=lfs -text
+*.woff    filter=lfs diff=lfs merge=lfs -text
+*.woff2   filter=lfs diff=lfs merge=lfs -text
+*.glb     filter=lfs diff=lfs merge=lfs -text
+*.wasm    filter=lfs diff=lfs merge=lfs -text
+*.pdf     filter=lfs diff=lfs merge=lfs -text
