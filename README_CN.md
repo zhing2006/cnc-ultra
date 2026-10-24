@@ -4,7 +4,7 @@
 
 C&C Ultra 在浏览器里重做 1995 年的初代《命令与征服》，画面和声音用的都是原版素材。游戏的模拟跑在 WebGPU 的 compute shader 上，所以战场的规模可以远远超过原版引擎。原版的一张地图上通常只有几十个单位，这里要让上万个单位同时作战。
 
-项目刚刚开始。目前页面会打开一个 WebGPU 画布，并把它清成纯色，游戏本身还没有任何部分能运行。
+页面会读取原版的 MIX 文件，显示 GDI 第 8 关的地图 scg08eb：地形、车辆和步兵，带阵营颜色和阴影。把鼠标推到屏幕边上，或者按方向键，可以滚动地图。单位还不会动，也还不能选择。
 
 ## 运行要求
 
@@ -18,7 +18,7 @@ pnpm install
 pnpm dev
 ```
 
-然后打开 http://127.0.0.1:5173。
+然后打开 http://127.0.0.1:5173，点一下画面，鼠标就交给游戏控制，按 Esc 交还。
 
 ## 部署
 
@@ -29,7 +29,7 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-构建产物里不包含原版游戏数据。
+构建产物里不包含原版游戏数据。部署时在 `index.html` 旁边建一个 `data/` 目录，把游戏要读的 MIX 文件放进去，目前是 C&C Gold 的 `conquer.mix`、`temperat.mix`、`general.mix` 和 `cclocal.mix`。开发服务器把 `assets/dev/` 映射到 `data/`。这些数据归 Electronic Arts 所有，所以这样的站点只能放在内部网络里。
 
 ## 游戏数据和参考资料
 

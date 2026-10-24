@@ -1,3 +1,7 @@
+import { createReadStream, statSync } from 'node:fs';
+import type { ServerResponse } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import type { Connect, Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
@@ -8,8 +12,36 @@ const isolation = {
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
+/**
+ * Serves the original MIX files in assets/dev/ at data/, where a deployed site keeps them. The build
+ * never contains them.
+ */
+function originalData(): Plugin {
+  const directory = new URL('./assets/dev/', import.meta.url);
+  const serve: Connect.NextHandleFunction = (request, response: ServerResponse, next) => {
+    const name = decodeURIComponent((request.url ?? '').split('?')[0]).replace(/^\//, '');
+    // Plain file names only, so that no path can leave the directory.
+    if (!/^[\w.-]+$/.test(name)) return next();
+    const path = fileURLToPath(new URL(name, directory));
+    const stats = statSync(path, { throwIfNoEntry: false });
+    if (!stats?.isFile()) {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+    response.setHeader('Content-Type', 'application/octet-stream');
+    response.setHeader('Content-Length', stats.size);
+    createReadStream(path).pipe(response);
+  };
+  return {
+    name: 'original-data',
+    configureServer: (server) => void server.middlewares.use('/data', serve),
+    configurePreviewServer: (server) => void server.middlewares.use('/data', serve),
+  };
+}
+
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), originalData()],
   // Relative asset paths, so the build runs from any subpath.
   base: './',
   server: { host: '127.0.0.1', port: 5173, strictPort: true, headers: isolation },

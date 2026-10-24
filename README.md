@@ -4,7 +4,7 @@ English | [中文](README_CN.md)
 
 C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with the original art and sound. The game simulation runs in WebGPU compute shaders, so battles can grow far beyond the original engine. A map in the original usually held a few dozen units; here, tens of thousands are meant to fight at once.
 
-The project has just started. The page opens a WebGPU canvas and clears it to a solid color; none of the game runs yet.
+The page reads the original MIX files and shows GDI mission 8 (scg08eb): the terrain, vehicles and infantry, with house colors and shadows. The view scrolls when the mouse is pushed against the edge of the screen, and with the arrow keys. Nothing moves or can be selected yet.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ pnpm install
 pnpm dev
 ```
 
-Then open http://127.0.0.1:5173.
+Then open http://127.0.0.1:5173 and click the view to let the game take the mouse; Esc gives it back.
 
 ## Deployment
 
@@ -29,7 +29,7 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-The build does not include the original game data.
+The build does not include the original game data. Put the MIX files the game reads in a `data/` directory next to `index.html`: for now `conquer.mix`, `temperat.mix`, `general.mix` and `cclocal.mix` from C&C Gold. The dev server serves `assets/dev/` at `data/`. The data belongs to Electronic Arts, so keep such a site on an internal network.
 
 ## Game data and references
 

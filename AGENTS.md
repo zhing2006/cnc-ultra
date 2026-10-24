@@ -28,7 +28,7 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 - `src/engine/`: the engine. Rendering, the GPU simulation framework and generic systems such as flow fields and grid occupancy. It is written from scratch, contains no code ported from the original game or from other C&C projects, and never imports from `src/game/`.
 - `src/game/`: everything specific to C&C, such as file formats, game rules, AI and interface. It may import from `src/engine/`.
 - `src/App.svelte`, `src/main.ts`: the app shell.
-- `assets/dev/`: a few original MIX files for development and tests, stored in LFS with lower-case names.
+- `assets/dev/`: a few original MIX files for development and tests, stored in LFS with lower-case names. The dev server serves them at `data/`, where the game fetches its data at run time.
 - `refs/`: downloaded references. Git ignores everything in it except its index and the fetch scripts.
 - `docs/`: docs in Chinese: the constitutions, the roadmap and the writing guide, listed in `docs/README.md`. `docs/tasks/` holds one file per milestone of the roadmap, with its goal, reasons, scope, references and acceptance criteria, and `docs/tasks/progress.md` tracks where each milestone stands.
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser } from '@playwright/test';
 import { createServer, type Logger } from 'vite';
 import type { Session } from './browser.ts';
+import { checkShadowComposition } from './palette.ts';
 import { checkDeviceLossRestart, checkNoWebGLFallback } from './renderer.ts';
 
 const started = performance.now();
@@ -49,6 +50,7 @@ try {
   const checks: [string, (session: Session) => Promise<void>][] = [
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],
     ['restart after the GPU device is lost while starting and while running', checkDeviceLossRestart],
+    ['shadows and house colors compose like drawing each sprite in turn', checkShadowComposition],
   ];
   const results = await Promise.allSettled(checks.map(async ([name, check]) => {
     const start = performance.now();
