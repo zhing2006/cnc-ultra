@@ -2,7 +2,7 @@
 
 C&C Ultra rebuilds the original Command & Conquer (1995) in the browser. Rendering uses Three.js on WebGPU, and the game simulation runs in WebGPU compute shaders. Overview, requirements and license: [README.md](README.md).
 
-The constitutions in [`docs/constitution/`](docs/constitution/README.md) set the product scope and the technical and design principles. They take precedence over this file and over task descriptions. When a task conflicts with them, stop and ask.
+The constitutions in [`docs/constitution/`](docs/constitution/README.md) set the product scope and the technical, design and testing principles. They take precedence over this file and over task descriptions. When a task conflicts with them, stop and ask.
 
 ## Commands
 
@@ -55,8 +55,11 @@ Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2
 
 ## Tests
 
+Tests follow the [testing constitution](docs/constitution/testing.md). The core of it:
+
 - Write only tests that can catch meaningful functional errors. Do not write defensive tests, or negative tests merely because something was removed.
 - Test against the original game, not the current implementation: file formats against the original source and OpenRA's parsers, rules against the original source, rendering against reference images from an independent source, such as captures of the original game or a decoder other than the one under test. Do not record this project's own output as a golden image.
+- When fixing a defect, first write a test that reproduces it and see it fail.
 - Name tests in English.
 
 ## Writing

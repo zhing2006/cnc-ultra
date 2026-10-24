@@ -28,7 +28,7 @@ The original art, audio and video are not in this repository, apart from a few M
 
 The documents are in Chinese.
 
-- [Constitution](docs/constitution/README.md): the product scope and the technical and design principles.
+- [Constitution](docs/constitution/README.md): the product scope and the technical, design and testing principles.
 - [Writing guide](docs/writing.md)
 
 ## License

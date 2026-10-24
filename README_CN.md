@@ -26,7 +26,7 @@ pnpm dev
 
 ## 文档
 
-- [项目宪法](docs/constitution/README.md)：产品范围、技术原则和设计原则。
+- [项目宪法](docs/constitution/README.md)：产品范围，以及技术、设计和测试原则。
 - [中文写作规范](docs/writing.md)
 
 ## 许可证
