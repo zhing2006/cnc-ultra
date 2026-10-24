@@ -66,6 +66,7 @@ Tests follow the [testing constitution](docs/testing.md). The core of it:
 - Write only tests that can catch meaningful functional errors. Do not write defensive tests, or negative tests merely because something was removed.
 - Test against the original game, not the current implementation: file formats against the original source and OpenRA's parsers, rules against the original source, rendering against reference images from an independent source, such as captures of the original game or a decoder other than the one under test. Do not record this project's own output as a golden image.
 - When fixing a defect, first write a test that reproduces it and see it fail.
+- During feature development, finish the implementation and its tests before running checks. Do not repeatedly run checks after intermediate edits. When debugging a specific problem, run the relevant checks as needed. Once development is complete, run the required checks listed above.
 - Run checks in parallel and share state: one Vite server and one browser for all checks, and a page carries on from the previous check's state when that state is the next one's starting point. Prepare separate state only when preconditions conflict. Add browser checks to the list in `tests/run.ts`; `tests/browser.ts` opens a page and fails the check on any console or page error it did not expect.
 - Name tests in English.
 
