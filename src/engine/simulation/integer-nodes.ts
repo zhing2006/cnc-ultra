@@ -1,8 +1,10 @@
-import { Fn, If, Loop, int, uint, select } from 'three/tsl';
+import { Fn, If, Loop, int, uint, select, countTrailingZeros } from 'three/tsl';
 import type { Node } from 'three/webgpu';
 
 export const intMin = (a: Node<'int'>, b: Node<'int'>) => select(a.lessThan(b), a, b);
 export const intMax = (a: Node<'int'>, b: Node<'int'>) => select(a.greaterThan(b), a, b);
+// r186's BitcountNode declaration omits the TSL wrapper returned by this function.
+export const trailingZeros = (value: Node<'uint'>) => countTrailingZeros(value) as unknown as Node<'uint'>;
 
 export const hashNode = Fn(([value]: [Node<'uint'>]) => {
   const v = value.toVar();

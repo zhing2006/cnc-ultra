@@ -8,11 +8,11 @@ export class GpuChecksum {
   private readonly output = new StorageBufferAttribute(new Uint32Array(4), 1);
   private readonly kernels: ComputeNode[];
   constructor(private readonly renderer: WebGPURenderer, buffers: readonly StorageBufferAttribute[]) {
-    const digest = storage(this.output, 'uint', 4).toAtomic();
+    const digest = storage(this.output, 'uint', 4).setName('checksum_digest').toAtomic();
     this.kernels = [Fn(() => { atomicStore(digest.element(instanceIndex), uint(0)); })().compute(4)];
     let offset = 0;
     for (const attribute of buffers) {
-      const source = storage(attribute, 'uint', attribute.count).toReadOnly();
+      const source = storage(attribute, 'uint', attribute.count).setName('checksum_source').toReadOnly();
       const base = offset, length = attribute.count;
       this.kernels.push(Fn(() => {
         const index = instanceIndex.add(base), word = uint(length).toVar();
