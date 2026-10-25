@@ -16,7 +16,9 @@ The constitutions in `docs/` set the product scope and the technical, design and
 - `refs/fetch.ps1` on Windows, `refs/fetch.sh` elsewhere: download the game data and the reference source code into `refs/`.
 - `node refs/export-png.ts`: export OpenRA's decoding of the original shapes and templates into `refs/openra-png/` and write their digests to `tests/reference/openra.txt`, which the format tests compare against. It builds OpenRA first if needed, which takes the .NET SDK.
 
-Before reporting a task as done, run `pnpm check`, `pnpm test` and `pnpm test:e2e`, and report what each one printed, failures included.
+For investigation, review, or documentation/instruction-only tasks, run only the focused checks needed to answer the question or validate the edit. Do not run the full check, unit, browser or GPU acceptance suites merely to close a task, including when temporary diagnostic scripts were created.
+
+For implementation changes to application code, checked-in tests or runtime/build configuration, finish the implementation and focused verification first. Before reporting the implementation as done, run `pnpm check`, `pnpm test` and `pnpm test:e2e`, and report what each one printed, failures included. Follow any narrower test scope or sequencing requested by the user.
 
 At the end of every milestone, run `pnpm test:acceptance` in place of the single-GPU `pnpm test:e2e` run. Both NVIDIA and AMD must pass the functional and CPU/GPU determinism checks. Record both GPUs, driver versions, browser version and measured GPU costs in that milestone's task file. A missing AMD adapter or an unverified GPU selection is an incomplete acceptance run, not a pass. The product constitution's 60 FPS budget still targets the specified NVIDIA development GPU; AMD measurements must not be presented as full-frame performance unless rendering was measured too.
 
