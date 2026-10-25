@@ -12,7 +12,7 @@
 | [里程碑 6.5：原版战役](m6.5-campaigns.md) | 未开始 |
 | [里程碑 7：地图生成器](m7-map-generator.md) | 未开始 |
 | [里程碑 8：Ultra 模式](m8-ultra.md) | 未开始 |
-| [里程碑 9：透视视图和对比场景](m9-views-and-comparison.md) | 未开始 |
+| [里程碑 9：补全电脑对手](m9-complete-ai.md) | 未开始 |
 
 M6 的独立 Review 修正已通过受影响的单测和 NVIDIA 专项。本轮没有运行全量或双卡检查，最终验收与当前版本的整局试玩仍待进行，详见任务单。
 

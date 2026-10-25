@@ -67,7 +67,7 @@ What to check:
 - Memory and traffic: buffers that grow with the product of two large counts, such as units and map cells; access patterns that waste bandwidth; uploads and readbacks; and the number of dispatches and passes per tick.
 - The game's own CPU code: per-frame and per-tick code on the main thread, such as input, the interface, commands, audio and loading, and game logic kept on the CPU, such as AI and building. Look for allocation per object or per frame on hot paths, which the garbage collector pays for later, and for the cost of encoding many small dispatches.
 
-One exception: code that exists only as a reference for other code is reviewed for correctness only, and the performance budget does not apply to it. An example is a CPU version kept bit-identical to a GPU system for tests or comparisons, which may use a slower algorithm to stay identical. The project section names such code.
+One exception: code that exists only as a reference for other code is reviewed for correctness only, and the performance budget does not apply to it. An example is a CPU version kept bit-identical to a GPU system for tests, which may use a slower algorithm to stay identical. The project section names such code.
 
 For each finding, give the current cost and the better approach with its expected cost. Measure where possible: GPU timestamp queries or a GPU profiler for GPU work, and a CPU profiler for the main thread, with the hardware and versions. Otherwise estimate in operations, bytes and frames, and say that it is unmeasured. Do not report micro-optimizations without a measurable effect at the planned scale.
 
@@ -93,7 +93,7 @@ C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with th
 - Planned path and target scale: Ultra mode, the larger maps of the map generator, and the remaining features of the first version in the product constitution.
 - Budget: article 7 of the product constitution. Ultra mode runs 20,000 units at 60 frames per second on the development machine, which has an NVIDIA GeForce RTX 5090 D, an AMD Ryzen 9 9950X and the latest Chrome or Edge.
 - Platform: a browser with WebGPU.
-- Core loops and essential features: building, harvesting, combat, movement and pathfinding, selection and orders, and the features of the first version in the product constitution: a full match on an original map, the single-player campaigns, Ultra mode, the perspective views, and the CPU and GPU comparison.
+- Core loops and essential features: building, harvesting, combat, movement and pathfinding, selection and orders, and the features of the first version in the product constitution: a full match on an original map, the single-player campaigns, Ultra mode, the overlays, and the completed computer opponent.
 - Hard rules, from AGENTS.md and the constitutions:
   - The simulation is deterministic: no floating point in simulation state or in decisions made from it, no results that depend on thread order or timing, no iteration order that is not fixed feeding the simulation, and no randomness that does not come from the simulation's own seeded generator.
   - No code depends on the WebGL backend.
@@ -104,4 +104,4 @@ C&C Ultra rebuilds the original Command & Conquer (1995) in the browser, with th
 - Testing rules: the testing constitution, `docs/testing.md`.
 - Automated checks: `pnpm check`, `pnpm test` and `pnpm test:e2e`.
 - Not reviewed: files under `refs/`, `pnpm-lock.yaml`, and the binary files under `assets/`.
-- Reference-only code: the CPU versions of the simulation systems (technical constitution, article 15). They stay bit-identical to the GPU versions for the tests and for the CPU and GPU comparison, so they may use slower algorithms, such as the GPU's relaxation scheme for flow fields instead of Dijkstra. Their speed is not reviewed.
+- Reference-only code: the CPU versions of the simulation systems (technical constitution, article 15). They stay bit-identical to the GPU versions for the tests, so they may use slower algorithms, such as the GPU's relaxation scheme for flow fields instead of Dijkstra. Their speed is not reviewed.
