@@ -44,6 +44,22 @@ it('retries AI production after the initial payment was unaffordable',()=>{
   new Commander(0).step(economy);expect(house.queues.items.get('vehicle')?.suspended).toBe(false);
 });
 
+it.each([0,10,11])('starts new AI factories only above the original ten-credit threshold (%i)',money=>{
+  // BUILDING.CPP AI gates creation of a new Factory on Available_Money() > 10.
+  // This does not suspend products that have already started.
+  const house=new HouseState(0,1,money),inventory=new Int32Array(MOVEMENT.length*2),buildings=new Map<number,LiveBuilding>();
+  for(const type of ['FACT','NUKE','PROC','PYLE','WEAP']){
+    const id=buildings.size;house.factories.push({type,faction:1,active:true});inventory[movementType(type)]++;
+    buildings.set(id,{id,type,cell:100+id,owner:0,faction:1,health:PRODUCTION.get(type)!.strength,active:true,opened:true,started:0,duration:0,selling:false,repairing:false});
+  }
+  inventory[movementType('HARV')]=1;house.economy.power=200;house.economy.drain=100;
+  const started:string[]=[];
+  const economy={frame:100,scene:{setup:{seed:1995}},buildings,inventory,faction:1,house:house.economy,houses:[house,new HouseState(1,2,0)],queues:house.queues,
+    deployIdleMcvs(){},get available(){return house.queues.options();},withOwner<T>(_owner:number,work:()=>T){return work();},choose(name:string){started.push(name);house.queues.begin(name);}} as unknown as EconomyRuntime;
+  new Commander(0).step(economy);
+  expect(started.length>0).toBe(money>10);
+});
+
 it.each([1, 2])('starts faction %i with power before a refinery under original prerequisites', faction => {
   const house = new HouseState(0, faction, 10000), orders: string[] = [];
   house.economy.power = 15;

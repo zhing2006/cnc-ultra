@@ -63,7 +63,8 @@ export class Commander {
         const sum=choices.reduce((n,c)=>n+c.weight,0);if(!sum)return;
         let pick=this.random(economy,stream,sum);for(const choice of choices){if(pick<choice.weight)return choice.name;pick-=choice.weight;}
       };
-      const begin=(name:string|undefined)=>{if(name)economy.choose(name);};
+      // BUILDING.CPP AI starts a new factory only above ten credits, even for free initial installments.
+      const begin=(name:string|undefined)=>{if(name&&economy.house.money>10)economy.choose(name);};
       const building=economy.queues.items.get('building');
       if(building?.complete){
         if(economy.frame>=economy.current.placementRetryFrame){
