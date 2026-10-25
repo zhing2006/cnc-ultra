@@ -72,24 +72,3 @@
 协防取三次预热后的五个样本，战斗取三个样本。两项均不包含渲染，不能据此宣称两万单位整场达到 60 FPS。完整 GPU 帧耗时和两万单位实战渲染仍未实测，属于后续 Ultra 验收。
 
 协防原始数据为 `test-results/m6-wrap-scaling-nvidia.json`、`test-results/m6-wrap-scaling-amd.json`；战斗数据为两卡子目录中的 `m4-measurement.json`。
-
-### 提交开销优化短测
-
-2026-10-25，在上述验收之后，增加了 `src/engine/compute-batch.ts`，合并同一个逻辑帧内的 compute 提交。CPU 上传新值之前先提交此前的命令，读回复制也按原来的顺序执行。每个 compute pass 和逻辑帧都保留，经济报告仍然在下一逻辑帧开始之前完成。
-
-`node tests/compute-batch-performance.ts --ticks=1200` 对比关闭和开启提交合并。两种运行使用相同的模拟代码、原版 SCM01EA 地图和种子 `1995`，双方 AI 从开局运行 1200 tick，前 100 tick 不计入采样。场景有 512 个槽位，结束时有 11 个存活对象。测量包含 CPU 准备、提交和等待经济报告完成，不包含渲染；准备 shader 和最后读回状态的时间也不计入。
-
-硬件为 AMD Ryzen 9 9950X、RTX 5090 D（驱动 `32.0.16.1664`）和 AMD Radeon(TM) Graphics / RDNA 2（驱动 `32.0.21042.62`）。Chromium 为 `156.0.8078.4`，Node.js 为 `24.13.0`，Three.js 为 `0.186.1`。两卡实际 WebGPU vendor 均已核对。下表取各 1100 个样本的平均值。
-
-| GPU | 每 tick 提交次数，优化前／后 | CPU 准备与提交，优化前／后 | 每 tick 耗时，优化前／后 |
-|---|---:|---:|---:|
-| RTX 5090 D | 30.11／4.55 | 0.450／0.364 ms | 4.393／3.942 ms |
-| AMD RDNA 2 | 30.11／4.55 | 0.472／0.382 ms | 4.177／3.794 ms |
-
-5090 的平均 tick 耗时减少了 10.3%，AMD 减少了 9.2%。两卡的中位耗时仍然接近 4 ms，每 tick 的读回依赖仍是后续优化重点。这里的结果不能推算成两万单位的整帧性能，也没有证明能够达到 `100×`。
-
-四组运行采集的 GPU 状态逐位相同，单位、建筑和经济快照也一致。原始数据为 `test-results/m6-compute-batch.json`，输出为同名前缀的 `.log`。
-
-本次按要求只做短测：`pnpm check` 最终为 0 errors、0 warnings，首次发现的两处 WebGPU 重载转发类型错误已经修复；`pnpm test` 为 33 个文件、704 项通过。`node tests/run.ts --only=computebatch,matchrendering --gpus=nvidia,amd` 两卡各两组通过，总计 40.5 秒，覆盖上传与读回顺序、快进时的逻辑帧和绘制分离，以及特效历史和精灵投影。输出保存在 `test-results/m6-compute-batch-check.log`、`m6-compute-batch-unit.log` 和 `m6-compute-batch-focused.log`。这次没有运行全量浏览器回归或双卡完整验收。
-
-提交前补跑了受影响的游戏循环检查：`node tests/run.ts --only=match,economy,combat,units,simulation --gpus=nvidia,amd`。范围包括实际对局与重开、经济及建筑操作、战斗、单位操作、模拟确定性与暂停恢复。NVIDIA 和 AMD 各五组全部通过，零失败，分别用时 114.389 秒和 119.194 秒，总计 236.2 秒。硬件和浏览器版本与上面的短测相同，没有启用完整验收或两万单位性能测试。结果保存在 `test-results/m6-compute-batch-related.json`，输出为 `test-results/m6-compute-batch-related.log`。
