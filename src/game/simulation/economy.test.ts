@@ -116,6 +116,32 @@ it('reissues an interrupted refinery approach and resumes harvesting after unloa
   expect(ore[124]).toBeLessThan(36);
 });
 
+it('preserves refinery contact when a loaded harvester automatically gives way',()=>{
+  const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,
+    units:[{type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:70,facing:192}]});
+  const state=initialHarvest(2),p=HBASE+HWORDS,buildings=new Int32Array(2*BUILDING_WORDS);
+  buildings[3]=1;state[p+HGEN]=1;state[p+HMODE]=3;state[p+HREF]=0;state[p+HGOAL]=68;state[p+HLOAD]=28;
+  const context={battle,ore:new Int32Array(cells).fill(-1),state,buildings,playable:new Int32Array(cells).fill(1),passable};
+  // UNIT.CPP Scatter only assigns NavCom, not a new mission or radio contact.
+  battle.movement.scatter(1);stepHarvest(context);
+  expect(state[p+HMODE]).toBe(3);expect(state[p+HREF]).toBe(0);
+  for(let tick=0;tick<1000;tick++){battle.movement.step();stepHarvest(context);}
+  expect(state[0]).toBe(700);
+});
+
+it('replaces a harvesting mission when the player explicitly orders the same cell as a scatter',()=>{
+  const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,
+    units:[{type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:70,facing:192}]});
+  const state=initialHarvest(2),p=HBASE+HWORDS,buildings=new Int32Array(2*BUILDING_WORDS);
+  buildings[3]=1;state[p+HGEN]=1;state[p+HMODE]=3;state[p+HREF]=0;state[p+HGOAL]=68;state[p+HLOAD]=28;
+  const destination=battle.movement.scatter(1);
+  battle.step([{frame:1,kind:'move',target:destination,ids:[1]}]);
+  stepHarvest({battle,ore:new Int32Array(cells).fill(-1),state,buildings,playable:new Int32Array(cells).fill(1),passable});
+  expect(state[p+HMODE]).toBe(0);expect(state[p+HREF]).toBe(-1);
+});
+
 it('clears a refinery apron while unloading so its harvester can leave and mine again',()=>{
   const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
   const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,multiplayer:true,

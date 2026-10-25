@@ -60,7 +60,7 @@ export class GpuCloak {
                         If(unit(other.sub(1),U.UKIND).equal(int(0)).or(unit(other.sub(1),U.UOWNER).equal(unit(id,U.UOWNER))),()=>{free.assign(0);});
                       });
                     }
-                    If(free.notEqual(int(0)),()=>{goals.element(id).assign(next);});
+                    If(free.notEqual(int(0)),()=>{goals.element(id).assign(next);unit(id,U.USCATTER_GOAL).assign(next.add(1));});
                   });
                 });
                 unit(id,U.UROUTE).assign(-1);unit(id,U.USTALLED).assign(0);paths.element(id).assign(-1);

@@ -205,6 +205,7 @@ export class CpuUnits {
     this.units[at + S.UROUTE] = -1;
     this.units[at + S.USTALLED] = 0;
     this.pathGoals[id] = -1;
+    if(destination>=0)this.units[at+S.USCATTER_GOAL]=destination+1;
     return destination;
   }
   /** UNIT.CPP / INFANTRY.CPP Can_Enter_Cell: opposing occupiers are MOVE_DESTROYABLE. */
@@ -519,6 +520,7 @@ export class CpuUnits {
           if (command.kind === 'scatter')
             this.scatter(id);
           else {
+            u[at+S.USCATTER_GOAL]=0;
             this.goals[id] = command.kind === 'stop' ? -1 : command.target!;
             this.pathGoals[id] = -1;
             u[at + S.USTALLED] = 0;

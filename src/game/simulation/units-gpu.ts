@@ -456,6 +456,7 @@ export class GpuUnits {
       });
       If(chosen.greaterThanEqual(int(0)), () => {
         goals.element(id).assign(chosen);
+        u.element(at.add(S.USCATTER_GOAL)).assign(chosen.add(1));
       });
       u.element(at.add(int(S.UROUTE))).assign(-1);
       u.element(at.add(int(S.USTALLED))).assign(0);
@@ -947,6 +948,7 @@ export class GpuUnits {
         If(this.commandKind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
+          u.element(at.add(S.USCATTER_GOAL)).assign(0);
           goals.element(id).assign(select(this.commandKind.equal(int(1)), int(-1), this.target));
           pathGoals.element(id).assign(-1);
           u.element(at.add(int(S.USTALLED))).assign(0);
@@ -968,6 +970,7 @@ export class GpuUnits {
         If(kind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
+          u.element(at.add(S.USCATTER_GOAL)).assign(0);
           goals.element(id).assign(select(kind.equal(int(1)), int(-1), pending.element(p.add(int(1)))));
           pathGoals.element(id).assign(-1);
           u.element(at.add(int(S.USTALLED))).assign(0);

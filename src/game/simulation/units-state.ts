@@ -2,7 +2,7 @@ import type { Grid } from '../../engine/simulation/state.ts';
 import { MOVEMENT } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { INFANTRY_SPOTS } from './map.ts';
-export const WORDS = 51;
+export const WORDS = 52;
 export const UX = 0;
 export const UY = 1;
 export const UCELL = 2;
@@ -56,6 +56,8 @@ export const UCAPTURE_TICK=47;
 export const UCLOAK_EVENT=48;
 /** Destructible obstruction ID + 1 and the navigation order it interrupted. */
 export const UOBSTRUCTION=49, UOBSTRUCTION_GOAL=50;
+/** Automatic Scatter NavCom, cell + 1. It changes the route without replacing a harvesting mission. */
+export const USCATTER_GOAL=51;
 /** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
 export const DIRECT_STEP = -2;
 export interface UnitPlacement {

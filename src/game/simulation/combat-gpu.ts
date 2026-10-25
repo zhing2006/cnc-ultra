@@ -532,7 +532,7 @@ export class GpuCombat {
                 If(owner.equal(int(0)).or(owner.equal(id.add(1))), () => { free.assign(1); });
                 If(owner.greaterThan(int(0)),()=>{If(unit(owner.sub(1),U.UOWNER).notEqual(unit(id,U.UOWNER)),()=>{hostile.assign(1);});});
               });
-              If(free.notEqual(int(0)).and(hostile.equal(int(0))), () => { goals.element(id).assign(next); });
+              If(free.notEqual(int(0)).and(hostile.equal(int(0))), () => { goals.element(id).assign(next);unit(id,U.USCATTER_GOAL).assign(next.add(1)); });
             });
           });
           unit(id, U.UROUTE).assign(-1);
@@ -1510,7 +1510,7 @@ export class GpuCombat {
         state(id, C.CROUTE_LENGTH).assign(0);
         state(id, C.CSCAN).assign(0);
         state(id, C.CFIRE).assign(-1);
-        If(kind.notEqual(int(2)), () => { goals.element(id).assign(select(kind.equal(int(0)), target, int(-1))); });
+        If(kind.notEqual(int(2)), () => { unit(id,U.USCATTER_GOAL).assign(0);goals.element(id).assign(select(kind.equal(int(0)), target, int(-1))); });
         paths.element(id).assign(-1);
         unit(id, U.UWAIT).assign(0);
         unit(id, U.URETRIES).assign(10);

@@ -63,8 +63,12 @@ export class GpuHarvest {
           state(id,HGEN).assign(unit(id,U.UGENERATION));state(id,HREF).assign(-1);state(id,HGOAL).assign(-1);state(id,HARCHIVE).assign(-1);
         });
         If(goals.element(id).greaterThanEqual(0).and(goals.element(id).notEqual(state(id,HGOAL))).and(unit(id,U.UATTACHED).equal(0)),()=>{
-          state(id,HMODE).assign(0);state(id,HTIMER).assign(0);state(id,HREF).assign(-1);state(id,HGOAL).assign(goals.element(id));
+          If(goals.element(id).notEqual(unit(id,U.USCATTER_GOAL).sub(1)),()=>{
+            state(id,HMODE).assign(0);state(id,HTIMER).assign(0);state(id,HREF).assign(-1);
+          });
+          state(id,HGOAL).assign(goals.element(id));
         });
+        unit(id,U.USCATTER_GOAL).assign(0);
         const ordered=unit(id,U.UENTER).sub(1).toVar();
         If(ordered.greaterThanEqual(0).and(unit(id,U.UATTACHED).equal(0)),()=>{
           unit(id,U.UENTER).assign(0);

@@ -997,6 +997,7 @@ export class CpuCombat {
         if (this.units[at + U.UHEALTH] <= 0)
           continue;
         const type=combatTypes[this.units[at+U.UTYPE]],target=command.target??-1;
+        if(command.kind!=='scatter')this.units[at+U.USCATTER_GOAL]=0;
         let special=command.kind==='capture'?1:command.kind==='sabotage'?2:0;
         if(command.kind==='attack'&&target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===2){
           const name=MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name;

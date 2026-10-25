@@ -206,7 +206,12 @@ export async function compareRefineryQueue(){
     (miningState.array as Int32Array).set(state);miningState.needsUpdate=true;
     amount.fill(-1);amount[124]=36;(ore.amount.array as Int32Array).set(amount);ore.amount.needsUpdate=true;
     for(let frame=1;frame<=1400;frame++){
+      if(frame===2){
+        cpu.movement.scatter(2);
+        gpu.movement.applyCommands([{frame:gpu.frame,kind:'scatter',ids:[2]}]);
+      }
       stepHarvest(context);
+      if(frame===2&&(state[p+HMODE]!==3||state[p+HREF]!==0))throw new Error('Automatic yielding discarded refinery contact');
       cpu.movement.occupy();gpu.movement.beginOccupancyEdits();harvest.step();gpu.movement.endOccupancyEdits();
       if(frame===1&&cpu.movement.goals[2]!==68)throw new Error('Interrupted docking did not receive its destination again');
       cpu.movement.step();gpu.movement.step();

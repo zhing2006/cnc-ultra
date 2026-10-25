@@ -37,7 +37,12 @@ export function stepHarvest(v:HarvestContext){
     const at=id*U.WORDS,p=HBASE+id*HWORDS;
     if(u[at+U.UTYPE]!==movementType('HARV')||u[at+U.UHEALTH]<=0||u[at+U.UENTER]<0)continue;
     if(h[p+HGEN]!==u[at+U.UGENERATION]){h.fill(0,p,p+HWORDS);h[p+HGEN]=u[at+U.UGENERATION];h[p+HREF]=h[p+HGOAL]=h[p+HARCHIVE]=-1;}
-    if(goals[id]>=0&&goals[id]!==h[p+HGOAL]&&!u[at+U.UATTACHED]){h[p+HMODE]=0;h[p+HTIMER]=0;h[p+HREF]=-1;h[p+HGOAL]=goals[id];}
+    if(goals[id]>=0&&goals[id]!==h[p+HGOAL]&&!u[at+U.UATTACHED]){
+      // UNIT.CPP Scatter changes only NavCom; it must not replace Mission_Enter or break radio contact.
+      if(goals[id]!==u[at+U.USCATTER_GOAL]-1){h[p+HMODE]=0;h[p+HTIMER]=0;h[p+HREF]=-1;}
+      h[p+HGOAL]=goals[id];
+    }
+    u[at+U.USCATTER_GOAL]=0;
     const ordered=u[at+U.UENTER]-1;
     if(ordered>=0&&!u[at+U.UATTACHED]){
       u[at+U.UENTER]=0;

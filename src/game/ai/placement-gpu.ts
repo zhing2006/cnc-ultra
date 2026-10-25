@@ -115,7 +115,7 @@ export class GpuPlacementFlush {
             });
             If(free.notEqual(int(0)), () => { mask.bitOrAssign(int(1).shiftLeft(slot)); });
           });
-          If(hostile.equal(int(0)).and(unit(id, U.UKIND).notEqual(int(0)).and(mask.notEqual(int(0))).or(mask.equal(int(31)))), () => { goals.element(id).assign(next); });
+          If(hostile.equal(int(0)).and(unit(id, U.UKIND).notEqual(int(0)).and(mask.notEqual(int(0))).or(mask.equal(int(31)))), () => { goals.element(id).assign(next);unit(id,U.USCATTER_GOAL).assign(next.add(1)); });
         });
       });
       unit(id, U.UROUTE).assign(-1); unit(id, U.USTALLED).assign(0); paths.element(id).assign(-1);
