@@ -10,6 +10,14 @@
   const simulation = new URLSearchParams(location.search).get('demo') === 'simulation';
   const combat = new URLSearchParams(location.search).get('demo') === 'combat';
   const units = new URLSearchParams(location.search).get('demo') === 'units';
+  const buildings=new URLSearchParams(location.search).get('demo')==='buildings';
+  const economy=new URLSearchParams(location.search).get('demo')==='economy';
+  const faction=new URLSearchParams(location.search).get('faction')==='nod'?2:1;
+  let waves=$state(false);
+  let density=$state(false);
+  const productionSpeeds=[1,10,100] as const;
+  let productionSpeed=$state<1|10|100>(1);
+  let controlsOpen=$state(!buildings&&!economy);
   let vision = $state(false);
   let flow = $state(false), paused = $state(false), frame = $state(0), digest = $state('');
 
@@ -48,7 +56,7 @@
         status = 'unsupported';
         return;
       }
-      const started = await startGame(created, canvas, { simulation, units, combat,
+      const started = await startGame(created, canvas, { simulation, units, combat, buildings, economy, faction,
         onProgress: showProgress,
         onStats: (value, checksum) => { frame = value; digest = checksum; } });
       if (unmounted || renderer !== created) {
@@ -59,6 +67,8 @@
       game.setFlow(flow);
       game.setVision(vision);
       game.setPaused(paused);
+      game.setWaves(waves);
+      game.setProductionSpeed(productionSpeed);
       status = 'running';
     } catch (error) {
       if (error instanceof DeviceLostError) {
@@ -101,10 +111,12 @@
   {#if status === 'starting'}<Loading message={loadingMessage} />{/if}
 {/if}
 
-{#if (simulation || units || combat) && !preview && status === 'running'}
+{#if (simulation || units || combat || buildings || economy) && !preview && status === 'running'}
   <aside class="simulation-controls" aria-label="Simulation demo">
-    <strong>{combat ? 'Ground combat · GDI vs Nod' : units ? 'Units and controls · 28 vehicles, 35 infantry' : 'GPU simulation · 320 tanks'}</strong>
-    {#if units || combat}
+    <details bind:open={controlsOpen}>
+    <summary>{buildings?'Buildings · MCV sandbox':economy?'Economy · MCV opening':combat ? 'Ground combat · GDI vs Nod' : units ? 'Units and controls · Vehicles, infantry and aircraft' : 'GPU simulation · 320 tanks'}</summary>
+    {#if buildings || economy}<div>Select the MCV and press D to deploy. Use the sidebar to build. Right-click a cameo to hold, then again to cancel.</div>{/if}
+    {#if units || combat || buildings || economy}
       <div>Click to capture the pointer. Left-click or drag to select, then left-click ground to move. {#if combat}Left-click enemies to attack; Ctrl+click forces an attack. Nod positions are to the east.{/if} Right-click clears the selection. Esc releases the pointer.</div>
     {:else}
       <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
@@ -113,11 +125,22 @@
       <button type="button" aria-pressed={flow} onclick={() => { flow = !flow; game?.setFlow(flow); }}>Flow field</button>
       {#if units || combat}<button type="button" aria-pressed={vision} onclick={() => { vision = !vision; game?.setVision(vision); }}>Sight</button>{/if}
       <button type="button" aria-pressed={paused} onclick={() => { paused = !paused; game?.setPaused(paused); }}>{paused ? 'Resume' : 'Pause'}</button>
-      <a href={combat ? '?demo=combat' : units ? '?demo=units' : '?demo=simulation'}>Reset</a>
+      {#if buildings}<button type="button" aria-pressed={waves} onclick={()=>{waves=!waves;game?.setWaves(waves);}}>{waves?'Stop reinforcements':'Start reinforcements'}</button>{/if}
+      {#if buildings||economy}<button type="button" aria-pressed={density} onclick={()=>{density=!density;game?.setDensity(density);}}>Ore density</button>{/if}
+      <a href={buildings?'?demo=buildings':economy?`?demo=economy&faction=${faction===2?'nod':'gdi'}`:combat ? '?demo=combat' : units ? '?demo=units' : '?demo=simulation'}>Reset</a>
       <a href="?">Original map</a>
     </div>
+    {#if buildings||economy}
+      <div class="controls" aria-label="Production speed">
+        <span>Production speed</span>
+        {#each productionSpeeds as speed}
+          <button type="button" aria-pressed={productionSpeed===speed} onclick={()=>{productionSpeed=speed;game?.setProductionSpeed(speed);}}>×{speed}</button>
+        {/each}
+      </div>
+    {/if}
     <div>Tick <span data-tick={frame}>{frame}</span> · 15 ticks/s · pauses in the background</div>
     {#if digest}<code title="Asynchronous simulation checksum">{digest}</code>{/if}
+    </details>
   </aside>
 {/if}
 
@@ -150,6 +173,7 @@
     line-height: 1.7;
   }
   .controls { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  summary { cursor: pointer; font-weight: 600; }
   .controls button { cursor: pointer; padding: 4px 8px; }
   .controls button[aria-pressed='true'] { background: #82ddd8; }
   .controls a { color: #a8e2ff; }

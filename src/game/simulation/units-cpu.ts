@@ -3,7 +3,8 @@ import { CpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { checksum, randomWord } from '../../engine/simulation/fixed.ts';
 import { desiredFacing256, dirFacing, distance, movePoint } from '../coord.ts';
-import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { MOVEMENT, GROUND_SPEED,movementType } from '../data/movement.ts';
+import { BUILDINGS } from '../data/buildings.ts';
 import { combatTypes } from '../data/combat.ts';
 import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
 import { INFANTRY_SPOTS } from './map.ts';
@@ -40,11 +41,20 @@ export class CpuUnits {
   occupy() {
     this.occupancy.fill(0);
     const u = this.units;
+    // Buildings reserve their complete footprint before docked ground objects.
+    for(let id=0;id<this.goals.length;id++){
+      const at=id*S.WORDS;
+      if(u[at+S.UHEALTH]<=0||u[at+S.UDOMAIN]!==2)continue;
+      for(const [x,y] of BUILDINGS.get(MOVEMENT[u[at+S.UTYPE]].name)!.occupy){
+        const cell=u[at+S.UORIGIN]+y*this.setup.grid.width+x;
+        for(let slot=0;slot<5;slot++)this.occupancy[cell*5+slot]=id+1;
+      }
+    }
     // UNIT.CPP, Can_Enter_Cell: a vehicle reserving a crushable cell still blocks
     // another vehicle. Keep its reservation even while enemy infantry remain alive.
     for (const infantry of [true, false]) for (let id = 0; id < this.goals.length; id++) {
       const at = id * S.WORDS;
-      if (u[at + S.UHEALTH] <= 0 || !!u[at + S.UKIND] !== infantry) continue;
+        if (u[at + S.UHEALTH] <= 0 || u[at + S.UATTACHED] || u[at+S.UDOMAIN]===2 || !!u[at + S.UKIND] !== infantry || u[at + S.UDOMAIN] === 1 && (u[at + S.UALTITUDE] >= 16||u[at+S.UTYPE]===movementType('C17')||u[at+S.UTYPE]===movementType('A10'))) continue;
       for (const offset of [S.UCELL, S.UDEST, S.UMIDDLE]) {
         // INFANTRY.CPP, Start_Driver releases the old spot when reserving headto.
         if (offset === S.UCELL && u[at + S.UKIND] && u[at + S.UDEST] >= 0) continue;
@@ -206,7 +216,7 @@ export class CpuUnits {
   step(commands: readonly S.UnitCommand[] = []) {
     this.frame++;
     for (let id = 0; id < this.goals.length; id++) {
-      if (this.goals[id] < 0) this.pathGoals[id] = -1;
+      if (this.goals[id] < 0 || this.units[id*S.WORDS+S.UDOMAIN]) this.pathGoals[id] = -1;
       else if (this.pathGoals[id] === -1) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
     }
     this.flow.step(this.pathGoals);
@@ -219,12 +229,13 @@ export class CpuUnits {
       u[at + S.UOVERRUN_CELL] = -1;
       u[at + S.UJUMP] = -1;
       u[at + S.UJUMP_TRACK] = -1;
+      if (u[at + S.UDOMAIN]) continue;
       if (u[at + S.UWAIT] > 0)
         u[at + S.UWAIT]--;
       wasDriving[id] = u[at + S.UDEST] >= 0 ? 1 : 0;
       if (wasDriving[id])
         this.advance(id);
-      else if (u[at + S.UFACE] !== u[at + S.UDESIRED]) {
+      else if (u[at + S.UFACE] !== u[at + S.UDESIRED] && !(type.name==='APC'&&u[at+S.UDOOR])) {
         u[at + S.UFACE] = rotateFacing(u[at + S.UFACE], u[at + S.UDESIRED], type.rotation);
         rotated[id] = 1;
         if (!u[at + S.UROTATED])
@@ -248,7 +259,7 @@ export class CpuUnits {
       const at = id * S.WORDS;
       const goal = this.goals[id];
       const type = MOVEMENT[u[at + S.UTYPE]];
-      if (u[at + S.UHEALTH] <= 0) continue;
+      if (u[at + S.UHEALTH] <= 0 || u[at + S.UATTACHED] || u[at + S.UDOMAIN]) continue;
       if (u[at + S.UJUMP] >= 0) {
         const cell = u[at + S.UJUMP];
         if (this.free(cell, id) >= 0) {
@@ -258,7 +269,7 @@ export class CpuUnits {
         }
         continue;
       }
-      if (goal < 0 || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
+      if (goal < 0 || (type.name==='APC'&&u[at+S.UDOOR]) || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
         continue;
       const field = this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
       const direct=this.pathGoals[id]===S.DIRECT_STEP;

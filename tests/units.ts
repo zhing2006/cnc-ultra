@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import { withInput, withApp,type Session } from './browser.ts';
+import { withInput, withApp,pollCheck,type Session } from './browser.ts';
 
 export async function checkUnits(session:Session){
   await withApp(session,{path:'/tests/fixture.html'},async page=>{
     page.setDefaultTimeout(15000);
-    const measured=await page.evaluate(async()=> (await import('../tests/units-fixture.ts')).compareUnits());
+    const measured=await page.evaluate(async acceptance=> (await import('../tests/units-fixture.ts')).compareUnits(acceptance),!!session.acceptance);
     console.log(`M3 environment: Chromium ${session.browser.version()}, ${JSON.stringify(measured)}`);
     writeFileSync('test-results/m3-measurement.json',JSON.stringify({browser:session.browser.version(),...measured},null,2));
     await page.goto(`${session.baseUrl}/?demo=units`);
-    await page.locator('canvas[data-status="running"]').waitFor({state:'attached'});
+    await page.locator('canvas[data-status="running"]').waitFor({state:'attached',timeout:30000});
     await withInput(session,page,async()=>{
     await page.evaluate(async()=>{
       const {GpuUnits}=await import('../src/game/simulation/units-gpu.ts');
@@ -40,6 +40,12 @@ export async function checkUnits(session:Session){
     });
     assert.deepEqual(selected,[0],'original Ctrl+1 / 1 group assignment and recall');
     await page.keyboard.press('Alt+Enter');await page.waitForFunction(()=>!document.fullscreenElement);
+    // Fullscreen changes before ResizeObserver and the next draw update the camera bounds.
+    await page.waitForFunction(()=>{
+      const {view,scale}=(window as unknown as {unitTest:{view:{width:number;height:number};scale:number}}).unitTest;
+      const bounds=document.querySelector('canvas')!.getBoundingClientRect();
+      return view.width===Math.ceil(bounds.width*devicePixelRatio/scale)&&view.height===Math.ceil(bounds.height*devicePixelRatio/scale);
+    });
     const destination=await page.evaluate(async()=>{
       const scope=(window as unknown as {unitTest:{simulation:{setup:{grid:{width:number;edges:Uint32Array}}};view:{x:number;y:number;width:number;height:number};scale:number}}).unitTest;
       const {view,scale,simulation}=scope;
@@ -51,11 +57,23 @@ export async function checkUnits(session:Session){
     await page.locator('canvas').click({position:{x:destination.x,y:destination.y}});
     await page.waitForFunction(()=>!!document.pointerLockElement);
     await page.evaluate(()=>new Promise<void>(resolve=>setTimeout(resolve,180)));
+    // Pointer-lock/fullscreen settling may finish an existing camera scroll. The click
+    // addresses the cell currently under the cursor, not the earlier unlocked view.
+    destination.cell=await page.evaluate(({x,y})=>{
+      const {view,scale,simulation}=(window as unknown as {unitTest:{view:{x:number;y:number};scale:number;simulation:{setup:{grid:{width:number}}}}}).unitTest;
+      return Math.floor((view.y+y*devicePixelRatio/scale)/24)*simulation.setup.grid.width+Math.floor((view.x+x*devicePixelRatio/scale)/24);
+    },destination);
     await page.mouse.click(destination.x,destination.y);
-    await page.waitForFunction(async(cell)=>{
-      const scope=(window as unknown as {unitTest:{simulation:{snapshot():Promise<Int32Array[]>}}}).unitTest;
-      return (await scope.simulation.snapshot())[2][0]===cell;
-    },destination.cell);
+    let clicked:unknown;
+    await pollCheck(async()=>{
+      const result=await page.evaluate(async()=>{
+        const {GpuUnits}=await import('../src/game/simulation/units-gpu.ts'),{GpuSelection}=await import('../src/game/simulation/selection.ts'),U=await import('../src/game/simulation/units-state.ts');
+        const scope=(window as unknown as {unitTest:{simulation:InstanceType<typeof GpuUnits>;selection:InstanceType<typeof GpuSelection>;view:unknown}}).unitTest;
+        const [snapshot,selection]=await Promise.all([scope.simulation.snapshot(),scope.selection.read()]);
+        return {goal:snapshot[2][0],cell:snapshot[1][U.UCELL],selection:Array.from(selection),view:scope.view};
+      });
+      clicked=result;return result.goal===destination.cell;
+    },'the selected unit must receive its clicked destination').catch(error=>{throw new Error(`${error.message}: destination ${JSON.stringify(destination)}, observed ${JSON.stringify(clicked)}`,{cause:error});});
     await page.evaluate(()=>document.exitPointerLock());
     await page.getByRole('button',{name:'Sight',exact:true}).click();
     await page.getByRole('button',{name:'Flow field',exact:true}).click();

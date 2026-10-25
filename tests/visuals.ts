@@ -155,7 +155,8 @@ export function checkOriginalVisuals(session: Session) {
 
     // Continue on the same browser page into the standalone preview and exercise each kind of asset.
     await page.goto(`${session.baseUrl}/?preview=assets`);
-    await page.locator('canvas[data-status="preview"]').waitFor({ state: 'attached' });
+    // The preview compiles its own renderer while the acceptance simulation is also using the GPU.
+    await page.locator('canvas[data-status="preview"]').waitFor({ state: 'attached', timeout: 30000 });
     assert.equal(await page.locator('[data-asset-name]').count(), 47);
     await page.getByLabel('Scale', { exact: true }).selectOption('1');
     const centered = await page.locator('canvas').evaluate(canvas => {

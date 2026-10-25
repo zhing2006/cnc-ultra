@@ -13,6 +13,7 @@ import { checkSimulation } from './simulation.ts';
 import { checkCombat } from './combat.ts';
 import { checkSelectionReady } from './startup.ts';
 import { checkUnits } from './units.ts';
+import { checkEconomy,checkTransport,checkCoordination,checkCompaction } from './economy.ts';
 import { discoverGpus, identifyGpu, launchGpu } from './gpu.ts';
 
 const started = performance.now();
@@ -52,7 +53,9 @@ try {
   const address = server.httpServer?.address();
   assert(address && typeof address === 'object', 'the Vite server should listen on a TCP port');
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  console.log(`Isolated test server: ${baseUrl}`);
   const argument = process.argv.find(value => value.startsWith('--gpus='));
+  const acceptance = process.argv.includes('--acceptance');
   const requested: (string | undefined)[] = argument ? argument.slice(7).split(',') : [undefined];
   assert(requested.every(value => value === undefined || value === 'amd' || value === 'nvidia'), 'Supported GPU choices are nvidia and amd');
   const choices = argument ? await discoverGpus(browser) : [];
@@ -63,7 +66,11 @@ try {
     seconds: number;
   }[] = [];
 
-  const checks: [string, (session: Session) => Promise<void>][] = [
+  const allChecks: [string, (session: Session) => Promise<void>][] = [
+    [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
+    ['Reusable actor slots, laser beams and building effects',checkCompaction],
+    ['Ground layer transitions and mass aircraft coordination',checkCoordination],
+    ['APC passenger controls and aircraft exploration',checkTransport],
     ['loading stages and selection ready before first input', checkSelectionReady],
     ['ground combat, deterministic impacts and survivors', checkCombat],
     ['original unit movement, multiple targets, sight and controls', checkUnits],
@@ -73,9 +80,13 @@ try {
     ['shadows and house colors compose like drawing each sprite in turn', checkShadowComposition],
     ['original object order, cloaking, integer zoom and the asset preview', checkOriginalVisuals],
   ];
+  const only=process.argv.find(value=>value.startsWith('--only='))?.slice(7).split(',');
+  const checkId=(check:(session:Session)=>Promise<void>)=>check.name.replace(/^check/,'').toLowerCase();
+  if(only)assert(only.every(id=>allChecks.some(([,check])=>checkId(check)===id)),`Unknown check selection: ${only.join(',')}`);
+  const checks=only?allChecks.filter(([,check])=>only.includes(checkId(check))):allChecks;
   await mkdir('test-results', { recursive: true });
   const saveReport = (complete: boolean) => writeFile('test-results/acceptance.json', JSON.stringify({
-    requested: requested.map(vendor => vendor ?? 'default'), complete, runs: reports,
+    requested: requested.map(vendor => vendor ?? 'default'), profile:acceptance?'acceptance':'daily', checks:checks.map(([,check])=>checkId(check)), complete, runs: reports,
   }, null, 2));
   await saveReport(false);
   for (const vendor of requested) {
@@ -90,7 +101,8 @@ try {
     let releasePerformance!: () => void;
     let peers = checks.length - 1;
     const performanceReady = new Promise<void>(resolve => { releasePerformance = resolve; });
-    const session: Session = { browser, baseUrl, gpu, performanceReady };
+    if(peers===0)releasePerformance();
+    const session: Session = { browser, baseUrl, gpu, performanceReady, acceptance };
     const suiteStart = Date.now();
     const results = await Promise.allSettled(checks.map(async ([name, check]) => {
       const start = performance.now();

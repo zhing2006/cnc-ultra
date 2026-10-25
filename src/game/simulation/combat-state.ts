@@ -1,7 +1,7 @@
 import type { UnitsSetup } from './units-state.ts';
 import { combatTypes } from '../data/combat.ts';
 export const ROUTE_STEPS = 32;
-export const CWORDS = 68;
+export const CWORDS = 77;
 export const CTARGET = 0, CMISSION = 1, CARM = 2, CSECOND = 3, CTURRET = 4, CTURN = 5;
 export const CSCAN = 6, CFIRE = 7, CFEAR = 8, CPRONE = 9, CDEATH = 10, CWARHEAD = 11;
 export const CLAST_FIRE = 12, CCURSOR = 13, CAMMO = 14, CRELOAD = 15, CKILLER = 16;
@@ -12,6 +12,9 @@ export const CROUTE_LENGTH = 28, CROUTE_CURSOR = 29, CROUTE_PATH = 30, CROUTE_TA
 export const CLOCAL_SEARCH = 63;
 /** INFANTRY.CPP Made_A_Kill/AI: excitement, delay and a retained local presentation event. */
 export const CSTOKED = 64, CCOMMENT = 65, CCELEBRATED = 66, CTAUNT = 67;
+export const CPOWER=68,CACTIVE=69,CSAM=70,CSTIMER=71,CCHARGE=72,CRECOIL=73;
+export const CMUZZLEX=74,CMUZZLEY=75;
+export const CWALL=76;
 export const GUARD = 0, MOVE = 1, ATTACK = 2, HUNT = 3;
 export const BWORDS = 28, SHOTS_PER_UNIT = 8;
 /** Overrun removes infantry directly, without a normal damage/death animation. */
@@ -31,6 +34,7 @@ export function initialProjectiles(units: number) {
   return state;
 }
 export interface CombatSetup extends UnitsSetup {
+  dynamicTypes?: boolean;
   /** Parent vehicle index for each reserved survivor; -1 for initially present units. */
   crewParents?: readonly number[];
 }
@@ -57,6 +61,7 @@ export function initialCombat(setup: CombatSetup) {
     state[at + CKILLER] = -1;
     state[at + CCREW] = setup.crewParents?.[id] ?? -1;
     state[at + CSEEN] = (unit.owner ?? 0) === 0 ? 1 : 0;
+    state[at+CPOWER]=256;state[at+CACTIVE]=1;
   });
   return state;
 }

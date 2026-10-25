@@ -1,7 +1,8 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 // Ported from UDATA.CPP and IDATA.CPP, type constructors and DO_WALK tables;
 // speed constants from DEFINES.H. Cross-checked against the Nyerguds fork.
-export interface MovementType { name: string; infantry: number; speed: number; rotation: number; sight: number; cost: number; strength: number; locomotion: number; walk: number; walkCount: number; walkJump: number }
+import { EXTRA_ACTORS } from './extra-actors.ts';
+export interface MovementType { name: string; infantry: number; speed: number; rotation: number; sight: number; cost: number; strength: number; locomotion: number; walk: number; walkCount: number; walkJump: number; domain?: number }
 const rows: [string, number, number, number, number, number, number, number, number, number, number][] = [
   ["VICE",0,18,5,4,800,150,1,0,1,1],
   ["FTNK",0,18,5,4,800,300,1,0,1,1],
@@ -46,7 +47,10 @@ const rows: [string, number, number, number, number, number, number, number, num
   ["DELPHI",1,10,8,0,10,25,0,56,6,6],
   ["CHAN",1,10,8,0,10,25,0,56,6,6],
 ];
-export const MOVEMENT: readonly MovementType[] = rows.map(([name, infantry, speed, rotation, sight, cost, strength, locomotion, walk, walkCount, walkJump]) => ({name, infantry, speed, rotation, sight, cost, strength, locomotion, walk, walkCount, walkJump}));
+export const MOVEMENT: readonly MovementType[] = [
+  ...rows.map(([name, infantry, speed, rotation, sight, cost, strength, locomotion, walk, walkCount, walkJump]) => ({name, infantry, speed, rotation, sight, cost, strength, locomotion, walk, walkCount, walkJump})),
+  ...EXTRA_ACTORS.map(({name,domain,speed,rotation,sight,cost,strength}) => ({name,domain,speed,rotation,sight,cost,strength,infantry:0,locomotion:domain===1?4:0,walk:0,walkCount:1,walkJump:1})),
+];
 export const movementType = (name: string) => MOVEMENT.findIndex(type => type.name === name);
 
 // Ported from CONST.CPP, Ground. Rows are land types; columns are SpeedType.

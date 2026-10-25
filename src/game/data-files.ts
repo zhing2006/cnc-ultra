@@ -13,11 +13,11 @@ const loading = new Map<string, Promise<MixSet>>();
  * Fetches the original MIX files from the data/ directory next to the page (technical constitution,
  * articles 10 and 14). The files are fetched once per page load.
  */
-export function loadData(preview = false, audio = false): Promise<MixSet> {
-  const key = `${preview}:${audio}`;
+export function loadData(preview = false, audio = false, economy = false): Promise<MixSet> {
+  const key = `${preview}:${audio}:${economy}`;
   const cached = loading.get(key);
   if (cached) return cached;
-  const files = [...(preview ? PREVIEW_DATA_FILES : DATA_FILES), ...(audio ? ['sounds.mix'] : [])];
+  const files = [...(preview ? PREVIEW_DATA_FILES : DATA_FILES), ...(audio ? ['sounds.mix'] : []), ...(audio||economy?['updatec.mix']:[]), ...(economy ? ['speech.mix','tempicnh.mix'] : [])];
   const pending = Promise.all(files.map(async (name) => {
     const response = await fetch(new URL(`data/${name}`, document.baseURI));
     if (!response.ok) throw new MissingDataError(`data/${name}: HTTP ${response.status}`);

@@ -2,7 +2,8 @@
 import { ReadbackBuffer, StorageBufferAttribute, Vector4, type ComputeNode, type Node, type WebGPURenderer } from 'three/webgpu';
 import { Fn, If, int, uint, storage, instanceIndex, atomicMin, atomicStore, atomicLoad, uniform, abs, select } from 'three/tsl';
 import { weapons, bullets, animations, combatTypes } from '../data/combat.ts';
-import { MOVEMENT } from '../data/movement.ts';
+import { MOVEMENT,movementType } from '../data/movement.ts';
+import { PRODUCTION } from '../data/production.ts';
 import { decodeAud } from '../formats/aud.ts';
 import type { MixSet } from '../formats/mix.ts';
 import type { GpuCombat } from './combat-gpu.ts';
@@ -30,7 +31,7 @@ export class CombatAudio {
   private lastFrame = -1;
   onShake?: () => void;
   constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, mix: MixSet) {
-    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS])].filter(Boolean);
+    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS,'CRUMBLE','OBELPOWR'])].filter(Boolean);
     names.forEach((name, i) => {
       const bytes = mix.get(`${name}.AUD`);
       if (!bytes)
@@ -64,7 +65,7 @@ export class CombatAudio {
     ...combatTypes.flatMap((_, type) => [0, 1].map(ammo => names.indexOf(animations[deathAnimation(type, ammo)]?.sound ?? ''))),
     ...combatTypes.flatMap((_, type) => Array.from({ length: 4 }, (_, i) => names.indexOf(deathVoice(type, 0, i)))),
     ...combatTypes.map((_, type) => names.indexOf(deathVoice(type, 3, 0))),
-      ...MOVEMENT.map((m, i) => Number(!m.infantry && m.strength > 400 && combatTypes[i].explosion >= 0)),
+      ...MOVEMENT.map((m, i) => m.domain===2?Math.trunc((PRODUCTION.get(m.name)?.cost??0)/400):Number(!m.infantry && m.strength > 400 && combatTypes[i].explosion >= 0)),
       ...COMMANDO_TAUNTS.map(name=>names.indexOf(name))];
     const animBase = weapons.length + bullets.length, voiceBase = animBase + combatTypes.length * 2;
     const fireBase = voiceBase + combatTypes.length * 4, shakeBase = fireBase + combatTypes.length;
@@ -84,7 +85,11 @@ export class CombatAudio {
     const collect = Fn(() => {
       const id = int(instanceIndex), b = id.mul(C.BWORDS);
       If(p.element(b.add(C.BBORN)).equal(clock.element(0)).and(clock.element(0).greaterThan(0)), () => {
-        choose(table.element(p.element(b.add(C.BWEAPON))), id, p.element(b.add(C.BFIRE_X)), p.element(b.add(C.BFIRE_Y)));
+        const source=p.element(b.add(C.BSOURCE));
+        // EA BUILDING.CPP Fire_At leaves SAM silent; Nyerguds adds its firing sound.
+        If(source.lessThan(0).or(u.element(source.mul(U.WORDS).add(U.UTYPE)).notEqual(movementType('SAM'))),()=>{
+          choose(table.element(p.element(b.add(C.BWEAPON))), id, p.element(b.add(C.BFIRE_X)), p.element(b.add(C.BFIRE_Y)));
+        });
       });
       If(p.element(b.add(C.BIMPACT)).notEqual(0), () => {
         choose(table.element(p.element(b.add(C.BTYPE)).add(weapons.length)), id.add(shots), p.element(b), p.element(b.add(1)));
@@ -92,6 +97,7 @@ export class CombatAudio {
     })().compute(shots);
     const deaths = Fn(() => {
       const id = int(instanceIndex), at = id.mul(U.WORDS), state = id.mul(C.CWORDS), type = u.element(at.add(U.UTYPE));
+      If(type.equal(movementType('OBLI')).and(c.element(state.add(C.CCHARGE)).equal(1)),()=>{choose(int(names.indexOf('OBELPOWR')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
       If(c.element(state.add(C.CCELEBRATED)).equal(clock.element(0))
         .and(type.equal(int(MOVEMENT.findIndex(t=>t.name==='RMBO')))), () => {
         choose(table.element(c.element(state.add(C.CTAUNT)).add(tauntBase)),
@@ -108,6 +114,10 @@ export class CombatAudio {
           choose(table.element(type.mul(2).add(animBase).add(int(c.element(state.add(C.CAMMO)).greaterThan(0)))), id.add(shots * 2 + count), u.element(at), u.element(at.add(1)));
           // UNIT.CPP Take_Damage: exploding vehicles with MaxStrength > 400.
           If(table.element(type.add(shakeBase)).notEqual(0), () => { atomicStore(shake.element(0), uint(1)); });
+          If(u.element(at.add(U.UDOMAIN)).equal(2),()=>{
+            choose(int(names.indexOf('CRUMBLE')),id.add(shots*2),u.element(at),u.element(at.add(1)));
+            choose(int(names.indexOf('XPLOBIG4')),id.add(shots*2),u.element(at),u.element(at.add(1)));
+          });
         });
       });
     })().compute(count);

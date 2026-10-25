@@ -256,4 +256,13 @@ describe('original unit movement',()=>{
     expect(sight.current.reduce((a,b)=>a+b)).toBe(9);
     units[S.UX]=6*256+128;sight.step(units);expect(sight.current[17]).toBe(0);expect(sight.mapped[17]).toBe(1);
   });
+  it.each(['TRAN','ORCA','HELI','A10'])('reveals one cell around a flying %s and retains its explored route',name=>{
+    // Design constitution §3: approved aircraft sight exception; MAP.CPP Sight_From footprint.
+    const units=S.initialUnits(setup(name)),sight=new CpuSight(8,5,1);
+    units[S.UALTITUDE]=24;sight.step(units);
+    expect(sight.current.reduce((a,b)=>a+b)).toBe(9);
+    expect(sight.mapped[17]).toBe(1);
+    units[S.UX]=6*256+128;sight.step(units);
+    expect(sight.current[22]).toBe(1);expect(sight.current[17]).toBe(0);expect(sight.mapped[17]).toBe(1);
+  });
 });

@@ -1,7 +1,8 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { StorageBufferAttribute, type WebGPURenderer, type ComputeNode, type Node } from 'three/webgpu';
-import { Fn, If, instanceIndex, int, storage, vec4 } from 'three/tsl';
+import { StorageBufferAttribute,Vector2, type WebGPURenderer, type ComputeNode, type Node } from 'three/webgpu';
+import { Fn, If, instanceIndex, int, storage, vec4,select,uniformArray,uniform } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
+import { GpuReinsert } from '../../engine/simulation/reinsert.ts';
 import { GpuOrder } from '../../engine/simulation/order.ts';
 import { GpuSimulation } from '../../engine/simulation/gpu.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
@@ -10,9 +11,10 @@ import type { PalettePipeline, Sprite } from '../../engine/indexed/pipeline.ts';
 import type { GameScene } from '../scene.ts';
 import { leptonToPixel } from '../coord.ts';
 import { BODY_SHAPE, HUMAN_SHAPE, facingTo32, turretAdjust } from '../coord.ts';
-import { MOVEMENT } from '../data/movement.ts';
+import { MOVEMENT,movementType } from '../data/movement.ts';
 import { UNITS } from '../data/units.ts';
-import { UTYPE, UFACE, UDEST, UWALK } from './units-state.ts';
+import { UTYPE, UFACE, UDEST, UWALK, UDOMAIN, UALTITUDE,UHEALTH,UGENERATION,UDOOR,UENTER,UCELL,UKIND,UATTACHED } from './units-state.ts';
+import { BUILDINGS } from '../data/buildings.ts';
 
 /** Ported from LAYER.CPP, LayerClass::Sort, and OBJECT.H, comparison operators. */
 export function bubbleGround(order: Uint32Array, keys: Int32Array) {
@@ -38,11 +40,12 @@ export function groundLayout(scene: GameScene, initial: Int32Array, stride = UNI
     const id = scene.scenario.units.length + i;
     return [`infantry:${u.cell}:${u.type}:${initial[id*stride]}:${initial[id*stride+1]+0x30}`,id];
   }));
+  const aircraft=new Map((scene.scenario.aircraft??[]).map((u,i)=>[`aircraft:${u.cell}:${u.type}`,scene.scenario.units.length+scene.scenario.infantry.length+i]));
   const slots = scene.objects.reduce((max, object) => Math.max(max, object.count), 1);
   const first = scene.objects[0]?.first ?? scene.sprites.length;
   const keys = new Int32Array([...scene.objects.flatMap(o => [o.sortX, o.sortY]), ...(flash ? [0,-0x3fffffff] : [])]);
   const bindings = new Int32Array([...scene.objects.flatMap(o => {
-    const unit = units.get(o.key) ?? (stride !== UNIT_WORDS ? infantry.get(`${o.key}:${o.sortX}:${o.sortY}`) : undefined) ?? -1;
+    const unit = o.key.startsWith('live:')?Number(o.key.slice(5)):units.get(o.key) ?? (stride !== UNIT_WORDS ? infantry.get(`${o.key}:${o.sortX}:${o.sortY}`) ?? aircraft.get(o.key) : undefined) ?? -1;
     return [unit, unit < 0 ? 0 : initial[unit * stride + X], unit < 0 ? 0 : initial[unit * stride + Y], o.sortX, o.sortY];
   }), ...(flash ? [-2,0,0,0,-0x3fffffff] : [])]);
   const packed = new Float32Array((first + (scene.objects.length + Number(flash)) * slots) * 12);
@@ -54,12 +57,39 @@ export function groundLayout(scene: GameScene, initial: Int32Array, stride = UNI
   return { slots, first, keys, bindings, packed, count: packed.length / 12, stride, flashId: flash ? scene.objects.length : -1 };
 }
 
+/** UNIT.CPP / FOOT.CPP / AIRCRAFT.CPP Sort_Y, including infantry boarding an APC. */
 export function updateGroundKeys(layout: ReturnType<typeof groundLayout>, units: Int32Array, keys: Int32Array) {
   for (let id = 0; id < keys.length / 2; id++) {
     const at = id * 5, unit = layout.bindings[at];
     keys[id * 2] = layout.bindings[at + 3] + (unit < 0 ? 0 : units[unit * layout.stride] - layout.bindings[at + 1]);
     keys[id * 2 + 1] = layout.bindings[at + 4] + (unit < 0 ? 0 : units[unit * layout.stride + 1] - layout.bindings[at + 2]);
+    if(unit>=0&&layout.stride!==UNIT_WORDS){
+      const p=unit*layout.stride,type=MOVEMENT[units[p+UTYPE]],b=BUILDINGS.get(type.name);
+      if(units[p+UDOMAIN]===1){keys[id*2]=units[p];keys[id*2+1]=units[p+1]+128+(units[p+UALTITUDE]>=16||type.name==='C17'||type.name==='A10'?1<<24:0);}
+      else if(!b){
+        const carrier=units[p+UENTER]-1,tethered=type.infantry&&carrier>=0&&units[carrier*layout.stride+UTYPE]===movementType('APC')&&units[p+UDEST]===units[carrier*layout.stride+UCELL];
+        keys[id*2]=units[p];keys[id*2+1]=units[p+1]+(tethered?256:type.infantry?48:128);
+      }
+      else if(b){keys[id*2]=units[p]+(type.name==='FIX'?-384:0);keys[id*2+1]=units[p+1]+(type.name==='FIX'?-384:type.name==='PYLE'||type.name==='PROC'?0:Math.trunc(b.height*256/3));}
+    }
   }
+}
+
+/** AIRCRAFT.CPP In_Which_Layer and LAYER.CPP Sorted_Add on birth and layer changes. */
+export function groundLayers(layout:ReturnType<typeof groundLayout>,units:Int32Array){
+  return Int32Array.from({length:layout.keys.length/2},(_,id)=>{
+    const unit=layout.bindings[id*5];if(unit<0)return -1;
+    const at=unit*layout.stride,type=MOVEMENT[units[at+UTYPE]];
+    return units[at+UGENERATION]*4+Number(units[at+UHEALTH]>0&&units[at+UATTACHED]===0)*2+Number(units[at+UDOMAIN]===1&&(units[at+UALTITUDE]>=16||type.name==='C17'||type.name==='A10'));
+  });
+}
+export function transitionGround(layout:ReturnType<typeof groundLayout>,units:Int32Array,keys:Int32Array,order:Uint32Array,previous:Int32Array){
+  const current=groundLayers(layout,units),list=Array.from(order);
+  for(let id=0;id<current.length;id++)if(current[id]!==previous[id]){
+    previous[id]=current[id];
+    if(current[id]>=0&&(current[id]&2)){list.splice(list.indexOf(id),1);insertGround(list,keys,id);}
+  }
+  order.set(list);
 }
 
 /** CPU drawing reference; production animation uses GpuGround. */
@@ -81,6 +111,7 @@ export function groundSprites(scene: GameScene, layout: ReturnType<typeof ground
         if(type.name==='JEEP'||type.name==='BGGY')y-=4;
         if(type.name==='MLRS'||type.name==='MSAM'){const [tx,ty]=turretAdjust(dir);x+=tx;y+=ty;}
       }
+      if(type.name==='APC'&&part===0&&units[at+UDOOR]&&(dir===32||dir===224))frame=dir===32?32:35;
       const region=scene.animation.frames.get(type.name)![frame];
       return {...s,region,x:x-Math.floor(region.width/2),y:y-Math.floor(region.height/2)};
     }));
@@ -94,7 +125,7 @@ export class GpuGround {
   private readonly attributes: StorageBufferAttribute[];
   private readonly keyPass;
   private readonly spritePass;
-  private readonly flashPass?: ComputeNode;
+  private readonly changes?: GpuReinsert;
   private readonly flashSpritePass?: ComputeNode;
   constructor(private readonly renderer: WebGPURenderer, private readonly simulation: Pick<GpuSimulation,'units'|'frame'>,
     private readonly pipeline: PalettePipeline, readonly layout: ReturnType<typeof groundLayout>, scene?: GameScene,
@@ -111,38 +142,53 @@ export class GpuGround {
     const local=flashSource && storage(flashSource.state,'int',flashSource.state.count).toReadOnly();
     const flash=local && {element:(i:number)=>local.element(flashSource!.offset+i)};
     const clock=flashSource && storage(flashSource.clock,'int',2).toReadOnly();
+    const buildingSort=uniformArray<'ivec2'>(MOVEMENT.map(t=>{const b=BUILDINGS.get(t.name);return new Vector2(t.name==='FIX'?-384:0,t.name==='FIX'?-384:t.name==='PYLE'||t.name==='PROC'?0:b?Math.trunc(b.height*256/3):128);}), 'ivec2');
+    let seen:ReturnType<typeof storage<'int'>>|undefined;
+    if(layout.stride!==UNIT_WORDS||flash){
+      this.changes=new GpuReinsert(renderer,this.keys,this.order.order);
+      const previous=new StorageBufferAttribute(groundLayers(layout,simulation.units.array as Int32Array),1);
+      this.attributes.push(previous);seen=storage(previous,'int',count);
+    }
     this.keyPass = Fn(() => {
-      const id = instanceIndex, at = id.mul(5), unit = meta.element(at);
+      const id = instanceIndex, at = id.mul(5), unit = meta.element(at),changed=int(0).toVar();
       const x = meta.element(at.add(3)).toVar(), y = meta.element(at.add(4)).toVar();
       If(unit.greaterThanEqual(0), () => {
         x.addAssign(units.element(unit.mul(layout.stride)).sub(meta.element(at.add(1))));
         y.addAssign(units.element(unit.mul(layout.stride).add(1)).sub(meta.element(at.add(2))));
+        if(layout.stride!==UNIT_WORDS)If(units.element(unit.mul(layout.stride).add(UDOMAIN)).equal(1),()=>{
+          x.assign(units.element(unit.mul(layout.stride)));
+          y.assign(units.element(unit.mul(layout.stride).add(1)).add(128));
+          const type=units.element(unit.mul(layout.stride).add(UTYPE));
+          If(units.element(unit.mul(layout.stride).add(UALTITUDE)).greaterThanEqual(16).or(type.equal(movementType('C17'))).or(type.equal(movementType('A10'))),()=>{y.addAssign(1<<24);});
+        }).ElseIf(units.element(unit.mul(layout.stride).add(UDOMAIN)).equal(0),()=>{
+          const at=unit.mul(layout.stride),foot=units.element(at.add(UKIND)),carrier=units.element(at.add(UENTER)).sub(1);
+          x.assign(units.element(at));y.assign(units.element(at.add(1)).add(select(foot.notEqual(0),int(48),int(128))));
+          If(foot.notEqual(0).and(carrier.greaterThanEqual(0)),()=>{
+            If(units.element(carrier.mul(layout.stride).add(UTYPE)).equal(movementType('APC')).and(units.element(at.add(UDEST)).equal(units.element(carrier.mul(layout.stride).add(UCELL)))),()=>{y.assign(units.element(at.add(1)).add(256));});
+          });
+        }).ElseIf(units.element(unit.mul(layout.stride).add(UDOMAIN)).equal(2),()=>{
+          const offset=buildingSort.element(units.element(unit.mul(layout.stride).add(UTYPE)));
+          x.assign(units.element(unit.mul(layout.stride)).add(offset.x));y.assign(units.element(unit.mul(layout.stride).add(1)).add(offset.y));
+        });
       });
       if(flash) If(unit.equal(-2).and(flash.element(2).greaterThanEqual(0)),()=>{
         // Ported from ANIM.CPP, AnimClass::Sort_Y: the move flash sorts one cell above its center.
         x.assign(flash.element(0));y.assign(flash.element(1).sub(256));
       });
       key.element(id.mul(2)).assign(x); key.element(id.mul(2).add(1)).assign(y);
-    })().compute(count);
-    if(flash){
-      const seenAttribute=new StorageBufferAttribute(new Int32Array(1),1);this.attributes.push(seenAttribute);
-      const seen=storage(seenAttribute,'int',1),ordered=storage(this.order.order,'uint',count);
-      this.flashPass=Fn(()=>{
-        // Ported from LAYER.CPP, Sorted_Add: relocate a new local animation in the partly sorted layer.
-        If(seen.element(0).notEqual(flash.element(3)),()=>{
-          const old=int(0).toVar(),insert=int(count-1).toVar();
-          Loop(count,({i})=>{If(ordered.element(i).equal(layout.flashId),()=>{old.assign(i);});});
-          Loop(count-1,({i})=>{If(i.greaterThanEqual(old),()=>{ordered.element(i).assign(ordered.element(i.add(1)));});});
-          Loop(count-1,({i})=>{
-            const at=int(ordered.element(i)).mul(2),x=key.element(at),y=key.element(at.add(1));
-            If(insert.equal(count-1).and(y.greaterThan(flash.element(1).sub(256))
-              .or(y.equal(flash.element(1).sub(256)).and(x.greaterThan(flash.element(0))))),()=>{insert.assign(i);});
-          });
-          Loop(count-1,({i})=>{const at=int(count-1).sub(i);If(at.greaterThan(insert),()=>{ordered.element(at).assign(ordered.element(at.sub(1)));});});
-          ordered.element(insert).assign(layout.flashId);seen.element(0).assign(flash.element(3));
+      if(seen&&this.changes){
+        If(unit.greaterThanEqual(0),()=>{
+          const at=unit.mul(layout.stride),alive=units.element(at.add(UHEALTH)).greaterThan(0).and(units.element(at.add(UATTACHED)).equal(0)),type=units.element(at.add(UTYPE));
+          const top=units.element(at.add(UDOMAIN)).equal(1).and(units.element(at.add(UALTITUDE)).greaterThanEqual(16).or(type.equal(movementType('C17'))).or(type.equal(movementType('A10'))));
+          const state=units.element(at.add(UGENERATION)).mul(4).add(int(alive).mul(2)).add(int(top));
+          If(seen!.element(id).notEqual(state),()=>{seen!.element(id).assign(state);If(alive,()=>{changed.assign(1);});});
         });
-      })().compute(1);
-    }
+        if(flash)If(unit.equal(-2).and(flash.element(2).greaterThanEqual(0)).and(seen.element(id).notEqual(flash.element(3))),()=>{
+          seen!.element(id).assign(flash.element(3));changed.assign(1);
+        });
+        If(changed.notEqual(0),()=>{this.changes!.changes.add(int(id));});
+      }
+    })().compute(count);
     const order = storage(this.order.order, 'uint', count).toReadOnly();
     const original = storage(source, 'vec4', layout.count * 3).toReadOnly();
     const destination = storage(pipeline.spriteBuffer, 'vec4', pipeline.spriteBuffer.count);
@@ -182,7 +228,7 @@ export class GpuGround {
       destination.element(index.mul(3)).assign(vec4(rect.x.add(dx), rect.y.add(dy), rect.zw));
       destination.element(index.mul(3).add(1)).assign(original.element(sourceIndex.mul(3).add(1)));
       destination.element(index.mul(3).add(2)).assign(original.element(sourceIndex.mul(3).add(2)));
-      if(scene?.animation) If(bound.greaterThanEqual(0).and(rect.z.greaterThan(0)),()=>{
+      if(scene?.animation) If(bound.greaterThanEqual(0).and(rect.z.greaterThan(0)).and(units.element(bound.mul(layout.stride).add(UDOMAIN)).equal(0)),()=>{
         const at=bound.mul(layout.stride),type=units.element(at.add(UTYPE)).mul(8),face=facingData.element(units.element(at.add(UFACE)));
         const frame=face.x.toVar(),x=pixel(int(units.element(at))).toVar(),y=pixel(int(units.element(at.add(1)))).toVar();
         const part=index.sub(layout.first).mod(layout.slots);
@@ -196,6 +242,10 @@ export class GpuGround {
           frame.addAssign(32);
           If(typeData.element(type.add(6)).notEqual(0),()=>{ y.subAssign(4); });
           If(typeData.element(type.add(7)).notEqual(0),()=>{x.addAssign(face.z);y.addAssign(face.w);});
+        });
+        // UNIT.CPP Draw_It, DOOR.CPP Door_Stage: APC doors use frames 32/35 at NE/NW.
+        If(part.equal(0).and(units.element(at.add(UTYPE)).equal(movementType('APC'))).and(units.element(at.add(UDOOR)).notEqual(0)),()=>{
+          If(units.element(at.add(UFACE)).equal(32),()=>{frame.assign(32);}).ElseIf(units.element(at.add(UFACE)).equal(224),()=>{frame.assign(35);});
         });
         const region=frames.element(typeData.element(type).add(frame));
         destination.element(index.mul(3)).assign(vec4(x.sub(region.z.div(2)),y.sub(region.w.div(2)),region.z,region.w));
@@ -224,10 +274,11 @@ export class GpuGround {
     this.updateSprites();
   }
   /** One bubble pass using the positions before this tick's simulation update. */
-  sort() { this.renderer.compute(this.keyPass); if(this.flashPass)this.renderer.compute(this.flashPass); this.order.step(); }
+  sort() { this.changes?.clear();this.renderer.compute(this.keyPass);this.changes?.step();this.order.step(); }
+  transitionLayers(){if(this.changes){this.changes.clear();this.renderer.compute(this.keyPass);this.changes.step();}}
   /** Write the new positions with the order established before the simulation update. */
-  updateSprites() {
-    this.renderer.compute(this.spritePass); if(this.flashSpritePass)this.renderer.compute(this.flashSpritePass); this.pipeline.updateGpuSprites(this.layout.count); this.pipeline.setFrame(this.simulation.frame);
+  updateSprites(rebuildIndex=true) {
+    this.renderer.compute(this.spritePass); if(this.flashSpritePass)this.renderer.compute(this.flashSpritePass); if(rebuildIndex)this.pipeline.updateGpuSprites(this.layout.count); this.pipeline.setFrame(this.simulation.frame);
   }
-  dispose() { this.keyPass.dispose(); this.flashPass?.dispose(); this.flashSpritePass?.dispose(); this.spritePass.dispose(); this.order.dispose(); releaseStorage(this.renderer, this.attributes); }
+  dispose() { this.keyPass.dispose();this.changes?.dispose(); this.flashSpritePass?.dispose(); this.spritePass.dispose(); this.order.dispose(); releaseStorage(this.renderer, this.attributes); }
 }

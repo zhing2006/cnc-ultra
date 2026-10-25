@@ -16,7 +16,7 @@
     "preview": "node node_modules/vite/bin/vite.js preview",
     "test": "vitest run",
     "test:e2e": "node tests/run.ts",
-    "test:acceptance": "node tests/run.ts --gpus=nvidia,amd"
+    "test:acceptance": "node tests/run.ts --acceptance --gpus=nvidia,amd"
   },
   "dependencies": {
     "bits-ui": "2.20.1",

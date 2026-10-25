@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
 import type { Browser, Page } from '@playwright/test';
 import type { GpuEnvironment } from './gpu.ts';
+import { setTimeout as delay } from 'node:timers/promises';
+
+/** Playwright waitForFunction treats a returned Promise as truthy; await GPU reads explicitly. */
+export async function pollCheck(check:()=>Promise<boolean>,message:string,timeout=5000){
+  const deadline=Date.now()+timeout;
+  while(!await check()){
+    assert(Date.now()<deadline,message);
+    await delay(25);
+  }
+}
 
 export interface Session {
   browser: Browser;
   baseUrl: string;
   gpu?: GpuEnvironment;
+  /** Full milestone journeys and GPU cost measurements run only in acceptance. */
+  acceptance?: boolean;
   /** Performance samples wait until other checks stop using the GPU. */
   performanceReady?: Promise<void>;
 }
@@ -44,6 +56,10 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
     if (options.init) await page.addInitScript(options.init);
     await page.goto(`${session.baseUrl}${options.path ?? '/'}`);
     await check(page);
+  } catch(error) {
+    const unexpected=errors.filter(text=>!(options.expectedErrors??[]).some(pattern=>pattern.test(text)));
+    if(unexpected.length)throw new AggregateError([error,...unexpected.map(text=>new Error(text))],'Browser check and page errors');
+    throw error;
   } finally {
     await page.close();
   }

@@ -16,7 +16,9 @@ export async function compareSimulation() {
   const { PalettePipeline } = await import('../src/engine/indexed/pipeline.ts');
   const { paint } = await import('../tests/reference/paint.ts');
   const { StorageBufferAttribute } = await import('three/webgpu');
-  const { Fn, storage, instanceIndex, uint } = await import('three/tsl');
+  const { Fn, storage, instanceIndex, uint,ivec2 } = await import('three/tsl');
+  const {unitDirection,unitDistance}=await import('../src/game/simulation/units-nodes.ts');
+  const {desiredFacing256,distance}=await import('../src/game/coord.ts');
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'width:16px;height:16px';
   document.body.append(canvas);
@@ -45,6 +47,19 @@ export async function compareSimulation() {
       const expected = new Int32Array(cases.flatMap(([a,b], i) => [fixedAdd(a,b),fixedSub(a,b),fixedMul(a,b),fixedDiv(a,b),randomWord(a,b,i,3)]));
       equal(actual, expected, 'fixed point and random words');
     } finally { arithmetic.dispose(); releaseStorage(renderer.three, [input, output]); }
+
+    // Original Desired_Facing256 shifts both operands at the byte boundary.
+    // Check the GPU's bit-count equivalent in every quadrant, including axis swaps.
+    const points:[number,number][]=[[0,0]];
+    for(const large of [255,256,257,511,512,65535,1048576])for(const small of [0,1,127,255,256])
+      for(const sx of [-1,1])for(const sy of [-1,1])points.push([large*sx,small*sy],[small*sx,large*sy]);
+    const coordinates=new StorageBufferAttribute(Int32Array.from(points.flat()),1),directions=new StorageBufferAttribute(new Int32Array(points.length*2),1);
+    const positions=storage(coordinates,'ivec2',points.length).toReadOnly(),facing=storage(directions,'int',directions.count);
+    const angles=Fn(()=>{const point=positions.element(instanceIndex);facing.element(instanceIndex.mul(2)).assign(unitDirection(ivec2(0),point));facing.element(instanceIndex.mul(2).add(1)).assign(unitDistance(ivec2(0),point));})().compute(points.length);
+    try{
+      renderer.three.compute(angles);
+      equal(new Int32Array(await renderer.three.getArrayBufferAsync(directions)),Int32Array.from(points.flatMap(([x,y])=>[desiredFacing256(0,0,x,y),distance(0,0,x,y)])),'original coordinate normalization');
+    }finally{angles.dispose();releaseStorage(renderer.three,[coordinates,directions]);}
 
     const keyValues = new Int32Array([1,9, 2,1, 3,1, 4,7, 5,3, 6,1, 7,3]);
     const keys = new StorageBufferAttribute(keyValues, 1);

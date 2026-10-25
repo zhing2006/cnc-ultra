@@ -1,12 +1,14 @@
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { StorageBufferAttribute, type WebGPURenderer, type Node } from 'three/webgpu';
-import { Fn, If, int, ivec2, storage, uniform, select } from 'three/tsl';
+import { StorageBufferAttribute, Vector4, type WebGPURenderer, type Node } from 'three/webgpu';
+import { Fn, If, int, ivec2, storage, uniform, uniformArray, select } from 'three/tsl';
 import { intMin, intMax } from '../../engine/simulation/integer-nodes.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
-import { movementType } from '../data/movement.ts';
+import { movementType,MOVEMENT } from '../data/movement.ts';
+import { BUILDINGS } from '../data/buildings.ts';
+import { EXTRA_ACTORS } from '../data/extra-actors.ts';
 import { unitDistance } from './units-nodes.ts';
-import { WORDS, UOWNER, UTYPE, UHEALTH } from './units-state.ts';
+import { WORDS, UOWNER, UTYPE, UHEALTH, UALTITUDE, UATTACHED,UDOMAIN,UKIND,UORIGIN } from './units-state.ts';
 import type { GpuUnits } from './units-gpu.ts';
 import type { GpuSight } from './sight.ts';
 import { cellEntryNode } from './cell-entry.ts';
@@ -56,6 +58,7 @@ export class GpuSelection {
     const pending = storage(simulation.pending, 'int', count * 2);
     const shadow = storage(sight.shadow, 'int', width * height).toReadOnly();
     const canEnter = cellEntryNode(simulation, attribute => this.attributes.push(attribute), u);
+    const footprints=uniformArray<'ivec4'>(MOVEMENT.map(t=>{const b=BUILDINGS.get(t.name);return new Vector4(b?.width??0,b?.height??0,b?.occupy.reduce((mask,[x,y])=>mask|(1<<(y*4+x)),0)??0,Number(EXTRA_ACTORS.find(e=>e.name===t.name)?.selectable??true));}), 'ivec4');
     this.pass = Fn(() => {
       const chosen = int(-1).toVar();
       const first = int(-1).toVar();
@@ -63,7 +66,7 @@ export class GpuSelection {
       const voice = int(0).toVar();
       const center = int(0).toVar();
       Loop(count, ({ i }) => {
-        If(u.element(int(i).mul(WORDS).add(UHEALTH)).lessThanEqual(0), () => { selected.element(int(i)).assign(0); });
+        If(u.element(int(i).mul(WORDS).add(UHEALTH)).lessThanEqual(0).or(u.element(int(i).mul(WORDS).add(UATTACHED)).notEqual(0)), () => { selected.element(int(i)).assign(0); });
         If(first.lessThan(int(0)).and(selected.element(int(i)).notEqual(int(0))), () => {
           first.assign(int(i));
         });
@@ -82,8 +85,14 @@ export class GpuSelection {
         If(shadow.element(cell).notEqual(int(-2)), () => {
           Loop(count, ({ i }) => {
             const at = int(i).mul(int(WORDS));
-            const d = unitDistance(ivec2(this.x, this.y), ivec2(u.element(at), u.element(at.add(int(1)))));
-            If(d.lessThan(best).and(u.element(at.add(UHEALTH)).greaterThan(0)), () => {
+            const d = unitDistance(ivec2(this.x, this.y), ivec2(u.element(at), u.element(at.add(int(1))).sub(u.element(at.add(UALTITUDE)).mul(256).add(12).div(24)))).toVar();
+            If(u.element(at.add(UDOMAIN)).equal(2),()=>{
+              const shape=footprints.element(u.element(at.add(UTYPE))),origin=u.element(at.add(UORIGIN));
+              const dx=cell.mod(width).sub(origin.mod(width)),dy=cell.div(width).sub(origin.div(width));
+              If(dx.greaterThanEqual(0).and(dy.greaterThanEqual(0)).and(dx.lessThan(shape.x)).and(dy.lessThan(shape.y))
+                .and(shape.z.bitAnd(int(1).shiftLeft(dy.mul(4).add(dx))).notEqual(0)),()=>{d.assign(0);});
+            });
+            If(d.lessThan(best).and(footprints.element(u.element(at.add(UTYPE))).w.notEqual(0)).and(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0))), () => {
               best.assign(d);
               chosen.assign(int(i));
             });
@@ -93,9 +102,24 @@ export class GpuSelection {
           If(int(combat ? 1 : 0).notEqual(0).and(first.greaterThanEqual(0))
             .and(u.element(chosen.mul(WORDS).add(UOWNER)).notEqual(0).or(this.modifier.equal(2))), () => {
             Loop(count, ({i}) => {
-              If(selected.element(int(i)).notEqual(0), () => { pending.element(int(i).mul(2)).assign(3); pending.element(int(i).mul(2).add(1)).assign(chosen); });
+              const type=u.element(int(i).mul(WORDS).add(UTYPE));
+              If(selected.element(int(i)).notEqual(0).and(type.notEqual(movementType('SAM'))).and(type.notEqual(movementType('TRAN'))), () => { pending.element(int(i).mul(2)).assign(3); pending.element(int(i).mul(2).add(1)).assign(chosen); });
             });
             voice.assign(3);
+          }).ElseIf(first.greaterThanEqual(0).and(this.modifier.equal(0)).and(u.element(chosen.mul(WORDS).add(UOWNER)).equal(0)),()=>{
+            const kind=u.element(chosen.mul(WORDS).add(UTYPE)),at=first.mul(WORDS);
+            const passengers=int(0).toVar();
+            If(kind.equal(movementType('TRAN')).or(kind.equal(movementType('APC'))),()=>{Loop(count,({i})=>{If(u.element(i.mul(WORDS).add(UHEALTH)).greaterThan(0).and(u.element(i.mul(WORDS).add(UATTACHED)).equal(chosen.add(1))),()=>{passengers.addAssign(1);});});});
+            const boarding=kind.equal(movementType('TRAN')).or(kind.equal(movementType('APC'))).and(passengers.lessThan(5)).and(u.element(at.add(UKIND)).notEqual(0));
+            const docking=kind.equal(movementType('HPAD')).and(u.element(at.add(UDOMAIN)).equal(1))
+              .or(kind.equal(movementType('FIX')).and(u.element(at.add(UKIND)).equal(0)).and(u.element(at.add(UDOMAIN)).notEqual(2)))
+              .or(kind.equal(movementType('PROC')).and(u.element(at.add(UTYPE)).equal(movementType('HARV'))));
+            If(boarding.or(docking),()=>{
+              Loop(count,({i})=>{If(selected.element(i).notEqual(0),()=>{pending.element(i.mul(2)).assign(5);pending.element(i.mul(2).add(1)).assign(chosen);});});voice.assign(2);
+            }).ElseIf(chosen.equal(first).and(kind.equal(movementType('TRAN')).or(kind.equal(movementType('APC')))).and(passengers.greaterThan(0)),()=>{pending.element(first.mul(2)).assign(6);voice.assign(2);})
+              .ElseIf(chosen.equal(first).and(kind.equal(movementType('MCV'))),()=>{voice.assign(4);})
+              .ElseIf(chosen.equal(first).and(u.element(at.add(UDOMAIN)).equal(2)),()=>{voice.assign(5);})
+              .ElseIf(selected.element(chosen).equal(0),()=>{Loop(count,({i})=>{selected.element(i).assign(int(i.equal(chosen)));});voice.assign(1);});
           }).Else(() => {
           // Ported from TECHNO.CPP, What_Action(ObjectClass*), and DISPLAY.CPP, Mouse_Left_Release.
           If(this.modifier.notEqual(int(0)).and(first.greaterThanEqual(int(0))), () => {
@@ -114,7 +138,8 @@ export class GpuSelection {
           If(first.greaterThanEqual(int(0)), () => {
             Loop(count, ({ i }) => {
               const at = int(i).mul(int(WORDS));
-              If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
+              const attackAllowed=this.modifier.notEqual(2).or(u.element(at.add(UTYPE)).notEqual(movementType('SAM')).and(u.element(at.add(UTYPE)).notEqual(movementType('TRAN'))));
+              If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(attackAllowed).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
                 pending.element(int(i).mul(int(2))).assign(select(int(combat ? 1 : 0).notEqual(0).and(this.modifier.equal(2)), int(4), int(0)));
                 pending.element(int(i).mul(int(2)).add(int(1))).assign(cell);
               });
@@ -136,7 +161,7 @@ export class GpuSelection {
           const at = int(i).mul(int(WORDS));
           const xx = u.element(at);
           const yy = u.element(at.add(int(1)));
-          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0)))
+          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UDOMAIN)).notEqual(2)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))).and(u.element(at.add(int(UOWNER))).equal(int(0)))
             .and(xx.greaterThanEqual(intMin(this.x, this.x2)))
 
               .and(xx.lessThanEqual(intMax(this.x, this.x2)))
@@ -185,7 +210,7 @@ export class GpuSelection {
           const following = first.add(int(i)).add(int(1)).mod(int(count));
           const id = select(kind.equal(int(5)), int(i), select(this.modifier.notEqual(int(0)), previous, following));
           const at = id.mul(int(WORDS)).toVar();
-          If(chosen.lessThan(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
+          If(chosen.lessThan(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(u.element(at.add(UHEALTH)).greaterThan(0)).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))), () => {
             If(kind.equal(int(4)).or(u.element(at.add(int(UTYPE))).equal(int(movementType('MCV')))), () => {
               chosen.assign(id);
             });

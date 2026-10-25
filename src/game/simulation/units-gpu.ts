@@ -7,7 +7,8 @@ import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { randomNode, intMin, intMax } from '../../engine/simulation/integer-nodes.ts';
 import { GpuChecksum } from '../../engine/simulation/checksum.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
-import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { MOVEMENT, GROUND_SPEED,movementType } from '../data/movement.ts';
+import { BUILDINGS } from '../data/buildings.ts';
 import { combatTypes } from '../data/combat.ts';
 import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
 import { movePoint } from '../coord.ts';
@@ -16,6 +17,8 @@ import { direction8, unitDirection, unitDistance, unitRotate } from './units-nod
 import { SPOT_SEQUENCE } from './infantry-spots.ts';
 import { DESTINATION_NEIGHBORS, PATH_DELAY } from './navigation.ts';
 import * as S from './units-state.ts';
+import { GpuOccupancyEdits } from './occupancy-edits.ts';
+import { GpuActorIndex } from './actor-index.ts';
 type I = Node<'int'>;
 /** Passes surrounding each movement tick, including ticks submitted in a batch. */
 export interface UnitTickExtension {
@@ -55,6 +58,7 @@ const TRACK_WORDS = 7;
 // TSL has no atomicExchange wrapper. Only the cell-list link needs this WGSL primitive.
 const exchangeHead = wgslFn('fn exchangeHead(head: ptr<storage, atomic<u32>, read_write>, value: u32) -> u32 { return atomicExchange(head, value); }');
 export class GpuUnits {
+  readonly mapObservers=new Set<(edges:Uint32Array,passable:Uint8Array,land:Uint8Array)=>void>();
   readonly units: StorageBufferAttribute;
   readonly goals: StorageBufferAttribute;
   /** Basic_Path's effective destination, separate from the player's NavCom. */
@@ -65,6 +69,8 @@ export class GpuUnits {
   readonly occupancyChanges: StorageBufferAttribute;
   readonly flow: GpuFlowFields;
   readonly pending: StorageBufferAttribute;
+  private readonly mapData:StorageBufferAttribute;
+  private readonly mapOffsets:{land:number;edges:number;open:number};
   private readonly applyPending: ComputeNode;
   private readonly resolvePaths: ComputeNode;
   private readonly attributes: StorageBufferAttribute[] = [];
@@ -81,6 +87,13 @@ export class GpuUnits {
   private readonly digest: GpuChecksum;
   private readonly invalidateOccupancy: ComputeNode;
   private unitsVersion = -1;
+  private relations?:GpuActorIndex;
+  private edits?:GpuOccupancyEdits;
+  private editingOccupancy=false;
+  enableOccupancyEdits(){this.edits??=new GpuOccupancyEdits(this);}
+  beginOccupancyEdits(){this.enableOccupancyEdits();this.edits!.begin();this.editingOccupancy=true;}
+  endOccupancyEdits(){this.editingOccupancy=false;}
+  get actorIndex(){return this.relations??=new GpuActorIndex(this);}
   frame = 0;
   constructor(readonly renderer: WebGPURenderer, readonly setup: S.UnitsSetup) {
     const count = setup.units.length;
@@ -144,7 +157,8 @@ export class GpuUnits {
     }).flat());
     const trackStarts = TRACKS.map(t => append(t.flat()));
     const trackBase = append(TRACK_CONTROL.flatMap(t => [trackStarts[Math.max(0, t[0])], t[0], t[2], t[3], ...RAW_TRACKS[Math.max(0, t[0])]]));
-    const data = storage(keep(Int32Array.from(constants)), 'int', constants.length).setName('unit_data').toReadOnly();
+    this.mapData=keep(Int32Array.from(constants));this.mapOffsets={land:landBase,edges:edgeBase,open:openBase};
+    const data = storage(this.mapData, 'int', constants.length).setName('unit_data').toReadOnly();
     const point = (cell: I, slot: I = int(0)) => ivec2(
       cell.mod(int(setup.grid.width)).mul(int(256)).add(data.element(slot.mul(int(2)).add(int(spotBase)))),
       cell.div(int(setup.grid.width)).mul(int(256)).add(data.element(slot.mul(int(2)).add(int(spotBase + 1)))));
@@ -168,7 +182,7 @@ export class GpuUnits {
     // Ported from FOOT.CPP, Basic_Path. NavCom stays at the clicked cell; only the path goal changes.
     this.resolvePaths = kernel(count, () => {
       const id = int(instanceIndex), at = id.mul(int(S.WORDS)), goal = goals.element(id);
-      If(goal.lessThan(int(0)), () => { pathGoals.element(id).assign(-1); })
+      If(goal.lessThan(int(0)).or(u.element(at.add(S.UDOMAIN)).notEqual(0)), () => { pathGoals.element(id).assign(-1); })
         .ElseIf(pathGoals.element(id).equal(int(-1)), () => {
           const target = goal.toVar();
           If(terrainOpen(goal, at).not(), () => {
@@ -430,7 +444,8 @@ export class GpuUnits {
       const id = int(instanceIndex);
       const at = id.mul(int(S.WORDS)).toVar();
       const p = id.mul(int(PROPOSAL_WORDS)).toVar();
-      const driving = u.element(at.add(int(S.UDEST))).greaterThanEqual(int(0)).toVar();
+      const ground = u.element(at.add(S.UDOMAIN)).equal(0).and(u.element(at.add(S.UATTACHED)).equal(0));
+      const driving = u.element(at.add(int(S.UDEST))).greaterThanEqual(int(0)).and(ground).toVar();
       proposal.element(p.add(int(P_CELL))).assign(-1);
       proposal.element(p.add(int(P_WAS_DRIVING))).assign(int(driving));
       proposal.element(p.add(int(P_ROTATED))).assign(0);
@@ -445,7 +460,7 @@ export class GpuUnits {
         invalidateOccupancy();
         advance(id);
       }).Else(() => {
-        If(u.element(at.add(int(S.UFACE))).notEqual(u.element(at.add(int(S.UDESIRED)))), () => {
+        If(ground.and(u.element(at.add(S.UTYPE)).notEqual(movementType('APC')).or(u.element(at.add(S.UDOOR)).equal(0))).and(u.element(at.add(int(S.UFACE))).notEqual(u.element(at.add(int(S.UDESIRED))))), () => {
           u.element(at.add(int(S.UFACE))).assign(unitRotate(u.element(at.add(int(S.UFACE))), u.element(at.add(int(S.UDESIRED))), type(at, TYPE_ROTATION)));
           proposal.element(p.add(int(P_ROTATED))).assign(1);
           If(u.element(at.add(int(S.UROTATED))).equal(int(0)), () => {
@@ -460,8 +475,19 @@ export class GpuUnits {
       });
       atomicStore(claims.element(instanceIndex), 0x7fffffff);
     });
-    // Vehicle reservations take precedence while a crusher shares a cell with infantry.
-    const occupy = [1, 0].map(infantry => kernel(count, () => {
+    const buildingMasks=storage(keep(Int32Array.from(MOVEMENT.map(t=>BUILDINGS.get(t.name)?.occupy.reduce((bits,[x,y])=>bits|(1<<(y*4+x)),0)??0))),'int',MOVEMENT.length).toReadOnly();
+    const buildingOccupancy=kernel(count,()=>{
+      const id=int(instanceIndex),at=id.mul(S.WORDS);
+      If(occupancyStatus.element(count).notEqual(uint(0)).and(u.element(at.add(S.UDOMAIN)).equal(2)).and(u.element(at.add(S.UHEALTH)).greaterThan(0)),()=>{
+        const mask=buildingMasks.element(u.element(at.add(S.UTYPE))),origin=u.element(at.add(S.UORIGIN));
+        Loop(16,({i})=>{If(mask.bitAnd(int(1).shiftLeft(i)).notEqual(0),()=>{
+          const cell=origin.add(i.div(4).mul(setup.grid.width)).add(i.mod(4));
+          Loop(5,({i:slot})=>{atomicStore(occupancy.element(cell.mul(5).add(slot)),uint(id.add(1)));});
+        });});
+      });
+    });
+    // Separate passes make a docked unit's reservation independent of invocation order.
+    const occupy = [buildingOccupancy,...[1, 0].map(infantry => kernel(count, () => {
       If(occupancyStatus.element(count).notEqual(uint(0)), () => {
         const id = int(instanceIndex);
         const at = id.mul(int(S.WORDS)).toVar();
@@ -470,8 +496,11 @@ export class GpuUnits {
           const reserved = field === S.UCELL
             ? u.element(at.add(int(S.UKIND))).equal(int(0)).or(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
             : int(1).equal(int(1));
-          If(cell.greaterThanEqual(int(0)).and(reserved).and(u.element(at.add(S.UHEALTH)).greaterThan(0))
-            .and(u.element(at.add(S.UKIND)).equal(infantry)), () => {
+          If(cell.greaterThanEqual(int(0)).and(reserved).and(u.element(at.add(S.UHEALTH)).greaterThan(0)).and(u.element(at.add(S.UATTACHED)).equal(0))
+            .and(u.element(at.add(S.UKIND)).equal(infantry))
+            .and(u.element(at.add(S.UDOMAIN)).notEqual(2))
+            .and(u.element(at.add(S.UDOMAIN)).notEqual(1).or(u.element(at.add(S.UALTITUDE)).lessThan(16)
+              .and(u.element(at.add(S.UTYPE)).notEqual(movementType('C17'))).and(u.element(at.add(S.UTYPE)).notEqual(movementType('A10'))))), () => {
             const slot = u.element(at.add(field === S.UCELL ? S.USLOT : S.UDSLOT));
             Loop(5, ({ i: s }) => {
               If(u.element(at.add(int(S.UKIND))).equal(int(0)).or(slot.equal(int(s))), () => {
@@ -481,7 +510,7 @@ export class GpuUnits {
           });
         }
       });
-    }));
+    }))];
     const finishOccupancy = kernel(1, () => { atomicStore(nudges.element(count), uint(0)); });
     this.invalidateOccupancy = kernel(1, invalidateOccupancy);
     const clearOccupancy = kernel(cells * 5, () => {
@@ -562,7 +591,7 @@ export class GpuUnits {
           });
         });
       });
-      If(goal.greaterThanEqual(int(0)).and(cell.lessThan(int(0))).and(proposal.element(p.add(int(P_READY))).notEqual(int(0)))
+      If(u.element(at.add(S.UTYPE)).notEqual(movementType('APC')).or(u.element(at.add(S.UDOOR)).equal(0)).and(goal.greaterThanEqual(int(0))).and(cell.lessThan(int(0))).and(proposal.element(p.add(int(P_READY))).notEqual(int(0)))
         .and(u.element(at.add(int(S.UDEST))).lessThan(int(0))).and(u.element(at.add(int(S.UWAIT))).equal(int(0)))
 
           .and(proposal.element(p.add(int(P_ROTATED))).equal(int(0)))
@@ -570,7 +599,7 @@ export class GpuUnits {
           .or(proposal.element(p.add(int(P_WAS_DRIVING))).equal(int(0)))), () => {
         failedPath(id, at);
       });
-      If(goal.greaterThanEqual(int(0)).and(cell.greaterThanEqual(int(0))).and(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
+      If(u.element(at.add(S.UTYPE)).notEqual(movementType('APC')).or(u.element(at.add(S.UDOOR)).equal(0)).and(goal.greaterThanEqual(int(0))).and(cell.greaterThanEqual(int(0))).and(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
         .and(proposal.element(p.add(int(P_ROTATED))).equal(int(0))).and(u.element(at.add(int(S.UWAIT))).equal(int(0)))
         .and(infantry.equal(int(0)).or(proposal.element(p.add(int(P_WAS_DRIVING))).equal(int(0)))), () => {
         const from = point(u.element(at.add(int(S.UCELL))));
@@ -897,6 +926,8 @@ export class GpuUnits {
   }
   /** Compile every movement/command path without changing the simulation clock. */
   async prepareForPlay() {
+    await this.relations?.prepareForPlay();
+    await this.edits?.prepareForPlay();
     await this.renderer.compileComputeAsync(this.kernels);
   }
   step(commands: readonly S.UnitCommand[] = []) {
@@ -957,8 +988,25 @@ export class GpuUnits {
   }
   /** Explicit external state edits invalidate the cache; tick passes mark their own changes. */
   refreshOccupancy() {
+    if(this.editingOccupancy){this.edits!.refresh();this.unitsVersion=this.units.version;return;}
     this.renderer.compute([this.invalidateOccupancy, ...this.occupancyPasses]);
     this.unitsVersion = this.units.version;
+  }
+  useTiberium(amount:StorageBufferAttribute,terrain:Uint8Array){
+    const base=new StorageBufferAttribute(Int32Array.from(terrain),1);this.attributes.push(base);
+    const ore=storage(amount,'int',amount.count).toReadOnly(),land=storage(base,'int',base.count).toReadOnly(),map=storage(this.mapData,'int',this.mapData.count);
+    const kernel=Fn(()=>{const cell=int(instanceIndex);map.element(cell.add(this.mapOffsets.land)).assign(select(ore.element(cell).greaterThanEqual(0),int(5),land.element(cell)));})().compute(terrain.length);
+    this.kernels.push(kernel);this.prepare.unshift(kernel);
+  }
+  updateMap(edges:Uint32Array,passable:Uint8Array,land:Uint8Array=this.setup.land) {
+    this.setup.grid.edges.set(edges);this.setup.passable?.set(passable);this.setup.land.set(land);
+    const data=this.mapData.array as Int32Array;
+    data.set(edges,this.mapOffsets.edges);data.set(passable,this.mapOffsets.open);data.set(land,this.mapOffsets.land);
+    this.mapData.needsUpdate=true;
+    this.flow.updateEdges(edges);
+    for(const changed of this.mapObservers)changed(edges,passable,land);
+    (this.pathGoals.array as Int32Array).fill(-1);this.pathGoals.needsUpdate=true;
+    this.refreshOccupancy();
   }
   buffers() {
     return [this.control, this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
@@ -970,6 +1018,7 @@ export class GpuUnits {
     return Promise.all(this.buffers().map(async (b) => new Int32Array(await this.renderer.getArrayBufferAsync(b))));
   }
   dispose() {
+    this.relations?.dispose();this.edits?.dispose();
     this.digest.dispose();
     this.flow.dispose();
     for (const k of this.kernels)

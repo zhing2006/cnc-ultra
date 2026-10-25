@@ -18,7 +18,7 @@ function trailLayout(setup: C.CombatSetup, scene: GameScene) {
   let count = 0;
   setup.units.forEach((unit, id) => {
     const type = combatTypes[unit.type];
-    if (![type.primary, type.secondary].some(w => w >= 0 && bullets[weapons[w].bullet].smoke))
+    if (!setup.dynamicTypes && ![type.primary, type.secondary].some(w => w >= 0 && bullets[weapons[w].bullet].smoke))
       return;
     for (let shot = 0; shot < C.SHOTS_PER_UNIT; shot++) {
       starts[id * C.SHOTS_PER_UNIT + shot] = count;
@@ -32,9 +32,10 @@ export function combatExtraSprites(setup: C.CombatSetup, scene: GameScene) {
 }
 export class CombatView {
   readonly count: number;
+  readonly smudges:StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[] = [];
   private readonly passes: ComputeNode[];
-  constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, ground: GpuGround, private readonly pipeline: PalettePipeline, scene: GameScene, decalStart: number) {
+  constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, ground: GpuGround, private readonly pipeline: PalettePipeline, scene: GameScene, decalStart: number,buildingEffects=false) {
     const units = battle.setup.units.length, shots = units * C.SHOTS_PER_UNIT, cells = battle.setup.grid.edges.length;
     const trails = trailLayout(battle.setup, scene), mainCount = ground.layout.count + shots + units;
     this.count = ground.layout.count + combatExtraSprites(battle.setup, scene);
@@ -46,7 +47,7 @@ export class CombatView {
     const order = storage(ground.order.order, 'uint', ground.order.order.count).toReadOnly();
     const dest = storage(pipeline.spriteBuffer, 'vec4', pipeline.spriteBuffer.count);
     const values: number[] = [], rects: number[] = [];
-    const append = (a: readonly number[]) => { const offset = values.length; values.push(...a); return offset; };
+    const append = (a: readonly number[]) => { const offset = values.length; for(const value of a)values.push(value); return offset; };
     const frames = (name: string) => {
       const offset = rects.length / 4, regions = scene.animation!.frames.get(name) ?? [];
       for (const r of regions)
@@ -78,7 +79,8 @@ export class CombatView {
         return ivec4(data.element(at), data.element(at.add(1)), data.element(at.add(2)), data.element(at.add(3)));
       }
     };
-    const smudges = storage(keep(new Uint32Array(cells)), 'uint', cells).toAtomic();
+    this.smudges=keep(new Uint32Array(cells));
+    const smudges = storage(this.smudges, 'uint', cells).toAtomic();
     const pending = storage(keep(new Uint32Array(cells * 2)), 'uint', cells * 2).toAtomic();
     const clear = Fn(() => { atomicStore(pending.element(instanceIndex.mul(2)), uint(0xffffffff)); atomicStore(pending.element(instanceIndex.mul(2).add(1)), uint(0)); })().compute(cells);
     const mark = Fn(() => {
@@ -153,7 +155,7 @@ export class CombatView {
           If(dead, () => {
             replace.assign(1);
             x.assign(pixel(u.element(at)));
-            y.assign(pixel(u.element(at.add(1))));
+            y.assign(pixel(u.element(at.add(1))).sub(u.element(at.add(U.UALTITUDE))));
             If(c.element(state.add(C.CDEATH)).greaterThanEqual(0).and(part.equal(0))
               .and(c.element(state.add(C.CWARHEAD)).notEqual(C.CRUSHED)), () => {
                 age.assign(clock.element(0).sub(c.element(state.add(C.CDEATH))));
@@ -164,7 +166,7 @@ export class CombatView {
                   remap.assign(int(dest.element(index.mul(3).add(1)).z));
                   x.subAssign(2);
                   y.addAssign(4);
-                }).Else(() => {
+                }).ElseIf(u.element(at.add(U.UDOMAIN)).notEqual(buildingEffects?2:-1),() => {
                   animation.assign(data.element(u.element(at.add(U.UTYPE)).mul(2).add(deathBase).add(int(c.element(state.add(C.CAMMO)).greaterThan(0)))));
                 });
               });
@@ -253,7 +255,7 @@ export class CombatView {
       If(id.lessThan(units), () => {
         const at = id.mul(U.WORDS), t = u.element(at.add(U.UTYPE)), hp = u.element(at.add(U.UHEALTH));
         const born = effects.element(id.mul(2));
-        If(data.element(t.mul(2).add(healthBase + 1)).notEqual(0).and(hp.greaterThan(0))
+        If(data.element(t.mul(2).add(healthBase + 1)).notEqual(0).and(hp.greaterThan(0)).and(u.element(at.add(U.UDOMAIN)).notEqual(buildingEffects?2:-1))
           .and(hp.mul(2).lessThan(data.element(t.mul(2).add(healthBase))))
           .and(effects.element(id.mul(2).add(1)).greaterThan(hp).or(effects.element(id.mul(2).add(1)).equal(-1)))
           .and(born.lessThan(0).or(clock.element(0).sub(born).greaterThanEqual(smokeDuration))), () => { born.assign(clock.element(0)); });
@@ -318,7 +320,7 @@ export class CombatView {
     this.passes = [clear, mark, settle, draw, stamp, extra];
     this.update();
   }
-  update() { this.renderer.compute(this.passes); this.pipeline.updateGpuSprites(this.count); }
+  update(rebuildIndex=true) { this.renderer.compute(this.passes); if(rebuildIndex)this.pipeline.updateGpuSprites(this.count); }
   dispose() {
     for (const p of this.passes)
       p.dispose();

@@ -1,6 +1,8 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { combatTypes, weapons, bullets, modifyDamage, ANIMATION_IDS } from '../data/combat.ts';
+import { combatTypes, weapons, bullets, warheads,modifyDamage, ANIMATION_IDS } from '../data/combat.ts';
 import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
+import { BUILDINGS } from '../data/buildings.ts';
+import { WALLS } from '../data/overlays.ts';
 import { attackRoute } from './attack-route.ts';
 import { PATH_DELAY } from './navigation.ts';
 import { distance, desiredFacing256, dirFacing, movePoint } from '../coord.ts';
@@ -10,11 +12,17 @@ import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 import { CpuSight } from './sight.ts';
 /** Ported from TURRET.CPP, Fire_Coord. Offsets are leptons, before projectile physics. */
-export function firePoint(name: string, x: number, y: number, direction: number, second: number, weapon = 0): [
+export function firePoint(name: string, x: number, y: number, direction: number, second: number, weapon = 0, target?:readonly[number,number]): [
   number,
   number
 ] {
   let forward = 0, lateral = 0;
+  if(BUILDINGS.has(name)){
+    if(name==='OBLI')return [x-24,y-168];
+    y-=48;
+    if(name==='SAM'||name==='GUN')return movePoint(x,y,direction,128);
+    return target?movePoint(x,y,desiredFacing256(x,y,...target),64):[x,y];
+  }
   // INFANTRY.CPP, Fire_Coord: XYP_COORD(0,-5), except the flame thrower.
   if (MOVEMENT.find(t => t.name === name)?.infantry && name !== 'E4')
     y -= 53;
@@ -61,23 +69,51 @@ export class CpuCombat {
   }
   get frame() { return this.movement.frame; }
   get units() { return this.movement.units; }
+  private buildingAt(cell:number){
+    if(!this.setup.dynamicTypes&&!this.setup.units.some(unit=>MOVEMENT[unit.type].domain===2))return -1;
+    for(let id=0;id<this.setup.units.length;id++){
+      const at=id*U.WORDS;
+      if(this.units[at+U.UDOMAIN]!==2||this.units[at+U.UHEALTH]<=0)continue;
+      const origin=this.units[at+U.UORIGIN],building=BUILDINGS.get(MOVEMENT[this.units[at+U.UTYPE]].name)!;
+      if(building.occupy.some(([x,y])=>origin+y*this.setup.grid.width+x===cell))return id;
+    }return -1;
+  }
   private point(target: number): [
     number,
     number
   ] {
     if (target >= 0)
-      return [this.units[target * U.WORDS], this.units[target * U.WORDS + 1]];
+      return [this.units[target * U.WORDS], this.units[target * U.WORDS + 1]-Math.trunc((this.units[target*U.WORDS+U.UALTITUDE]*256+12)/24)];
     const cell = -target - 2;
     return [cell % this.setup.grid.width * 256 + 128, Math.floor(cell / this.setup.grid.width) * 256 + 128];
   }
   private muzzle(id: number, which = 0) {
     const at = id * U.WORDS, c = id * C.CWORDS, type = combatTypes[this.units[at + U.UTYPE]];
-    return firePoint(type.name, this.units[at], this.units[at + 1], type.turret ? this.state[c + C.CTURRET] : this.units[at + U.UFACE], this.state[c + C.CSECOND], which);
+    if(this.units[at+U.UDOMAIN]===2&&!['OBLI','GUN','SAM'].includes(type.name))return [this.state[c+C.CMUZZLEX],this.state[c+C.CMUZZLEY]] as [number,number];
+    if(this.units[at+U.UDOMAIN]===1)return movePoint(this.units[at],this.units[at+1]-Math.trunc((this.units[at+U.UALTITUDE]*256+12)/24),this.units[at+U.UFACE],64);
+    return firePoint(type.name, this.units[at], this.units[at + 1], type.turret&&this.units[at+U.UDOMAIN]!==2 ? this.state[c + C.CTURRET] : this.units[at + U.UFACE], this.state[c + C.CSECOND], which,
+      this.state[c+C.CTARGET]!==-1?this.point(this.state[c+C.CTARGET]):undefined);
+  }
+  private updateBuildingMuzzles(){
+    for(let id=0;id<this.setup.units.length;id++){
+      const at=id*U.WORDS,c=id*C.CWORDS;
+      if(this.units[at+U.UDOMAIN]!==2||this.units[at+U.UHEALTH]<=0)continue;
+      const [x,y]=firePoint(MOVEMENT[this.units[at+U.UTYPE]].name,this.units[at],this.units[at+1],this.units[at+U.UFACE],0,0,
+        this.state[c+C.CTARGET]!==-1?this.point(this.state[c+C.CTARGET]):undefined);
+      this.state[c+C.CMUZZLEX]=x;this.state[c+C.CMUZZLEY]=y;
+    }
+  }
+  private canTarget(id:number,target:number,weapon:number){
+    if(weapon<0)return false;
+    const air=target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===1&&this.units[target*U.WORDS+U.UALTITUDE]>0;
+    if(combatTypes[this.units[id*U.WORDS+U.UTYPE]].name==='SAM'&&!air)return false;
+    return !air||!!bullets[weapons[weapon].bullet].antiAir;
   }
   private inRange(id: number, target: number, which = 0) {
     const type = combatTypes[this.units[id * U.WORDS + U.UTYPE]];
     const weapon = which ? type.secondary : type.primary;
-    return weapon >= 0 && distance(...this.muzzle(id, which), ...this.point(target)) <= weapons[weapon].range;
+    const b=target>=0?BUILDINGS.get(MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name):undefined;
+    return this.canTarget(id,target,weapon) && distance(...this.muzzle(id, which), ...this.point(target)) <= weapons[weapon].range+(b?(b.width+b.height)*64:0);
   }
   /** TECHNO.CPP, Greatest_Threat/Evaluate_Cell: preserve ring traversal and early exits. */
   private findTarget(id: number) {
@@ -91,8 +127,8 @@ export class CpuCombat {
       let best = -1, score = -1;
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS, target = combatTypes[u[p + U.UTYPE]];
-        if (u[p + U.UHEALTH] <= 0 || u[p + U.UOWNER] === u[at + U.UOWNER] || !target.targetable ||
-          !this.state[other * C.CWORDS + C.CSEEN])
+        if ((u[p + U.UHEALTH] <= 0 || u[p + U.UATTACHED] !== 0) || u[p + U.UOWNER] === u[at + U.UOWNER] || !target.targetable ||
+          !this.state[other * C.CWORDS + C.CSEEN] || !this.canTarget(id,other,type.primary)&&!this.canTarget(id,other,type.secondary))
           continue;
         const raw = target.risk + target.reward;
         const value = Math.max(raw ? 2 : 0, Math.floor((raw + this.state[other * C.CWORDS + C.CKILLS]) /
@@ -115,7 +151,7 @@ export class CpuCombat {
       let candidate = -1;
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS;
-        if (u[p + U.UHEALTH] > 0 && u[p + U.UOWNER] !== u[at + U.UOWNER] &&
+        if ((u[p + U.UHEALTH] > 0 && u[p + U.UATTACHED] === 0) && u[p + U.UOWNER] !== u[at + U.UOWNER] &&
           combatTypes[u[p + U.UTYPE]].targetable &&
           (u[at + U.UOWNER] !== 0 || this.state[other * C.CWORDS + C.CSEEN]) &&
           Math.floor(u[p] / 256) === x && Math.floor(u[p + 1] / 256) === y) {
@@ -123,7 +159,9 @@ export class CpuCombat {
           break;
         }
       }
-      if (candidate >= 0 && (this.inRange(id, candidate) || this.inRange(id, candidate, 1)))
+      // BUILDING.CPP Greatest_Threat: human defenses omit THREAT_BUILDINGS.
+      if (candidate >= 0 && !(u[at+U.UDOMAIN]===2 && u[at+U.UOWNER]===0 && u[candidate*U.WORDS+U.UDOMAIN]===2)
+        && (this.inRange(id, candidate) || this.inRange(id, candidate, 1)))
         best = candidate;
     };
     for (let r = 1; r < range; r++) {
@@ -268,7 +306,7 @@ export class CpuCombat {
       }
     for (let id = 0; id < this.setup.units.length; id++) {
       const at = id * U.WORDS, c = id * C.CWORDS, type = combatTypes[u[at + U.UTYPE]], moving = MOVEMENT[u[at + U.UTYPE]];
-      if (u[at + U.UHEALTH] <= 0)
+      if ((u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0))
         continue;
       if (s[c + C.CARM])
         s[c + C.CARM]--;
@@ -337,7 +375,7 @@ export class CpuCombat {
       s[c + C.CTURRET] = rotateFacing(s[c + C.CTURRET], s[c + C.CTURN], moving.rotation + 1);
       s[c + C.CROTATING] = s[c + C.CTURRET] !== s[c + C.CTURN] ? 1 : 0;
       let target = s[c + C.CTARGET];
-      if (target >= 0 && u[target * U.WORDS + U.UHEALTH] <= 0)
+      if (target >= 0 && (u[target * U.WORDS + U.UHEALTH] <= 0 || u[target * U.WORDS + U.UATTACHED] !== 0))
         target = -1;
       // FOOT.CPP Mission_Attack / Enter_Idle_Mode; do not inherit pursuit when
       // the explicit target ceases to exist.
@@ -365,17 +403,17 @@ export class CpuCombat {
       }
       s[c + C.CTARGET] = target;
       if (target !== -1) {
-        if (s[c + C.CMISSION] >= C.ATTACK && !this.recoverApproach(id, target))
+        if (!moving.domain && s[c + C.CMISSION] >= C.ATTACK && !this.recoverApproach(id, target))
           this.approach(id, target);
         s[c + C.CAPPROACH_GOAL] = this.movement.goals[id];
         const dir = desiredFacing256(u[at], u[at + 1], ...this.point(target));
-        if (type.turret) {
+        if (type.turret && moving.domain!==2) {
           s[c + C.CTURN] = type.lockTurret && this.movement.goals[id] >= 0 ? u[at + U.UFACE] : dir;
           // TARCOM.CPP, FIRE_FACING; TURRET.CPP, Ok_To_Move.
           if (type.lockTurret && u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
             u[at + U.UDESIRED] = dir;
         }
-        else if (u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
+        else if (type.name!=='SAM' && u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
           u[at + U.UDESIRED] = type.name === 'FTNK' ? dirFacing(dir) * 32 : dir;
       }
       else {
@@ -390,14 +428,40 @@ export class CpuCombat {
       // UNIT.CPP, AI: the Mammoth regenerates only below half strength.
       if (type.name === 'HTNK' && (this.frame + 1) % 16 === 0 && u[at + U.UHEALTH] < moving.strength / 2)
         u[at + U.UHEALTH]++;
+      if(moving.domain===2)this.defense(id);
     }
+  }
+  /** BUILDING.CPP AI and Mission_Attack: turret rotation, charging and retractable SAM. */
+  private defense(id:number){
+    const u=this.units,s=this.state,at=id*U.WORDS,c=id*C.CWORDS,name=MOVEMENT[u[at+U.UTYPE]].name;
+    this.movement.goals[id]=-1;this.movement.pathGoals[id]=-1;
+    if(!s[c+C.CACTIVE]){s[c+C.CTARGET]=-1;return;}
+    u[at+U.UFACE]=rotateFacing(u[at+U.UFACE],u[at+U.UDESIRED],name==='SAM'?15:12);
+    const target=s[c+C.CTARGET];
+    if(name==='OBLI')s[c+C.CCHARGE]=target!==-1&&s[c+C.CPOWER]>=256?Math.min(61,s[c+C.CCHARGE]+1):0;
+    if(name!=='SAM')return;
+    const state=s[c+C.CSAM];
+    if(state===1||state===7)s[c+C.CCHARGE]++;
+    if(s[c+C.CSTIMER]>0&&--s[c+C.CSTIMER]>0)return;
+    s[c+C.CSTIMER]=1;
+    const valid=target>=0&&u[target*U.WORDS+U.UDOMAIN]===1&&u[target*U.WORDS+U.UALTITUDE]>0;
+    if(state===0){if(valid){s[c+C.CSAM]=1;s[c+C.CCHARGE]=0;}}
+    else if(state===1){if(s[c+C.CCHARGE]>=30){u[at+U.UFACE]=u[at+U.UDESIRED]=0;s[c+C.CSAM]=valid?2:7;s[c+C.CCHARGE]=0;}}
+    else if(state===2||state===4){
+      if(!valid){s[c+C.CTARGET]=-1;s[c+C.CSAM]=6;s[c+C.CSTIMER]=15;}
+      else if(u[at+U.UFACE]===u[at+U.UDESIRED]){const dir=desiredFacing256(u[at],u[at+1],...this.point(target));if(dir!==u[at+U.UFACE])u[at+U.UDESIRED]=dir;else s[c+C.CSAM]++;}
+    }else if(state===3||state===5){
+      if(!valid||!this.inRange(id,target)){s[c+C.CTARGET]=-1;s[c+C.CSAM]=6;}
+      else if(Math.abs(((desiredFacing256(u[at],u[at+1],...this.point(target))-u[at+U.UFACE]+128)&255)-128)>8)s[c+C.CSAM]--;
+    }else if(state===6){if(u[at+U.UFACE]===u[at+U.UDESIRED]){if(u[at+U.UFACE]===0){s[c+C.CSAM]=7;s[c+C.CCHARGE]=0;}else u[at+U.UDESIRED]=0;}}
+    else if(state===7&&s[c+C.CCHARGE]>=30){s[c+C.CSAM]=0;s[c+C.CCHARGE]=0;s[c+C.CSTIMER]=15;}
   }
   private fire(id: number) {
     const u = this.units, s = this.state, at = id * U.WORDS, c = id * C.CWORDS;
-    if (u[at + U.UHEALTH] <= 0)
+    if ((u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0))
       return;
     const type = combatTypes[u[at + U.UTYPE]], target = s[c + C.CTARGET];
-    if (target >= 0 && u[target * U.WORDS + U.UHEALTH] <= 0) {
+    if (target >= 0 && (u[target * U.WORDS + U.UHEALTH] <= 0 || u[target * U.WORDS + U.UATTACHED] !== 0)) {
       s[c + C.CTARGET] = -1;
       return;
     }
@@ -405,13 +469,18 @@ export class CpuCombat {
       return;
     const infantry = u[at + U.UKIND] !== 0;
     const desired = desiredFacing256(u[at], u[at + 1], ...this.point(target));
-    const dir = type.turret ? s[c + C.CTURRET] : u[at + U.UFACE];
+    const domain=u[at+U.UDOMAIN];
+    const dir = type.turret&&domain!==2 ? s[c + C.CTURRET] : u[at + U.UFACE];
     // TARCOM.CPP, AI tries the secondary after any primary Can_Fire failure.
     const canFire = (which: number) => {
       const weapon = which ? type.secondary : type.primary;
       if (weapon < 0 || s[c + C.CARM] || !this.inRange(id, target, which))
         return false;
       const bullet = bullets[weapons[weapon].bullet];
+      if(domain===2)return !!s[c+C.CACTIVE]&&(!type.turret||(dir===u[at+U.UDESIRED]&&Math.abs(((desired-dir+128)&255)-128)<=8))
+        &&(type.name!=='ATWR'||s[c+C.CPOWER]>=256)&&(type.name!=='OBLI'||s[c+C.CCHARGE]>=61)
+        &&(type.name!=='SAM'||s[c+C.CSAM]===3||s[c+C.CSAM]===5);
+      if(domain===1)return u[at+U.UALTITUDE]===24&&!!s[c+C.CACTIVE];
       let diff = Math.abs(((desired - dir + 128) & 255) - 128);
       if (type.name === 'FTNK' && dirFacing(desired) === dirFacing(dir))
         diff = 0;
@@ -471,7 +540,7 @@ export class CpuCombat {
     const speed = bullet.arcing ? Math.max(25, bullet.speed + (d >> 5)) : bullet.speed === 255 ? 0 : bullet.speed;
     p[b + C.BSPEED] = (speed * 255 + 128) >> 8;
     p[b + C.BTIMER] = Math.min(255, Math.max(bullet.arming, bullet.range || Math.floor(d / bullet.speed) + 4));
-    p[b + C.BARM] = bullet.arming;
+    p[b + C.BARM] = target>=0&&u[target*U.WORDS+U.UDOMAIN]===1?0:bullet.arming;
     p[b + C.BTO_X] = tx;
     p[b + C.BTO_Y] = ty;
     p[b + C.BPROXIMITY] = d;
@@ -482,10 +551,13 @@ export class CpuCombat {
     p[b + C.BFIRE_X] = fx;
     p[b + C.BFIRE_Y] = fy;
     // TECHNO.CPP, Fire_At: directional effects follow Fire_Direction, not the bullet.
-    p[b + C.BFIRE_FACE] = type.turret ? s[c + C.CTURRET] : u[at + U.UFACE];
+    p[b + C.BFIRE_FACE] = type.turret&&domain!==2 ? s[c + C.CTURRET] : u[at + U.UFACE];
     p[b + C.BWEAPON] = w;
     p[b + C.BBORN] = this.frame;
     s[c + C.CARM] = s[c + C.CSECOND] ? weapons[type.primary].rof + 3 : 9;
+    if(domain===1)s[c+C.CARM]=Math.trunc(s[c+C.CARM]/2);
+    if(type.name==='OBLI')s[c+C.CCHARGE]=0;
+    if(type.name==='SAM'){if(s[c+C.CSAM]===3)s[c+C.CSAM]=4;else{s[c+C.CSAM]=6;s[c+C.CSTIMER]=45;}}
     if (type.twoShooter)
       s[c + C.CSECOND] ^= 1;
     if (s[c + C.CAMMO] > 0)
@@ -524,10 +596,15 @@ export class CpuCombat {
       p[b + C.BFACE] = rotateFacing(p[b + C.BFACE], p[b + C.BDESIRED], type.rotation);
       const actual = p[b + C.BACCUM] + p[b + C.BSPEED];
       p[b + C.BACCUM] = actual % 10;
-      const [x, y] = movePoint(p[b], p[b + 1], p[b + C.BFACE], actual - actual % 10);
+      let [x, y] = movePoint(p[b], p[b + 1], p[b + C.BFACE], actual - actual % 10);
       if (x < 0 || y < 0 || x >= this.setup.grid.width * 256 || y >= this.setup.grid.height * 256) {
         p[b + C.BACTIVE] = 0;
         continue;
+      }
+      if(!type.high){const cell=Math.trunc(y/256)*this.setup.grid.width+Math.trunc(x/256),wall=this.buildingAt(cell);
+        if(wall>=0&&WALLS[MOVEMENT[this.units[wall*U.WORDS+U.UTYPE]].name]?.high){forced=true;x=p[b]=cell%this.setup.grid.width*256+128;y=p[b+1]=Math.trunc(cell/this.setup.grid.width)*256+128;}}
+      if(type.antiAir&&target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===1&&distance(p[b],p[b+1],...this.point(target))<128){
+        forced=true;p[b+C.BDAMAGE]+=Math.trunc(p[b+C.BDAMAGE]/(p[b+C.BTYPE]===7?3:2));
       }
       let explode = forced;
       if (!forced) {
@@ -560,11 +637,16 @@ export class CpuCombat {
   }
   private damage(id: number, raw: number, warhead: number, x: number, y: number, source: number) {
     const at = id * U.WORDS, c = id * C.CWORDS, u = this.units, s = this.state, type = combatTypes[u[at + U.UTYPE]];
-    if (u[at + U.UHEALTH] <= 0 || type.immune || id === source)
+    if ((u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0) || type.immune || id === source)
       return 0;
-    const d = distance(x, y, u[at], u[at + 1]);
-    if (d >= 384 || Math.abs(Math.floor(x / 256) - Math.floor(u[at] / 256)) > 1 || Math.abs(Math.floor(y / 256) - Math.floor(u[at + 1] / 256)) > 1)
+    if(WALLS[type.name])return 0;
+    const cell=Math.trunc(y/256)*this.setup.grid.width+Math.trunc(x/256);
+    const direct=u[at+U.UDOMAIN]===2&&this.buildingAt(cell)===id;
+    const d = direct?0:distance(x, y, u[at], u[at + 1]);
+    if (d >= 384 || !direct&&(Math.abs(Math.floor(x / 256) - Math.floor(u[at] / 256)) > 1 || Math.abs(Math.floor(y / 256) - Math.floor(u[at + 1] / 256)) > 1))
       return 0;
+    if(u[at+U.UDOMAIN]===1){if(warhead===1)raw*=2;if(u[at+U.UALTITUDE]>0)raw=Math.trunc(raw/2);}
+    if(type.name==='SAM'&&s[c+C.CSAM]===0)raw=Math.trunc(raw/2)+1;
     let damage = modifyDamage(s[c + C.CPRONE] ? raw >> 1 : raw, warhead, type.armor, d);
     if (damage && type.name === 'E4')
       damage += modifyDamage(5, warhead, type.armor, d);
@@ -576,7 +658,9 @@ export class CpuCombat {
     for (const [dx, dy] of [[0, 0], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]]) {
       for (let id = 0; id < this.setup.units.length; id++) {
         const at = id * U.WORDS;
-        if (id !== source && this.units[at + U.UHEALTH] > 0 && Math.floor(this.units[at] / 256) === cx + dx && Math.floor(this.units[at + 1] / 256) === cy + dy)
+        const cell=(cy+dy)*this.setup.grid.width+cx+dx,building=this.units[at+U.UDOMAIN]===2;
+        if (id !== source && !result.includes(id) && (this.units[at + U.UHEALTH] > 0 && this.units[at + U.UATTACHED] === 0) && this.units[at+U.UALTITUDE]<16 &&
+          (building?this.buildingAt(cell)===id:Math.floor(this.units[at] / 256) === cx + dx && Math.floor(this.units[at + 1] / 256) === cy + dy))
           result.push(id);
         if (result.length === 32)
           return result;
@@ -590,6 +674,19 @@ export class CpuCombat {
     const totals = new Int32Array(this.setup.units.length), causes = new Int32Array(totals.length).fill(-1);
     for (let b = 0; b < p.length; b += C.BWORDS)
       if (p[b + C.BIMPACT]) {
+        const target=p[b+C.BTARGET];
+        if(target>=0&&u[target*U.WORDS+U.UDOMAIN]===1&&u[target*U.WORDS+U.UALTITUDE]>=16){
+          if(u[target*U.WORDS+U.UHEALTH]>0&&distance(p[b],p[b+1],...this.point(target))<128){
+            const damage=modifyDamage(Math.trunc(p[b+C.BDAMAGE]/2),bullets[p[b+C.BTYPE]].warhead,combatTypes[u[target*U.WORDS+U.UTYPE]].armor,0);
+            if(damage&&causes[target]<0)causes[target]=b;totals[target]+=damage;
+          }
+          continue;
+        }
+        const wallId=this.buildingAt(Math.trunc(p[b+1]/256)*this.setup.grid.width+Math.trunc(p[b]/256));
+        if(wallId>=0){const wall=WALLS[MOVEMENT[u[wallId*U.WORDS+U.UTYPE]].name],warhead=warheads[bullets[p[b+C.BTYPE]].warhead],raw=p[b+C.BDAMAGE];
+          if(wall&&(warhead.wall||wall.wood&&warhead.wood)&&(raw>=wall.points||randomWord(this.setup.seed,this.frame,b/C.BWORDS,195)%(wall.points+1)<raw)){
+            totals[wallId]++;if(causes[wallId]<0)causes[wallId]=b;
+          }}
         for (const id of this.victims(p[b], p[b + 1], p[b + C.BSOURCE])) {
           const d = this.damage(id, p[b + C.BDAMAGE], bullets[p[b + C.BTYPE]].warhead, p[b], p[b + 1], p[b + C.BSOURCE]);
           if (d && causes[id] < 0)
@@ -627,6 +724,8 @@ export class CpuCombat {
   }
   private injure(id: number, amount: number, warhead: number, source: number, deaths: number[]) {
     const u = this.units, s = this.state, at = id * U.WORDS, c = id * C.CWORDS;
+    const wall=WALLS[MOVEMENT[u[at+U.UTYPE]].name];if(wall){s[c+C.CWALL]+=amount;if(s[c+C.CWALL]<wall.levels)return;amount=u[at+U.UHEALTH];}
+    if(u[at+U.UDOMAIN]===2)s[c+C.CWARHEAD]=warhead;
     u[at + U.UHEALTH] = Math.max(0, u[at + U.UHEALTH] - amount);
     if (u[at + U.UHEALTH] === 0) {
       s[c + C.CDEATH] = this.frame;
@@ -646,6 +745,15 @@ export class CpuCombat {
         s[c + C.CFEAR] = source >= 0 && fear < 100 ? (type.fraidy ? 200 : 100) :
           Math.min(255, fear + (u[at + U.UHEALTH] * 2 > MOVEMENT[u[at + U.UTYPE]].strength ? 2 : 10));
         s[c + C.CFIRE] = -1;
+      }
+      // BUILDING.CPP Take_Damage, with the default IsSmartDefense option disabled.
+      if(u[at+U.UDOMAIN]===2){
+        if(source>=0&&MOVEMENT[u[at+U.UTYPE]].name!=='SAM'&&u[source*U.WORDS+U.UOWNER]!==u[at+U.UOWNER]
+          &&combatTypes[u[at+U.UTYPE]].primary>=0&&(s[c+C.CTARGET]===-1||!this.inRange(id,s[c+C.CTARGET]))){
+          if(u[at+U.UOWNER]!==0&&u[source*U.WORDS+U.UDOMAIN]!==1){s[c+C.CTARGET]=source;s[c+C.CMISSION]=C.ATTACK;}
+          else if(u[at+U.UFACE]===u[at+U.UDESIRED])u[at+U.UDESIRED]=randomWord(this.setup.seed,this.frame,id,196)%256;
+        }
+        return;
       }
       // FOOT.CPP, Take_Damage: human guards retaliate only in range; computer guards may pursue.
       if (source >= 0 && u[source * U.WORDS + U.UOWNER] !== u[at + U.UOWNER] &&
@@ -731,7 +839,7 @@ export class CpuCombat {
         continue;
       for (let id = 0; id < this.setup.units.length; id++) {
         const at = id * U.WORDS, c = id * C.CWORDS;
-        if (!u[at + U.UKIND] || u[at + U.UHEALTH] <= 0 || u[at + U.UOWNER] === u[source + U.UOWNER])
+        if (!u[at + U.UKIND] || (u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0) || u[at + U.UOWNER] === u[source + U.UOWNER])
           continue;
         if (Math.floor(u[at + 1] / 256) * this.setup.grid.width + Math.floor(u[at] / 256) !== cell)
           continue;
@@ -749,7 +857,9 @@ export class CpuCombat {
     }
   }
   step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
+    this.updateBuildingMuzzles();
     this.prepare();
+    this.updateBuildingMuzzles();
     this.movement.step();
     this.afterMove();
     for (let id = 0; id < this.setup.units.length; id++)
@@ -766,6 +876,8 @@ export class CpuCombat {
         if (this.units[at + U.UHEALTH] <= 0 || this.units[at + U.UOWNER] !== 0)
           continue;
         const attack = command.kind === 'attack' || command.kind === 'attack-ground';
+        const type=combatTypes[this.units[at+U.UTYPE]];
+        if(attack && (type.name==='SAM' || this.units[at+U.UDOMAIN]===1 && type.primary<0))continue;
         this.state[c + C.CTARGET] = attack ? command.kind === 'attack' ? command.target! : -command.target! - 2 : -1;
         this.state[c + C.CMISSION] = attack ? C.ATTACK : command.kind === 'move' ? C.MOVE : C.GUARD;
         this.state[c + C.CSCAN] = 0;

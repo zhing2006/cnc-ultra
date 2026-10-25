@@ -1,7 +1,8 @@
 import type { Grid } from '../../engine/simulation/state.ts';
 import { MOVEMENT } from '../data/movement.ts';
+import { BUILDINGS } from '../data/buildings.ts';
 import { INFANTRY_SPOTS } from './map.ts';
-export const WORDS = 31;
+export const WORDS = 38;
 export const UX = 0;
 export const UY = 1;
 export const UCELL = 2;
@@ -34,6 +35,17 @@ export const USTALLED = 27;
 export const UOVERRUN_CELL = 28;
 export const UOVERRUN_X = 29;
 export const UOVERRUN_Y = 30;
+/** 0: ground mobile, 1: aircraft, 2: building. */
+export const UDOMAIN = 31;
+/** Aircraft altitude in original image pixels; all other positions remain in leptons. */
+export const UALTITUDE = 32;
+export const UORIGIN = 33;
+export const UGENERATION = 34;
+/** Attached cargo or a refinery's contained harvester: parent ID + 1, otherwise zero. */
+export const UATTACHED = 35;
+/** Requested docking/boarding object ID + 1, zero for no contact. */
+export const UENTER=36;
+export const UDOOR=37;
 /** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
 export const DIRECT_STEP = -2;
 export interface UnitPlacement {
@@ -43,9 +55,14 @@ export interface UnitPlacement {
   slot?: number;
   owner?: number;
   health?: number;
+  altitude?: number;
+  attached?:number;
+  enter?:number;
 }
 export interface UnitsSetup {
   grid: Grid;
+  /** Original map bounds, excluding the surrounding reinforcement cells. */
+  bounds?:{x:number;y:number;width:number;height:number};
   land: Uint8Array;
   passable?: Uint8Array;
   units: readonly UnitPlacement[];
@@ -83,6 +100,17 @@ export function initialUnits(setup: UnitsSetup) {
     result[at + UMIDDLE] = -1;
     result[at + URETRIES] = 10;
     result[at + UOVERRUN_CELL] = -1;
+    result[at + UDOMAIN] = type.domain ?? 0;
+    result[at + UALTITUDE] = placed.altitude ?? 0;
+    result[at + UORIGIN] = placed.cell;
+    result[at + UGENERATION] = result[at+UHEALTH]>0?1:0;
+    result[at+UATTACHED]=placed.attached??0;result[at+UENTER]=placed.enter??0;
+    if(type.domain===2){
+      const building=BUILDINGS.get(type.name)!;
+      result[at+UX]=placed.cell%setup.grid.width*256+(building.width===2?255:building.width*128);
+      result[at+UY]=Math.trunc(placed.cell/setup.grid.width)*256+(building.height===2?255:building.height*128);
+      result[at+UCELL]=Math.trunc(result[at+UY]/256)*setup.grid.width+Math.trunc(result[at+UX]/256);
+    }
   });
   return result;
 }

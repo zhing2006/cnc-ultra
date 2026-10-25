@@ -37,3 +37,11 @@ const rows: [string, boolean, boolean, boolean][] = [
 export const OVERLAYS: ReadonlyMap<string, OverlayType> = new Map(rows.map(
   ([name, theater, wall, tiberium]) => [name, { name, theater, wall, tiberium }],
 ));
+/** ODATA.CPP wall constructors: damage levels, points per level, wood, crushable, high. */
+export const WALLS:Readonly<Record<string,{levels:number;points:number;wood:boolean;crush:boolean;high:boolean}>>={
+  SBAG:{levels:1,points:20,wood:false,crush:false,high:false},
+  CYCL:{levels:2,points:10,wood:false,crush:true,high:false},
+  BRIK:{levels:3,points:70,wood:false,crush:false,high:true},
+  BARB:{levels:1,points:2,wood:false,crush:true,high:false},
+  WOOD:{levels:1,points:2,wood:true,crush:true,high:false},
+};

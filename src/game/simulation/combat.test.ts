@@ -13,6 +13,39 @@ export function combatFixture(): C.CombatSetup {
     units: [{ cell: 66, type: movementType('MTNK'), facing: 64 }, { cell: 70, type: movementType('MTNK'), facing: 192, owner: 1 }] };
 }
 describe('original ground combat', () => {
+  it('turns a human gun after an out-of-range hit without issuing a pursuit order',()=>{
+    // BUILDING.CPP Take_Damage, default Special.IsSmartDefense == false.
+    const setup=combatFixture();setup.units=[{cell:66,type:movementType('GUN')},{cell:185,type:movementType('MTNK'),owner:1}];
+    const battle=new CpuCombat(setup),p=battle.projectiles;
+    p[C.BX]=p[C.BTO_X]=battle.units[0];p[C.BY]=p[C.BTO_Y]=battle.units[1];
+    p[C.BTYPE]=2;p[C.BDAMAGE]=10;p[C.BSOURCE]=1;p[C.BTARGET]=0;p[C.BACTIVE]=1;
+    battle.step();
+    expect(battle.state[C.CTARGET]).toBe(-1);
+    expect(battle.units[U.UDESIRED]).toBe(randomWord(setup.seed,1,0,196)%256);
+  });
+  it.each([['SAM',15],['GUN',12]] as const)('rotates %s at the BUILDING.CPP rate', (name,rate) => {
+    const setup=combatFixture();setup.units=[{cell:66,type:movementType(name)}];
+    const battle=new CpuCombat(setup);battle.units[U.UDESIRED]=64;
+    battle.step();
+    expect(battle.units[U.UFACE]).toBe(rate);
+  });
+  it('keeps human defenses from automatically choosing buildings but accepts a manual target', () => {
+    // BUILDING.CPP Greatest_Threat adds THREAT_BUILDINGS only for computer houses.
+    const setup=combatFixture();setup.units=[{cell:66,type:movementType('GUN')},
+      {cell:70,type:movementType('NUKE'),owner:1}];
+    const battle=new CpuCombat(setup);battle.state[C.CWORDS+C.CSEEN]=1;
+    battle.step();expect(battle.state[C.CTARGET]).toBe(-1);
+    battle.step([{frame:2,kind:'attack',ids:[0],target:1}]);
+    expect(battle.state[C.CTARGET]).toBe(1);
+  });
+  it.each(['SAM','TRAN'])('does not assign a player attack order to %s', name => {
+    // BUILDING.CPP / AIRCRAFT.CPP What_Action: automatic SAM and unarmed transport.
+    const setup=combatFixture();setup.units=[{cell:66,type:movementType(name)}];
+    const battle=new CpuCombat(setup);
+    battle.step([{frame:1,kind:'attack-ground',ids:[0],target:70}]);
+    expect(battle.state[C.CTARGET]).toBe(-1);
+    expect(battle.state[C.CMISSION]).toBe(C.GUARD);
+  });
   it('credits a commando kill and celebrates after the original two-second delay', () => {
     const setup=combatFixture();
     setup.units=[{cell:66,type:movementType('RMBO'),facing:64},

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { withApp, withInput, type Session } from './browser.ts';
 
-interface StartupProbe {
+export interface StartupProbe {
   readyAt: number | null;
   readyTick: number | null;
   latePipelines: { kind: string; at: number }[];
@@ -12,7 +12,7 @@ interface StartupProbe {
 }
 
 /** Observe before loading the app: waiting for a locator can hide a blocked main thread. */
-function observeStartup() {
+export function observeStartup() {
   const probe: StartupProbe = { readyAt: null, readyTick: null, latePipelines: [], frameGaps: [], pointerDownAt: null, pointerLockMs: null };
   (window as unknown as { startupProbe: StartupProbe }).startupProbe = probe;
   new MutationObserver(() => {

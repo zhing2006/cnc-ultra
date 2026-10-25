@@ -85,6 +85,9 @@ export class CpuFlowFields {
       }
     }
   }
+  invalidate() {
+    for(let i=0;i<this.capacity;i++){this.fields[i*FIELD_WORDS+FIELD_READY]=0;this.fields[i*FIELD_WORDS+FIELD_RESET]=1;}
+  }
   buffers() { return [this.fields, this.lookup, this.distance, this.next, this.schedule]; }
 }
 
@@ -93,6 +96,8 @@ const uniformLoad = wgslFn('fn flowUniformLoad(value: ptr<workgroup, u32>) -> u3
 type WorkgroupUint = { element(index: Node<'uint'>): Node<'uint'> };
 
 export class GpuFlowFields {
+  private readonly edges: StorageBufferAttribute;
+  private readonly invalidatePass: ComputeNode;
   readonly capacity: number;
   readonly fields: StorageBufferAttribute;
   readonly lookup: StorageBufferAttribute;
@@ -126,6 +131,8 @@ export class GpuFlowFields {
     const pending = storage(keep(new Int32Array(cells)), 'int', cells).setName('flow_pending');
     const goal = storage(goals, 'int', users).setName('flow_goal').toReadOnly();
     const edgeAttribute = keep(Int32Array.from(grid.edges));
+    this.edges=edgeAttribute;
+    this.invalidatePass=Fn(()=>{const at=int(instanceIndex).mul(FIELD_WORDS);meta.element(at.add(FIELD_READY)).assign(0);meta.element(at.add(FIELD_RESET)).assign(1);})().compute(capacity);
     const edge = storage(edgeAttribute, 'int', cells).setName('flow_edge').toReadOnly();
     const clear = Fn(() => {
       atomicStore(requested.element(instanceIndex), uint(0));
@@ -298,6 +305,11 @@ export class GpuFlowFields {
     if (this.prepareKernels.length) this.renderer.compute(this.prepareKernels);
     this.renderer.compute(this.kernels);
   }
+  updateEdges(edges:Uint32Array) {
+    this.grid.edges.set(edges);
+    (this.edges.array as Int32Array).set(edges);this.edges.needsUpdate=true;
+    this.renderer.compute(this.invalidatePass);
+  }
   buffers() { return [this.fields, this.lookup, this.distance, this.next, this.schedule]; }
-  dispose() { for (const kernel of new Set([...this.prepareKernels,...this.kernels])) kernel.dispose(); releaseStorage(this.renderer, this.attributes); }
+  dispose() { this.invalidatePass.dispose();for (const kernel of new Set([...this.prepareKernels,...this.kernels])) kernel.dispose(); releaseStorage(this.renderer, this.attributes); }
 }

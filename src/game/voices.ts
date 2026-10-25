@@ -2,7 +2,7 @@
 import { randomWord } from '../engine/simulation/fixed.ts';
 import { decodeAud } from './formats/aud.ts';
 import type { MixSet } from './formats/mix.ts';
-// Ported from UNIT.CPP and INFANTRY.CPP, Response_Select/Response_Move/Response_Attack,
+// Ported from UNIT.CPP, AIRCRAFT.CPP and INFANTRY.CPP, Response_Select/Response_Move/Response_Attack,
 // and AUDIO.CPP, SoundEffectName. Repeated entries preserve the original probabilities.
 const VEHICLE = [['VEHIC1', 'UNIT1', 'YESSIR1', 'YESSIR1', 'YESSIR1', 'AWAIT1'], ['MOVOUT1', 'MOVOUT1', 'MOVOUT1', 'ACKNO', 'AFFIRM1', 'AFFIRM1'], ['AFFIRM1', 'ACKNO', 'YESSIR1', 'YESSIR1', 'YESSIR1']];
 const INFANTRY = [['ACKNO', 'REPORT1', 'REPORT1', 'YESSIR1', 'YESSIR1', 'READY', 'AWAIT1'], ['MOVOUT1', 'MOVOUT1', 'MOVOUT1', 'ROGER', 'RITWAWA', 'UGOTIT', 'AFFIRM1', 'AFFIRM1'], ['RITWAWA', 'AFFIRM1', 'AFFIRM1', 'UGOTIT', 'NOPROB', 'YESSIR1', 'YESSIR1', 'YESSIR1']];

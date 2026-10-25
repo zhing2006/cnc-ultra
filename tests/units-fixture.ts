@@ -22,7 +22,7 @@ function equal(a:ArrayLike<number>,b:ArrayLike<number>,message:string){
   for(let i=0;i<a.length;i++)if(a[i]!==b[i])throw new Error(`${message}: word ${i}: ${a[i]} != ${b[i]}`);
 }
 
-export async function compareUnits(){
+export async function compareUnits(acceptance=false){
   const canvas=document.createElement('canvas');canvas.style.cssText='width:16px;height:16px';document.body.append(canvas);
   const wrapper=await createRenderer(canvas,{onDeviceLost:message=>console.error(message)});if(!wrapper)throw new Error('No WebGPU');
   const renderer=wrapper.three;
@@ -69,7 +69,7 @@ export async function compareUnits(){
         }finally{selection.dispose();}
       }finally{gpuSight.dispose();gpu.dispose();replay.dispose();}
     }
-    const data=await loadData(false,true),{scene,setup,passable}=unitsScene(data);
+    const data=await loadData(false,true),{scene,setup,passable}=unitsScene(data,false);
     const regressions=await checkM3Regressions(renderer,scene,data,setup);
     const cpu=new CpuUnits(setup),gpu=new GpuUnits(renderer,setup),layout=groundLayout(scene,cpu.units,S.WORDS);
     const max=scene.sprites.reduce((m,s)=>({maxWidth:Math.max(m.maxWidth,s.region.width),maxHeight:Math.max(m.maxHeight,s.region.height)}),{maxWidth:1,maxHeight:1});
@@ -137,7 +137,7 @@ export async function compareUnits(){
       if (resumed[0] !== width * width - 1)
         throw new Error('The highest request-bit group did not restart an idle flow pool');
       const adapter=await navigator.gpu.requestAdapter();
-      const gpu=await measureM3Gpu(renderer);
+      const gpu=acceptance?await measureM3Gpu(renderer):undefined;
       return {largeGridTicks:ticks,largeGridMilliseconds,regressions,gpu,adapter:adapter && {vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description}};
     }finally{large.dispose();releaseStorage(renderer,[goalsLarge]);}
   }finally{wrapper.dispose();canvas.remove();}

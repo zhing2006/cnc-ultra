@@ -16,7 +16,7 @@ import { GpuSelection } from '../src/game/simulation/selection.ts';
 import { verifyCombatComposition } from './combat-composition.ts';
 import { verifyCombatAudio } from './combat-audio.ts';
 import { combatHotspots } from './combat-performance.ts';
-export async function compareCombat(beforePerformance: () => Promise<void> = () => Promise.resolve()) {
+export async function compareCombat(beforePerformance: () => Promise<void> = () => Promise.resolve(), acceptance=false) {
   const renderer = new WebGPURenderer();
   await renderer.init();
   try {
@@ -101,9 +101,9 @@ export async function compareCombat(beforePerformance: () => Promise<void> = () 
       device: GPUDevice;
     };
     const gpuMs: number[] = [];
-    await beforePerformance();
+    if(acceptance)await beforePerformance();
     let hotspots:Awaited<ReturnType<typeof combatHotspots>>|undefined;
-    if (backend.device.features.has('timestamp-query')) {
+    if (acceptance && backend.device.features.has('timestamp-query')) {
       const large: CombatSetup = { grid: gridEdges(256, 256, new Uint8Array(256 * 256).fill(1), true), land: new Uint8Array(256 * 256), seed: 0x1995,
         units: Array.from({ length: 20000 }, (_, id) => ({ cell: (2 + Math.floor(id / 200)) * 256 + 2 + id % 200,
           type: movementType(id % 3 ? 'MTNK' : 'E1'), owner: id % 2, facing: id % 2 ? 192 : 64 })) };
@@ -125,7 +125,7 @@ export async function compareCombat(beforePerformance: () => Promise<void> = () 
         many.dispose();
       }
     }
-    return { ...regressions, mixedTicks:780, marchTicks:1200, gpuUnits:20000, gpuMs, hotspots };
+    return { ...regressions, mixedTicks:780, marchTicks:1200, gpuUnits:acceptance?20000:0, gpuMs, hotspots };
   }
   finally {
     renderer.dispose();

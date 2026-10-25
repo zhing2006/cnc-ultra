@@ -4,7 +4,7 @@ export class SimulationClock {
   private accumulated = 0;
   constructor(readonly hz: number, readonly maxCatchUp = 4) {}
   pause() { this.previous = undefined; this.accumulated = 0; }
-  advance(now: number, tick: () => void) {
+  advance(now: number, tick: () => unknown) {
     if (this.previous === undefined) { this.previous = now; return; }
     this.accumulated += Math.max(0, now - this.previous);
     this.previous = now;
@@ -12,8 +12,8 @@ export class SimulationClock {
     // Slow the simulation under sustained overload instead of accumulating unbounded debt.
     this.accumulated = Math.min(this.accumulated, duration * this.maxCatchUp);
     while (this.accumulated + 1e-8 >= duration) {
+      if (tick() === false) break;
       this.accumulated -= duration;
-      tick();
     }
   }
 }

@@ -7,8 +7,8 @@ import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { intMax, intMin } from '../../engine/simulation/integer-nodes.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { CARD_SHADOW, DIAG_SHADOW, SIGHT_COUNT, SIGHT_OFFSETS } from '../data/sight.ts';
-import { MOVEMENT } from '../data/movement.ts';
-import { WORDS, UX, UY, UOWNER, UTYPE, UHEALTH } from './units-state.ts';
+import { MOVEMENT,movementType } from '../data/movement.ts';
+import { WORDS, UX, UY, UOWNER, UTYPE, UHEALTH, UATTACHED,UDOMAIN } from './units-state.ts';
 /** Ported from DISPLAY.CPP, Cell_Shadow. */
 export function cellShadow(mapped: Int32Array, width: number, height: number, cell: number) {
   const x = cell % width;
@@ -64,9 +64,10 @@ export class CpuSight {
     this.current.fill(0);
     for (let id = 0; id < this.previous.length; id++) {
       const at = id * WORDS;
-      if (units[at + UOWNER] !== 0 || units[at + UHEALTH] <= 0)
+      if (units[at + UOWNER] !== 0 || (units[at + UHEALTH] <= 0 || units[at + UATTACHED] !== 0))
         continue;
-      const radius = MOVEMENT[units[at + UTYPE]].sight;
+      // Design constitution §3: friendly aircraft other than C-17 reveal one cell, including in flight.
+      const radius = units[at+UDOMAIN]===1&&units[at+UTYPE]!==movementType('C17')?1:MOVEMENT[units[at + UTYPE]].sight;
       if (!radius || radius > 10)
         continue;
       const x = Math.floor(units[at + UX] / 256);
@@ -156,11 +157,12 @@ export class GpuSight {
     const footprint = Fn(() => {
       const id = int(instanceIndex);
       const at = id.mul(int(WORDS));
-      const radius = table.element(u.element(at.add(int(UTYPE))).add(int(43)));
+      const type=u.element(at.add(UTYPE));
+      const radius = select(u.element(at.add(UDOMAIN)).equal(1).and(type.notEqual(movementType('C17'))),int(1),table.element(type.add(43)));
       const x = u.element(at).div(int(256));
       const y = u.element(at.add(int(1))).div(int(256));
       const center = y.mul(int(width)).add(x);
-      If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+      If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
         const unexplored = int(0).toVar();
         Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
           const dx = table.element(o.mul(int(2)).add(int(offsetBase)));
@@ -193,11 +195,12 @@ export class GpuSight {
           const id = word.mul(int(32)).add(int(trailingZeros(bits))).toVar();
           bits.assign(bits.bitAnd(bits.sub(uint(1))));
           const at = int(id).mul(int(WORDS));
-          const radius = table.element(u.element(at.add(int(UTYPE))).add(int(43)));
+          const type=u.element(at.add(UTYPE));
+          const radius = select(u.element(at.add(UDOMAIN)).equal(1).and(type.notEqual(movementType('C17'))),int(1),table.element(type.add(43)));
           const x = u.element(at).div(int(256));
           const y = u.element(at.add(int(1))).div(int(256));
           const center = y.mul(int(width)).add(x);
-          If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+          If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
             Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
               const dx = table.element(int(o).mul(int(2)).add(int(offsetBase)));
               const dy = table.element(int(o).mul(int(2)).add(int(offsetBase + 1)));

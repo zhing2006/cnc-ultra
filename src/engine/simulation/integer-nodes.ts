@@ -11,10 +11,11 @@ export const hashNode = Fn(([value]: [Node<'uint'>]) => {
   v.assign(v.bitXor(v.shiftRight(16)).mul(uint(0x7feb352d)));
   v.assign(v.bitXor(v.shiftRight(15)).mul(uint(0x846ca68b)));
   return v.bitXor(v.shiftRight(16));
-});
+}).setLayout({name:'hashWord',type:'uint',inputs:[{name:'value',type:'uint'}]});
 export const randomNode = Fn(([seed, frame, object, stream]: [Node<'uint'>, Node<'uint'>, Node<'uint'>, Node<'uint'>]) =>
   hashNode(seed.bitXor(hashNode(frame)).bitXor(hashNode(object.add(uint(0x9e3779b9))))
-    .bitXor(hashNode(stream.add(uint(0x85ebca6b))))));
+    .bitXor(hashNode(stream.add(uint(0x85ebca6b))))))
+  .setLayout({name:'randomWord',type:'uint',inputs:[{name:'seed',type:'uint'},{name:'frame',type:'uint'},{name:'object_id',type:'uint'},{name:'stream',type:'uint'}]});
 
 const magnitude = Fn(([v]: [Node<'int'>]) => {
   const result = uint(v).toVar();

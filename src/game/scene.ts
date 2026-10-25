@@ -129,7 +129,7 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
   const frameIds = new Map<string, number[]>(), mouseIds: number[] = [], shroudIds: number[] = [];
   if (animated) {
     const loader = shapeLoader(mix, images);
-    for (const name of new Set([...scenario.units, ...scenario.infantry].map(u => u.type).concat('MOVEFLSH'))) {
+    for (const name of new Set([...scenario.units, ...scenario.infantry, ...(scenario.aircraft??[])].map(u => u.type).concat('MOVEFLSH'))) {
       const shape = loader.read(`${name}.SHP`);
       frameIds.set(name, shape.frames.map((_, i) => loader(`${name}.SHP`, i).image));
     }
@@ -144,7 +144,11 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
     for (let i = 0; i < shroud.frames.length; i++) shroudIds.push(loader('SHADOW.SHP', i).image);
   }
 
-  const { atlas, regions } = packAtlas(images.images, 2048);
+  // Large playable rosters include every buildup frame. Keep both axes within WebGPU's
+  // baseline texture limit instead of requesting a device-specific larger texture.
+  let packed = packAtlas(images.images, 2048);
+  for(let width=4096;packed.atlas.height>8192&&width<=8192;width*=2)packed=packAtlas(images.images,width);
+  const { atlas, regions } = packed;
   const toCursor = ({ image, hotX, hotY }: { image: number; hotX: number; hotY: number }) => ({
     region: regions[image], hotX, hotY,
   });

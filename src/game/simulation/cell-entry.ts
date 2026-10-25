@@ -17,6 +17,10 @@ export function cellEntryNode(simulation: GpuUnits, keep: (attribute: StorageBuf
   const data = storage(attribute, 'int', values.length).toReadOnly();
   const speedBase = MOVEMENT.length * 3, landBase = speedBase + GROUND_SPEED.length * 7;
   const openBase = landBase + land.length;
+  simulation.mapObservers.add((_edges,open,terrain)=>{
+    const values=attribute.array as Int32Array;
+    values.set(terrain,landBase);values.set(open,openBase);attribute.needsUpdate=true;
+  });
   const units = unitBuffer ?? storage(simulation.units, 'int', simulation.units.count).toReadOnly();
   const occupancy = occupiedBuffer ?? storage(simulation.occupancy, 'uint', grid.edges.length * 5).toReadOnly();
   return (id: Node<'int'>, cell: Node<'int'>) => Fn(() => {
