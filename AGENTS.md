@@ -11,16 +11,10 @@ The constitutions in `docs/` set the product scope and the technical, design and
 - `pnpm check`: type-check TypeScript and Svelte with svelte-check.
 - `pnpm test`: run the unit tests (Vitest), `src/**/*.test.ts`.
 - `pnpm test:e2e`: run the daily browser checks with `tests/run.ts`. It starts Vite in-process on a free port, launches one full Chromium, which has WebGPU in new headless mode, and runs the checks side by side. Install Chromium once with `pnpm exec playwright install chromium`.
-- `pnpm test:acceptance`: run the daily checks plus full economy, rearming, transport and construction journeys and large-scale GPU measurements on NVIDIA and AMD in turn, sharing one Vite server. It discovers Windows adapters at run time and verifies the actual WebGPU vendor. Reports and screenshots are saved separately under `test-results/nvidia/` and `test-results/amd/`. Reserve this full suite for milestone acceptance; use focused checks while implementing or debugging a feature.
+- `pnpm test:acceptance`: run the daily checks plus full economy, rearming, transport and construction journeys and large-scale GPU measurements on NVIDIA and AMD in turn, sharing one Vite server. It discovers Windows adapters at run time and verifies the actual WebGPU vendor. Reports and screenshots are saved separately under `test-results/nvidia/` and `test-results/amd/`.
 - `pnpm build`: type-check, then build into `dist/`.
 - `refs/fetch.ps1` on Windows, `refs/fetch.sh` elsewhere: download the game data and the reference source code into `refs/`.
 - `node refs/export-png.ts`: export OpenRA's decoding of the original shapes and templates into `refs/openra-png/` and write their digests to `tests/reference/openra.txt`, which the format tests compare against. It builds OpenRA first if needed, which takes the .NET SDK.
-
-For investigation, review, or documentation/instruction-only tasks, run only the focused checks needed to answer the question or validate the edit. Do not run the full check, unit, browser or GPU acceptance suites merely to close a task, including when temporary diagnostic scripts were created.
-
-For implementation changes to application code, checked-in tests or runtime/build configuration, finish the implementation and focused verification first. Before reporting the implementation as done, run `pnpm check`, `pnpm test` and `pnpm test:e2e`, and report what each one printed, failures included. Follow any narrower test scope or sequencing requested by the user.
-
-At the end of every milestone, run `pnpm test:acceptance` in place of the single-GPU `pnpm test:e2e` run. Both NVIDIA and AMD must pass the functional and CPU/GPU determinism checks. Record both GPUs, driver versions, browser version and measured GPU costs in that milestone's task file. A missing AMD adapter or an unverified GPU selection is an incomplete acceptance run, not a pass. The product constitution's 60 FPS budget still targets the specified NVIDIA development GPU; AMD measurements must not be presented as full-frame performance unless rendering was measured too.
 
 ## Stack
 
@@ -66,14 +60,7 @@ Reviews follow [REVIEW.md](REVIEW.md): what to report, the three levels, and the
 
 ## Tests
 
-Tests follow the [testing constitution](docs/testing.md). The core of it:
-
-- Write only tests that can catch meaningful functional errors. Do not write defensive tests, or negative tests merely because something was removed.
-- Test against the original game, not the current implementation: file formats against the original source and OpenRA's parsers, rules against the original source, rendering against reference images from an independent source, such as captures of the original game or a decoder other than the one under test. Do not record this project's own output as a golden image.
-- When fixing a defect, first write a test that reproduces it and see it fail.
-- During feature development, finish the implementation and its tests before running checks. Do not repeatedly run checks after intermediate edits. When debugging a specific problem, run the relevant checks as needed. Once development is complete, run the required checks listed above.
-- Run checks in parallel and share state: one Vite server and one browser for all checks, and a page carries on from the previous check's state when that state is the next one's starting point. Prepare separate state only when preconditions conflict. Add browser checks to the list in `tests/run.ts`; `tests/browser.ts` opens a page and fails the check on any console or page error it did not expect.
-- Name tests in English.
+Tests follow the [testing constitution](docs/testing.md).
 
 ## Writing
 
