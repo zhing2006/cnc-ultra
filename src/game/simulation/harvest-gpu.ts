@@ -6,6 +6,9 @@ import { intMin } from '../../engine/simulation/integer-nodes.ts';
 import { GpuTaskMask } from '../../engine/simulation/task-mask.ts';
 import { computeFunction } from '../../engine/simulation/compute-function.ts';
 import { movementType } from '../data/movement.ts';
+import { combatTypes } from '../data/combat.ts';
+import { INTERRUPTIBLE_INFANTRY_ACTIONS } from '../data/abilities.ts';
+import * as C from './combat-state.ts';
 import { unitDistance } from './units-nodes.ts';
 import { HWORDS,HBASE,HMODE,HTIMER,HLOAD,HREF,HGOAL,HGEN,HARCHIVE,HSTAGE,HCREDIT,HCLIENT } from './harvest-cpu.ts';
 import type { EconomyRuntime } from './economy-runtime.ts';
@@ -18,11 +21,13 @@ type I=Node<'int'>;
 export class GpuHarvest {
   readonly kernels:ComputeNode[];
   private readonly requests:GpuTaskMask;
+  private readonly clearance:GpuTaskMask;
   constructor(readonly economy:Pick<EconomyRuntime,'battle'|'scene'|'visuals'|'miningState'>,ore:GpuTiberium){
     const {battle,scene}=economy,{width}=battle.setup.grid,count=battle.setup.units.length,cells=scene.playable.length;
     const index=battle.movement.actorIndex;index.setPlayable(scene.playable);
     const relations=storage(index.buffer,'uint',index.buffer.count),claims=storage(index.buffer,'uint',index.buffer.count).toAtomic();
     this.requests=new GpuTaskMask(battle.renderer,count);
+    this.clearance=new GpuTaskMask(battle.renderer,count);
     const u=storage(battle.units,'int',battle.units.count),goals=storage(battle.movement.goals,'int',count),paths=storage(battle.movement.pathGoals,'int',count);
     const amount=storage(ore.amount,'int',cells),h=storage(economy.miningState,'int',economy.miningState.count);
     const occupancy=storage(battle.movement.occupancy,'uint',cells*5).toReadOnly(),buildings=storage(economy.visuals,'int',economy.visuals.count).toReadOnly();
@@ -120,12 +125,21 @@ export class GpuHarvest {
           const dock=int(relations.element(ref.add(index.harvestDock))),approach=int(relations.element(ref.add(index.harvestApproach)));
           const busy=int(dock.greaterThanEqual(0).and(dock.notEqual(id)).or(approach.greaterThanEqual(0).and(approach.lessThan(id))));
           If(busy.notEqual(0),()=>{Continue();});
-          If(goals.element(id).lessThan(0).and(unit(id,U.UDEST).lessThan(0)).and(cell.equal(unit(ref,U.UCELL).add(width-1))),()=>{
-            unit(id,U.UDESIRED).assign(160);
-            If(unit(id,U.UFACE).equal(160),()=>{forceTrack(64,cell.sub(width));state(id,HMODE).assign(8);});
+          If(goals.element(id).lessThan(0).and(unit(id,U.UDEST).lessThan(0)),()=>{
+            const destination=unit(ref,U.UCELL).add(width-1);
+            // BUILDING.CPP Receive_Message(RADIO_DOCKING) repeats the lost approach order.
+            If(cell.notEqual(destination),()=>{setGoal(destination);}).Else(()=>{
+              unit(id,U.UDESIRED).assign(160);
+              If(unit(id,U.UFACE).equal(160),()=>{forceTrack(64,cell.sub(width));state(id,HMODE).assign(8);});
+            });
           });
         }).ElseIf(mode.equal(4),()=>{state(id,HMODE).assign(5);state(id,HTIMER).assign(20);state(id,HSTAGE).assign(0);})
           .ElseIf(mode.equal(5),()=>{
+            const exit=unit(ref,U.UCELL).add(width-1);
+            Loop(5,({i:slot})=>{
+              const other=int(occupancy.element(exit.mul(5).add(slot))).sub(1);
+              If(other.greaterThanEqual(0),()=>{this.clearance.add(other);});
+            });
             If(state(id,HLOAD).greaterThan(0),()=>{state(id,HLOAD).subAssign(1);state(id,HCREDIT).assign(25);});
             state(id,HTIMER).assign(20);state(id,HSTAGE).assign(0);If(state(id,HLOAD).equal(0),()=>{state(id,HMODE).assign(6);state(id,HTIMER).assign(24);});
           }).ElseIf(mode.equal(6),()=>{
@@ -190,8 +204,34 @@ export class GpuHarvest {
       const id=int(instanceIndex),p=id.mul(HWORDS).add(HBASE),ref=atomicLoad(credits.element(p.add(HREF))),mode=atomicLoad(credits.element(p.add(HMODE)));
       If(unit(id,U.UHEALTH).greaterThan(0).and(unit(id,U.UTYPE).equal(movementType('HARV'))).and(ref.greaterThanEqual(0)).and(mode.greaterThanEqual(3)).and(mode.lessThanEqual(6)),()=>{atomicMax(credits.element(ref.mul(HWORDS).add(HBASE+HCLIENT)),id.add(1));});
     })().compute(count);
-    this.kernels=[clock,...index.kernels,initialize,contacts,advance,this.requests.clear,collect,admit,waitNearby,deposit,clearClients,clients];
+    const clearance=storage(this.clearance.buffer,'uint',this.clearance.buffer.count).toReadOnly();
+    const combat=storage(battle.state,'int',battle.state.count),scatter=battle.movement.scattering;
+    // A separate pass shares movement's writable bindings and ranks no objects on the CPU.
+    const clearApron=Fn(()=>{
+      const id=int(instanceIndex),requested=clearance.element(id.div(32)).bitAnd(uint(1).shiftLeft(uint(id.mod(32))));
+      If(requested.notEqual(uint(0)),()=>{
+        const body=(field:number)=>scatter.unit(id,field),fight=(field:number)=>combat.element(id.mul(C.CWORDS).add(field));
+        If(body(U.UHEALTH).greaterThan(0).and(body(U.UATTACHED).equal(0)).and(body(U.UDOMAIN).equal(0))
+          .and(body(U.UTYPE).notEqual(movementType('BOAT'))).and(body(U.UTYPE).notEqual(movementType('LST'))),()=>{
+          const allowed=int(1).toVar(),infantry=body(U.UKIND).notEqual(0).toVar();
+          If(infantry,()=>{
+            const fraidy=int(0).toVar(),interruptible=int(fight(C.CACTION).lessThan(0)).toVar();
+            combatTypes.forEach((type,index)=>{if(type.fraidy)If(body(U.UTYPE).equal(index),()=>{fraidy.assign(1);});});
+            for(const action of INTERRUPTIBLE_INFANTRY_ACTIONS)If(fight(C.CACTION).equal(action),()=>{interruptible.assign(1);});
+            If(interruptible.equal(0).or(fraidy.equal(0).and(body(U.UDEST).greaterThanEqual(0).or(scatter.goal(id).greaterThanEqual(0)))),()=>{allowed.assign(0);});
+          });
+          If(allowed.notEqual(0),()=>{
+            const destination=scatter.move(id);
+            If(infantry.and(destination.greaterThanEqual(0)),()=>{
+              fight(C.CMISSION).assign(C.MOVE);fight(C.CFIRE).assign(-1);fight(C.CACTION).assign(0);fight(C.CSTAGE).assign(0);
+              fight(C.CLOCAL_ROUTE).assign(0);fight(C.CROUTE_LENGTH).assign(0);fight(C.CLOCAL_DEST).assign(-1);
+            });
+          });
+        });
+      });
+    })().compute(count);
+    this.kernels=[clock,...index.kernels,initialize,contacts,this.clearance.clear,advance,this.requests.clear,collect,admit,waitNearby,deposit,clearClients,clients,clearApron];
   }
   step(){this.economy.battle.renderer.compute(this.kernels);this.economy.battle.movement.refreshOccupancy();}
-  dispose(){for(const pass of this.kernels)if(!this.economy.battle.movement.actorIndex.kernels.includes(pass)&&pass!==this.requests.clear)pass.dispose();this.requests.dispose();}
+  dispose(){for(const pass of this.kernels)if(!this.economy.battle.movement.actorIndex.kernels.includes(pass)&&pass!==this.requests.clear&&pass!==this.clearance.clear)pass.dispose();this.requests.dispose();this.clearance.dispose();}
 }

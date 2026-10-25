@@ -1,5 +1,6 @@
 import { withInput, withApp, type Session } from './browser.ts';
 import { writeFileSync } from 'node:fs';
+import { checkObserverControls } from './match-foundations.ts';
 export async function checkCombat(session: Session) {
   await withApp(session, {path:'/tests/fixture.html'}, async (page) => {
     page.setDefaultTimeout(30000);
@@ -8,6 +9,13 @@ export async function checkCombat(session: Session) {
       () => (window as unknown as { waitForGpuBenchmarks(): Promise<void> }).waitForGpuBenchmarks(),acceptance),!!session.acceptance);
     writeFileSync('test-results/m4-measurement.json', JSON.stringify({ browser: session.browser.version(), gpu: session.gpu, ...measured }, null, 2));
     console.log(`M4 environment: Chromium ${session.browser.version()}, ${JSON.stringify(measured)}`);
+    if(session.acceptance){
+      const defense=await page.evaluate(async()=>(await import('../tests/match-performance-fixture.ts')).measureBaseDefense());
+      writeFileSync('test-results/m6-scaling.json',JSON.stringify({gpu:session.gpu,browser:session.browser.version(),defense},null,2));
+      console.log(`M6 base-defense GPU measurement: ${JSON.stringify(defense)}`);
+      const median=[...defense.gpuMs].sort((a,b)=>a-b)[Math.floor(defense.gpuMs.length/2)];
+      if(session.gpu?.vendor==='nvidia'&&median>1000/60)throw new Error(`Base defense alone exceeded the 60 FPS frame budget: ${median} ms`);
+    }
     await page.goto(`${session.baseUrl}/?demo=combat`);
     await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
     await withInput(session, page, async () => {
@@ -43,6 +51,7 @@ export async function checkCombat(session: Session) {
       await page.waitForFunction(() => Number(document.querySelector('[data-tick]')?.getAttribute('data-tick')) > 460);
       await page.getByRole('button', { name: 'Pause', exact: true }).click();
       await page.screenshot({ path: 'test-results/m4-combat.png' });
+      await checkObserverControls(page);
     });
   });
 }

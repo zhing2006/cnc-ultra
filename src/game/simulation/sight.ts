@@ -8,7 +8,8 @@ import { intMax, intMin } from '../../engine/simulation/integer-nodes.ts';
 import { DIRECTIONS } from '../../engine/simulation/state.ts';
 import { CARD_SHADOW, DIAG_SHADOW, SIGHT_COUNT, SIGHT_OFFSETS } from '../data/sight.ts';
 import { MOVEMENT,movementType } from '../data/movement.ts';
-import { WORDS, UX, UY, UOWNER, UTYPE, UHEALTH, UATTACHED,UDOMAIN } from './units-state.ts';
+import { WORDS, UX, UY, UOWNER, UTYPE, UHEALTH, UATTACHED,UDOMAIN, type UnitsSetup } from './units-state.ts';
+type SightBounds = NonNullable<UnitsSetup['bounds']>;
 /** Ported from DISPLAY.CPP, Cell_Shadow. */
 export function cellShadow(mapped: Int32Array, width: number, height: number, cell: number) {
   const x = cell % width;
@@ -26,11 +27,12 @@ export class CpuSight {
   readonly current: Int32Array;
   readonly shadow: Int32Array;
   private readonly previous: Int32Array;
-  constructor(readonly width: number, readonly height: number, count: number) {
+  constructor(readonly width: number, readonly height: number, private readonly count: number, readonly owner = 0,
+    readonly bounds: SightBounds = { x: 0, y: 0, width, height }) {
     this.mapped = new Int32Array(width * height);
     this.current = new Int32Array(width * height);
     this.shadow = new Int32Array(width * height).fill(-2);
-    this.previous = new Int32Array(count).fill(-1);
+    this.previous = new Int32Array(count * 2).fill(-1);
   }
   /** Ported from DISPLAY.CPP, Map_Cell, retaining its depth-first neighbor order. */
   private map(cell: number) {
@@ -62,17 +64,21 @@ export class CpuSight {
   /** Ported from MAP.CPP, Sight_From; the current mask is a diagnostic overlay. */
   step(units: Int32Array) {
     this.current.fill(0);
-    for (let id = 0; id < this.previous.length; id++) {
-      const at = id * WORDS;
-      if (units[at + UOWNER] !== 0 || (units[at + UHEALTH] <= 0 || units[at + UATTACHED] !== 0))
-        continue;
+    for (let id = 0; id < this.count; id++) {
+      const at = id * WORDS, prior = id * 2;
       // Design constitution §3: friendly aircraft other than C-17 reveal one cell, including in flight.
       const radius = units[at+UDOMAIN]===1&&units[at+UTYPE]!==movementType('C17')?1:MOVEMENT[units[at + UTYPE]].sight;
-      if (!radius || radius > 10)
-        continue;
       const x = Math.floor(units[at + UX] / 256);
       const y = Math.floor(units[at + UY] / 256);
+      const { bounds } = this;
+      // Ported from MAP.CPP, Sight_From / In_Radar: reject an off-map source, not its footprint.
+      if (units[at + UOWNER] !== this.owner || units[at + UHEALTH] <= 0 || units[at + UATTACHED] !== 0
+        || !radius || radius > 10 || x < bounds.x || x >= bounds.x + bounds.width || y < bounds.y || y >= bounds.y + bounds.height) {
+        this.previous[prior] = this.previous[prior + 1] = -1;
+        continue;
+      }
       const center = y * this.width + x;
+      const changed = this.previous[prior] !== center || this.previous[prior + 1] !== radius;
       for (let o = 0; o < SIGHT_COUNT[radius]; o++) {
         const [dx, dy] = SIGHT_OFFSETS[o];
         const xx = x + dx;
@@ -81,10 +87,10 @@ export class CpuSight {
           continue;
         const cell = yy * this.width + xx;
         this.current[cell] = 1;
-        if (this.previous[id] !== center)
-          this.map(cell);
+        if (changed) this.map(cell);
       }
-      this.previous[id] = center;
+      this.previous[prior] = center;
+      this.previous[prior + 1] = radius;
     }
     for (let cell = 0; cell < this.shadow.length; cell++)
       this.shadow[cell] = cellShadow(this.mapped, this.width, this.height, cell);
@@ -96,7 +102,8 @@ export class GpuSight {
   readonly shadow: StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[] = [];
   readonly kernels: ComputeNode[];
-  constructor(private readonly renderer: WebGPURenderer, readonly width: number, readonly height: number, units: StorageBufferAttribute) {
+  constructor(readonly renderer: WebGPURenderer, readonly width: number, readonly height: number, units: StorageBufferAttribute, readonly owner = 0,
+    readonly bounds: SightBounds = { x: 0, y: 0, width, height }) {
     const count = units.count / WORDS;
     const cells = width * height;
     const keep = (a: Int32Array | Uint32Array) => {
@@ -111,7 +118,8 @@ export class GpuSight {
     const current = storage(this.current, 'uint', cells).setName('sight_current').toAtomic();
     const shadow = storage(this.shadow, 'int', cells).setName('sight_shadow');
     const u = storage(units, 'int', units.count).setName('sight_u').toReadOnly();
-    const previous = storage(keep(new Int32Array(count).fill(-1)), 'int', count).setName('sight_previous');
+    // A reused actor slot may have a different radius without changing its center cell.
+    const previous = storage(keep(new Int32Array(count * 2).fill(-1)), 'int', count * 2).setName('sight_previous');
     const dirtyWords = Math.ceil(count / 32);
     const dirty = storage(keep(new Uint32Array(dirtyWords)), 'uint', dirtyWords).setName('sight_dirty').toAtomic();
     const stack = storage(keep(new Int32Array(cells * 2)), 'int', cells * 2).setName('sight_stack');
@@ -122,6 +130,9 @@ export class GpuSight {
       .and(x.lessThan(int(width)))
       .and(y.greaterThanEqual(int(0)))
       .and(y.lessThan(int(height)));
+    // Ported from MAP.CPP, Sight_From / In_Radar; revealed neighbors still use grid bounds.
+    const inRadar = (x: Node<'int'>, y: Node<'int'>) => x.greaterThanEqual(bounds.x).and(x.lessThan(bounds.x + bounds.width))
+      .and(y.greaterThanEqual(bounds.y)).and(y.lessThan(bounds.y + bounds.height));
     const shadowAt = (cell: Node<'int'>) => {
       const x = cell.mod(int(width));
       const y = cell.div(int(width));
@@ -162,7 +173,9 @@ export class GpuSight {
       const x = u.element(at).div(int(256));
       const y = u.element(at.add(int(1))).div(int(256));
       const center = y.mul(int(width)).add(x);
-      If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+      const oldCenter = previous.element(id.mul(2)), oldRadius = previous.element(id.mul(2).add(1));
+      If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(owner)))
+        .and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))).and(inRadar(x, y)), () => {
         const unexplored = int(0).toVar();
         Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
           const dx = table.element(o.mul(int(2)).add(int(offsetBase)));
@@ -176,16 +189,16 @@ export class GpuSight {
             });
           });
         });
-        If(previous.element(id).notEqual(center).and(unexplored.notEqual(int(0))), () => {
+        If(oldCenter.notEqual(center).or(oldRadius.notEqual(radius)).and(unexplored.notEqual(int(0))), () => {
           atomicOr(dirty.element(id.div(int(32))), uint(1).shiftLeft(uint(id.mod(int(32)))));
         }).Else(() => {
-          previous.element(id).assign(center);
+          oldCenter.assign(center); oldRadius.assign(radius);
         });
-      });
+      }).Else(() => { oldCenter.assign(-1); oldRadius.assign(-1); });
     })().compute(count);
     const reveal = Fn(() => {
-      // Map_Cell can recursively reveal neighbors. Keep its traversal deterministic; only newly
-      // entered source cells are processed, and mapped cells return without revisiting neighbors.
+      // Map_Cell can recursively reveal neighbors. Keep its traversal deterministic; only changed
+      // footprints with unexplored cells are processed, and mapped cells return immediately.
       Loop(dirtyWords, ({ i: word }) => {
         const bits = atomicLoad(dirty.element(word)).toVar();
         Loop(() => {
@@ -200,7 +213,8 @@ export class GpuSight {
           const x = u.element(at).div(int(256));
           const y = u.element(at.add(int(1))).div(int(256));
           const center = y.mul(int(width)).add(x);
-          If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))), () => {
+          If(u.element(at.add(int(UHEALTH))).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(int(UOWNER))).equal(int(owner)))
+            .and(radius.greaterThan(int(0))).and(radius.lessThanEqual(int(10))).and(inRadar(x, y)), () => {
             Loop({ start: int(0), end: table.element(radius.add(int(32))), type: 'int' }, ({ i: o }) => {
               const dx = table.element(int(o).mul(int(2)).add(int(offsetBase)));
               const dy = table.element(int(o).mul(int(2)).add(int(offsetBase + 1)));
@@ -208,7 +222,7 @@ export class GpuSight {
               const yy = y.add(dy);
               const cell = yy.mul(int(width)).add(xx);
               If(inside(xx, yy).and(intMax(abs(dx), abs(dy)).add(intMin(abs(dx), abs(dy)).div(int(2))).lessThanEqual(radius)), () => {
-                If(previous.element(id).notEqual(center).and(mapped.element(cell).equal(int(0))), () => {
+                If(mapped.element(cell).equal(int(0)), () => {
                   mapped.element(cell).assign(1);
                   stack.element(0).assign(cell);
                   stack.element(1).assign(0);
@@ -247,7 +261,8 @@ export class GpuSight {
                 });
               });
             });
-            previous.element(id).assign(center);
+            previous.element(id.mul(2)).assign(center);
+            previous.element(id.mul(2).add(1)).assign(radius);
           });
         });
       });

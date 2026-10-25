@@ -41,7 +41,7 @@ export function economyDrawing(economy:EconomyRuntime,ore:GpuTiberium,air:GpuAir
   const sidebar=new Sidebar(economy,files,radar);
   effects.setView(pipeline,scene,combat.count);
   return {ground,selection,capacity,update(phase:(name:string)=>void=()=>{}){
-    phase('groundSprites');ground.updateSprites(false);phase('combatDrawing');combat.update(false);phase('buildingDrawing');buildings.update();phase('aircraftDrawing');aircraft.update();phase('effectsDrawing');effects.update();
+    phase('combatHistory');combat.step();phase('groundSprites');ground.updateSprites(false);phase('combatDrawing');combat.update(false);phase('buildingDrawing');buildings.update();phase('aircraftDrawing');aircraft.update();phase('effectsDrawing');effects.update();
     phase('sidebar');sidebar.update();phase('spatialIndex');pipeline.updateGpuSprites(combat.count+buildingEffectCapacity(count));phase('unitOverlay');units.update();phase('radar');radar.update(0,0,1024,768);phase('laser');laser.update(0,0,1024,768);phase('constructionPreview');preview.update(-100,-100);
   },dispose(){sidebar.dispose();preview.dispose();laser.dispose();radar.dispose();units.dispose();buildings.dispose();aircraft.dispose();combat.dispose();ground.dispose();selection.dispose();pipeline.dispose();}};
 }

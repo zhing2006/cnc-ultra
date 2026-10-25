@@ -8,6 +8,7 @@ import type { EconomyRuntime } from './simulation/economy-runtime.ts';
 import type { GpuTiberium } from './simulation/tiberium-gpu.ts';
 import type { MixSet } from './formats/mix.ts';
 import { decodeFont } from './formats/font.ts';
+import { SightView } from './simulation/sight-view.ts';
 import * as U from './simulation/units-state.ts';
 
 /** LIB/FADING.ASM, Build_Fading_Table. Equal distances prefer the last index; exact matches stop. */
@@ -44,8 +45,12 @@ export class Radar {
   private readonly kernels:ComputeNode[];
   private readonly mapPass:QuadMesh;
   private readonly densityPass:QuadMesh;
-  constructor(readonly economy:EconomyRuntime,ore:GpuTiberium,data:MixSet){
-    const {battle,scene:demo}=economy,{scene}=demo,tiles=scene.setup.tiles,atlas=scene.setup.spriteAtlas,{width,height}=battle.setup.grid,cells=width*height;
+  private readonly sightView:SightView;
+  private readonly ownsSightView:boolean;
+  constructor(readonly economy:EconomyRuntime,ore:GpuTiberium,data:MixSet,perspective?:SightView){
+    this.sightView=perspective??new SightView(economy.battle.sight);
+    this.ownsSightView=!perspective;
+    const {battle,scene:world}=economy,{scene}=world,tiles=scene.setup.tiles,atlas=scene.setup.spriteAtlas,{width,height}=battle.setup.grid,cells=width*height;
     this.density=new RenderTarget(width,height,{format:RedFormat,type:UnsignedByteType,depthBuffer:false,minFilter:NearestFilter,magFilter:NearestFilter,generateMipmaps:false});
     const texture=(pixels:Uint8Array,width:number,height:number)=>{const t=new DataTexture(pixels,width,height,RedFormat,UnsignedByteType);t.minFilter=t.magFilter=NearestFilter;t.generateMipmaps=false;t.needsUpdate=true;this.textures.push(t);return t;};
     const terrainWidth=width*3,terrainHeight=height*3,terrainPixels=new Uint8Array(terrainWidth*terrainHeight),bright=brighten(scene.setup.palette);
@@ -61,7 +66,7 @@ export class Radar {
     const regions=uniformArray<'ivec4'>(Array.from({length:12},(_,i)=>scene.animation!.frames.get(`TI${i+1}`)!).flat().map(r=>new Vector4(r.x,r.y,r.width,r.height)),'ivec4');
     this.owners=new StorageBufferAttribute(new Int32Array(cells).fill(-1),1);this.aircraft=new StorageBufferAttribute(new Uint32Array(cells).fill(0xffffffff),1);
     const owner=storage(this.owners,'int',cells).toReadOnly(),air=storage(this.aircraft,'uint',cells).toAtomic();
-    const u=storage(battle.units,'int',battle.units.count).toReadOnly(),mapped=storage(battle.sight.mapped,'int',cells).toReadOnly();
+    const u=storage(battle.units,'int',battle.units.count).toReadOnly(),mapped={element:this.sightView.mappedAt};
     const amount=storage(ore.amount,'int',cells).toReadOnly(),variant=storage(ore.variants,'int',cells).toReadOnly(),occupancy=storage(battle.movement.occupancy,'uint',cells*5).toReadOnly();
     this.kernels=[Fn(()=>{atomicStore(air.element(instanceIndex),uint(0xffffffff));})().compute(cells),Fn(()=>{
       const id=int(instanceIndex),at=id.mul(U.WORDS);
@@ -87,7 +92,7 @@ export class Radar {
           Loop(5,({i})=>{
             const id=int(occupancy.element(cell.mul(5).add(i))).sub(1),at=id.mul(U.WORDS);
             If(id.greaterThanEqual(0),()=>{
-              If(u.element(at.add(U.UDOMAIN)).notEqual(2),()=>{
+              If(u.element(at.add(U.UDOMAIN)).notEqual(2).and(u.element(at.add(U.UCLOAK)).notEqual(2).or(this.sightView.perspective.equal(-1)).or(u.element(at.add(U.UOWNER)).equal(this.sightView.perspective))),()=>{
                 const infantry=u.element(at.add(U.UKIND)).notEqual(0),sx=u.element(at).mod(256).div(86),sy=u.element(at.add(1)).mod(256).div(86);
                 const tiny=this.factor.lessThan(3).and(sub.x.equal(0)).and(sub.y.equal(0));
                 const detailed=this.factor.greaterThanEqual(3).and(sub.x.equal(sx.mul(this.factor.div(3)))).and(sub.y.equal(sy.mul(this.factor.div(3))));
@@ -133,6 +138,7 @@ export class Radar {
     return (Math.trunc(y/this.factor.value)*this.cellStep.value+this.cellOrigin.value.y)*this.economy.placement.width+Math.trunc(x/this.factor.value)*this.cellStep.value+this.cellOrigin.value.x;
   }
   update(x:number,y:number,width:number,height:number){
+    this.sightView.update(this.economy.battle.frame);
     this.origin.value.set(x,y);this.size.value.set(width,height);
     const grid=this.economy.battle.setup.grid,map=this.economy.battle.setup.bounds??{x:0,y:0,width:grid.width,height:grid.height};
     const step=this.zoomed?1:Math.max(1,Math.ceil(Math.max(map.width,map.height)/128)),factor=this.zoomed?6:Math.max(1,Math.min(Math.trunc(128/map.width),Math.trunc(128/map.height)));
@@ -144,5 +150,5 @@ export class Radar {
     const renderer=this.economy.battle.renderer,previous=renderer.getRenderTarget();if(this.airFrame!==this.economy.battle.frame){renderer.compute(this.kernels);this.airFrame=this.economy.battle.frame;}
     renderer.setRenderTarget(this.target);this.mapPass.render(renderer);renderer.setRenderTarget(this.density);this.densityPass.render(renderer);renderer.setRenderTarget(previous);
   }
-  dispose(){this.target.dispose();this.density.dispose();for(const material of [this.mapPass.material,this.densityPass.material].flat())material.dispose();for(const t of this.textures)t.dispose();for(const k of this.kernels)k.dispose();releaseStorage(this.economy.battle.renderer,[this.owners,this.aircraft,this.groundCells]);}
+  dispose(){if(this.ownsSightView)this.sightView.dispose();this.target.dispose();this.density.dispose();for(const material of [this.mapPass.material,this.densityPass.material].flat())material.dispose();for(const t of this.textures)t.dispose();for(const k of this.kernels)k.dispose();releaseStorage(this.economy.battle.renderer,[this.owners,this.aircraft,this.groundCells]);}
 }

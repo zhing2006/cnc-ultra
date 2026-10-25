@@ -11,14 +11,14 @@ import { gridEdges } from '../src/engine/simulation/state.ts';
 import { movementType } from '../src/game/data/movement.ts';
 import { WORDS, UALTITUDE } from '../src/game/simulation/units-state.ts';
 import { loadData } from '../src/game/data-files.ts';
-import { economyScene } from '../src/game/simulation/economy-scene.ts';
+import { economyScene } from '../src/demo/economy-scene.ts';
 import { EconomyRuntime,BUILDING_WORDS } from '../src/game/simulation/economy-runtime.ts';
 import { GpuCombat } from '../src/game/simulation/combat-gpu.ts';
 import { CpuCombat } from '../src/game/simulation/combat-cpu.ts';
 import { applyLifecycle } from '../src/game/simulation/lifecycle-cpu.ts';
 import { GpuLifecycle } from '../src/game/simulation/lifecycle-gpu.ts';
 import { GpuHarvest } from '../src/game/simulation/harvest-gpu.ts';
-import { stepHarvest,initialHarvest,HBASE,HWORDS,HGEN,HMODE,HLOAD,HREF,HTIMER } from '../src/game/simulation/harvest-cpu.ts';
+import { stepHarvest,initialHarvest,HBASE,HWORDS,HGEN,HMODE,HLOAD,HREF,HGOAL,HTIMER } from '../src/game/simulation/harvest-cpu.ts';
 import * as C from '../src/game/simulation/combat-state.ts';
 import * as U from '../src/game/simulation/units-state.ts';
 import { CpuAirOperations,airFireLocation } from '../src/game/simulation/air-operations-cpu.ts';
@@ -145,8 +145,9 @@ export async function compareEconomy(){
   try{
     await gpu.prepareForPlay();
     // Simultaneous factory exits contend for one physical cell; only the first tank fits.
-    economy.lifecycle.create(3,{cell:200,type:movementType('MTNK')});
+    economy.lifecycle.create(3,{cell:200,type:movementType('MTNK')},{mission:C.GUARD_AREA,destination:198});
     economy.lifecycle.create(4,{cell:200,type:movementType('LTNK')});
+    economy.lifecycle.create(5,{cell:210,type:movementType('E1'),owner:1},{mission:C.ATTACK,destination:211,target:0});
     const commands=(economy.lifecycle.commands.array as Int32Array).slice();
     applyLifecycle(cpu,commands);economy.lifecycle.flush();
     const compare=async(expected:Int32Array,buffer:import('three/webgpu').StorageBufferAttribute,label:string)=>{
@@ -154,12 +155,12 @@ export async function compareEconomy(){
       const at=actual.findIndex((value,i)=>value!==expected[i]);if(at>=0)throw new Error(`${label}, word ${at}: ${actual[at]} != ${expected[at]}`);
     };
     await compare(cpu.units,gpu.units,'Factory exit units');await compare(cpu.state,gpu.state,'Factory exit combat');
+    await compare(cpu.movement.goals,gpu.movement.goals,'Independent initial destinations');
     const h=(economy.miningState.array as Int32Array),p=HBASE+2*HWORDS;
     h[p+HGEN]=1;h[p+HMODE]=2;h[p+HLOAD]=28;economy.miningState.needsUpdate=true;
     const mining=h.slice(),amount=new Int32Array(4096).fill(-1),visuals=(economy.visuals.array as Int32Array).slice();
     for(let tick=1;tick<=900;tick++){
-      stepHarvest({units:cpu.units,goals:cpu.movement.goals,paths:cpu.movement.pathGoals,ore:amount,state:mining,
-        occupancy:cpu.movement.occupancy,buildings:visuals,playable:scene.playable,passable:scene.setup.passable!,width:64});
+      stepHarvest({battle:cpu,ore:amount,state:mining,buildings:visuals,playable:scene.playable,passable:scene.setup.passable!});
       cpu.movement.occupy();gpu.movement.beginOccupancyEdits();harvest.step();gpu.movement.endOccupancyEdits();cpu.movement.step();gpu.movement.step();
       if(tick===1||tick%100===0){await compare(mining,economy.miningState,`Harvest ${tick}`);await compare(cpu.units,gpu.units,`Harvest units ${tick}`);}
     }
@@ -171,8 +172,10 @@ export async function compareEconomy(){
 export async function compareRefineryQueue(){
   const canvas=document.createElement('canvas');document.body.append(canvas);
   const wrapper=await createRenderer(canvas,{onDeviceLost:message=>console.error(message)});if(!wrapper)throw new Error('WebGPU is required');
+  wrapper.three.setAnimationLoop(null);
+  wrapper.three.render=()=>{throw new Error('Refinery logic checks must not draw');};
   const width=16,height=12,cells=width*height,passable=new Uint8Array(cells).fill(1),playable=new Int32Array(cells).fill(1);
-  const setup={grid:gridEdges(width,height,passable,true),land:new Uint8Array(cells),passable,seed:1995,units:[
+  const setup={grid:gridEdges(width,height,passable,true),land:new Uint8Array(cells),passable,seed:1995,multiplayer:true,units:[
     {type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:52,attached:1},{type:movementType('HARV'),cell:150}]};
   const cpu=new CpuCombat(setup),gpu=new GpuCombat(wrapper.three,setup),source=economyScene(await loadData(),false,8);
   const state=initialHarvest(3),visuals=new StorageBufferAttribute(new Int32Array(3*BUILDING_WORDS),1);(visuals.array as Int32Array)[3]=1;
@@ -180,9 +183,10 @@ export async function compareRefineryQueue(){
   const miningState=new StorageBufferAttribute(state.slice(),1),amount=new Int32Array(cells).fill(-1);
   const ore=new GpuTiberium(wrapper.three,{width,height,amount,variants:new Int32Array(cells),clear:playable,blossom:new Int32Array(cells),playable,seed:1995});
   const harvest=new GpuHarvest({battle:gpu,visuals,miningState,scene:{...source,setup,playable,buildable:playable,basePassable:passable,baseLand:setup.land}},ore);
+  const context={battle:cpu,ore:amount,state,buildings:visuals.array as Int32Array,playable,passable};
   try{
     for(let frame=1;frame<=16;frame++){
-      stepHarvest({units:cpu.units,goals:cpu.movement.goals,paths:cpu.movement.pathGoals,ore:amount,state,occupancy:cpu.movement.occupancy,buildings:visuals.array as Int32Array,playable,passable,width});
+      stepHarvest(context);
       cpu.movement.occupy();gpu.movement.beginOccupancyEdits();harvest.step();gpu.movement.endOccupancyEdits();
       if(frame===1&&(cpu.movement.goals[2]<0||state[HBASE+2*HWORDS+HTIMER]!==15))throw new Error('A full harvester failed to approach the busy refinery');
       for(const [buffer,expected] of [[gpu.movement.goals,cpu.movement.goals],[miningState,state]] as const){
@@ -191,6 +195,50 @@ export async function compareRefineryQueue(){
       }
       cpu.movement.step();gpu.movement.step();
     }
+    // A temporary obstruction cleared NavCom two cells short of the docking point.
+    const reset={...setup,units:[setup.units[0],{...setup.units[1],health:0,attached:0},{...setup.units[2],cell:70,facing:192}]};
+    cpu.units.set(U.initialUnits(reset));cpu.movement.goals.fill(-1);cpu.movement.pathGoals.fill(-1);cpu.movement.occupy();
+    (gpu.units.array as Int32Array).set(cpu.units);gpu.units.needsUpdate=true;
+    (gpu.movement.goals.array as Int32Array).fill(-1);gpu.movement.goals.needsUpdate=true;
+    (gpu.movement.pathGoals.array as Int32Array).fill(-1);gpu.movement.pathGoals.needsUpdate=true;gpu.movement.refreshOccupancy();
+    state.fill(0);const p=HBASE+2*HWORDS;
+    state[p+HGEN]=1;state[p+HMODE]=3;state[p+HREF]=0;state[p+HGOAL]=68;state[p+HLOAD]=28;
+    (miningState.array as Int32Array).set(state);miningState.needsUpdate=true;
+    amount.fill(-1);amount[124]=36;(ore.amount.array as Int32Array).set(amount);ore.amount.needsUpdate=true;
+    for(let frame=1;frame<=1400;frame++){
+      stepHarvest(context);
+      cpu.movement.occupy();gpu.movement.beginOccupancyEdits();harvest.step();gpu.movement.endOccupancyEdits();
+      if(frame===1&&cpu.movement.goals[2]!==68)throw new Error('Interrupted docking did not receive its destination again');
+      cpu.movement.step();gpu.movement.step();
+      if(frame===1||frame%20===0)for(const [buffer,expected] of [[gpu.units,cpu.units],[gpu.movement.goals,cpu.movement.goals],[miningState,state],[ore.amount,amount]] as const){
+        const actual=new Int32Array(await wrapper.three.getArrayBufferAsync(buffer)),word=actual.findIndex((value,i)=>value!==expected[i]);
+        if(word>=0)throw new Error(`Docking recovery frame ${frame}, word ${word}: GPU ${actual[word]}, CPU ${expected[word]}`);
+      }
+    }
+    if(state[0]<700||amount[124]>=36)throw new Error('Recovered harvester did not unload and resume mining');
+    // Keep the same refinery, but now an area-guard infantryman blocks its exit during unloading.
+    const apron={...setup,multiplayer:true,units:[setup.units[0],{...setup.units[1],cell:52,attached:1},{cell:68,type:movementType('E1')} ]};
+    cpu.units.set(U.initialUnits(apron));cpu.state.set(C.initialCombat(apron));cpu.humanOwner=-1;gpu.humanOwner.value=-1;
+    cpu.state[2*C.CWORDS+C.CMISSION]=C.GUARD_AREA;cpu.state[2*C.CWORDS+C.CGUARD_CELL]=69;
+    cpu.movement.goals.fill(-1);cpu.movement.pathGoals.fill(-1);cpu.movement.occupy();
+    for(const [buffer,expected] of [[gpu.units,cpu.units],[gpu.state,cpu.state],[gpu.movement.goals,cpu.movement.goals],[gpu.movement.pathGoals,cpu.movement.pathGoals]] as const){
+      (buffer.array as Int32Array).set(expected);buffer.needsUpdate=true;
+    }
+    gpu.movement.refreshOccupancy();
+    state.fill(0);const unloading=HBASE+HWORDS;
+    state[unloading+HGEN]=1;state[unloading+HMODE]=5;state[unloading+HREF]=0;state[unloading+HLOAD]=10;
+    (miningState.array as Int32Array).set(state);miningState.needsUpdate=true;
+    amount.fill(-1);amount[124]=36;(ore.amount.array as Int32Array).set(amount);ore.amount.needsUpdate=true;
+    for(let frame=1;frame<=1200;frame++){
+      stepHarvest(context);cpu.movement.occupy();gpu.movement.beginOccupancyEdits();harvest.step();gpu.movement.endOccupancyEdits();
+      if(frame===1&&cpu.movement.goals[2]<0)throw new Error('Refinery did not clear its occupied apron');
+      cpu.step();gpu.step();
+      if(frame===1||frame%20===0)for(const [buffer,expected] of [[gpu.units,cpu.units],[gpu.state,cpu.state],[gpu.movement.goals,cpu.movement.goals],[miningState,state],[ore.amount,amount]] as const){
+        const actual=new Int32Array(await wrapper.three.getArrayBufferAsync(buffer)),word=actual.findIndex((value,i)=>value!==expected[i]);
+        if(word>=0)throw new Error(`Apron clearance frame ${frame}, word ${word}: GPU ${actual[word]}, CPU ${expected[word]}`);
+      }
+    }
+    if(state[0]<250||amount[124]>=36)throw new Error('Harvester did not leave the cleared apron and resume mining');
     return true;
   }finally{harvest.dispose();ore.dispose();gpu.dispose();releaseStorage(wrapper.three,[visuals,miningState]);wrapper.dispose();canvas.remove();}
 }

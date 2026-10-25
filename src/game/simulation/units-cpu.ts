@@ -1,6 +1,6 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { CpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
-import { DIRECTIONS } from '../../engine/simulation/state.ts';
+import { DIRECTIONS, UNREACHABLE } from '../../engine/simulation/state.ts';
 import { checksum, randomWord } from '../../engine/simulation/fixed.ts';
 import { desiredFacing256, dirFacing, distance, movePoint } from '../coord.ts';
 import { MOVEMENT, GROUND_SPEED,movementType } from '../data/movement.ts';
@@ -9,7 +9,7 @@ import { combatTypes } from '../data/combat.ts';
 import { TRACKS, TRACK_CONTROL, RAW_TRACKS } from '../data/tracks.ts';
 import { INFANTRY_SPOTS } from './map.ts';
 import { entryPoint, entrySpot, freeSpot } from './infantry-spots.ts';
-import { pathDestination, PATH_DELAY } from './navigation.ts';
+import { cellFacing, pathDestination, reachablePrefix, PATH_DELAY } from './navigation.ts';
 import * as S from './units-state.ts';
 /** Ported from FACING.H, Difference, and FACING.CPP, Rotation_Adjust. */
 export function rotateFacing(current: number, desired: number, rate: number) {
@@ -23,6 +23,7 @@ export class CpuUnits {
   readonly pathGoals: Int32Array;
   readonly occupancy: Int32Array;
   readonly flow: CpuFlowFields;
+  private readonly shimmers=new Set<number>();
   frame = 0;
   constructor(readonly setup: S.UnitsSetup) {
     this.units = S.initialUnits(setup);
@@ -77,6 +78,7 @@ export class CpuUnits {
       const other = (owner - 1) * S.WORDS;
       const crushable = owner > 0 && combatTypes[this.units[at + S.UTYPE]].crusher &&
         this.units[other + S.UKIND] && this.units[other + S.UOWNER] !== this.units[at + S.UOWNER];
+      if (owner && !crushable && this.units[other + S.UOWNER] !== this.units[at + S.UOWNER]) return -1;
       if (!owner || owner === id + 1 || crushable)
         mask |= 1 << slot;
     }
@@ -194,14 +196,29 @@ export class CpuUnits {
       start = (start + randomWord(this.setup.seed, this.frame, id, 1) % 5 + 6) & 7;
     }
     // Ported from UNIT.CPP / INFANTRY.CPP, Scatter: choose a free adjacent cell.
+    let destination=-1;
     for (let i = 0; i < 8; i++) {
       const other = this.neighbor(cell, (start + i) & 7);
       if (other >= 0 && this.free(other, id) >= 0)
-        this.goals[id] = other;
+        this.goals[id] = destination = other;
     }
     this.units[at + S.UROUTE] = -1;
     this.units[at + S.USTALLED] = 0;
     this.pathGoals[id] = -1;
+    return destination;
+  }
+  /** UNIT.CPP / INFANTRY.CPP Can_Enter_Cell: opposing occupiers are MOVE_DESTROYABLE. */
+  private recordObstruction(id:number,cell:number){
+    const u=this.units,at=id*S.WORDS;
+    for(let slot=0;slot<5;slot++){
+      const occupant=this.occupancy[cell*5+slot],other=(occupant-1)*S.WORDS;
+      if(occupant&&u[other+S.UOWNER]!==u[at+S.UOWNER]&&!(combatTypes[u[at+S.UTYPE]].crusher&&u[other+S.UKIND])){
+        // MOVE_CLOAK is a contact, not a request to attack an invisible blocker.
+        if(u[other+S.UCLOAK]===2)this.shimmers.add(occupant-1);
+        else{u[at+S.UOBSTRUCTION]=occupant;u[at+S.UOBSTRUCTION_GOAL]=this.goals[id];}
+        return;
+      }
+    }
   }
   /** Ported from DRIVE.CPP, Start_Of_Move, and INFANTRY.CPP, AI; FOOT.H PATH_RETRY/PATH_DELAY. */
   private failedPath(id: number) {
@@ -214,7 +231,7 @@ export class CpuUnits {
   }
   /** Ported from DRIVE.CPP, Start_Of_Move; INFANTRY.CPP, AI; UNIT.CPP, Can_Enter_Cell. */
   step(commands: readonly S.UnitCommand[] = []) {
-    this.frame++;
+    this.frame++;this.shimmers.clear();
     for (let id = 0; id < this.goals.length; id++) {
       if (this.goals[id] < 0 || this.units[id*S.WORDS+S.UDOMAIN]) this.pathGoals[id] = -1;
       else if (this.pathGoals[id] === -1) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
@@ -223,10 +240,12 @@ export class CpuUnits {
     const u = this.units;
     const rotated = new Uint8Array(this.goals.length);
     const wasDriving = new Uint8Array(this.goals.length);
+    const prefixPending=new Uint8Array(this.goals.length),prefixFailed=new Uint8Array(this.goals.length),cells=this.setup.grid.edges.length;
     for (let id = 0; id < this.goals.length; id++) {
       const at = id * S.WORDS;
       const type = MOVEMENT[u[at + S.UTYPE]];
       u[at + S.UOVERRUN_CELL] = -1;
+      u[at + S.UOBSTRUCTION] = 0;
       u[at + S.UJUMP] = -1;
       u[at + S.UJUMP_TRACK] = -1;
       if (u[at + S.UDOMAIN]) continue;
@@ -243,6 +262,17 @@ export class CpuUnits {
       }
     }
     this.occupy();
+    for(let id=0;id<this.goals.length;id++){
+      const at=id*S.WORDS,goal=this.goals[id],path=this.pathGoals[id],source=u[at+S.UCELL],field=path<0?-1:this.flow.lookup[path];
+      if(goal<0||u[at+S.UHEALTH]<=0||u[at+S.UATTACHED]||u[at+S.UDOMAIN]||u[at+S.UDEST]>=0||u[at+S.UWAIT]||field<0||!this.flow.fields[field*FIELD_WORDS+1])continue;
+      if(path===source&&goal!==source){
+        const prefix=reachablePrefix(this.setup,source,goal,this.flow.distance,field*cells);
+        if(prefix>=0){this.pathGoals[id]=prefix;prefixPending[id]=1;}else{this.pathGoals[id]=-1;prefixFailed[id]=1;}
+      }else if(this.flow.distance[field*cells+source]===UNREACHABLE){
+        // Probe the source region using the same bounded field cache; no CPU map readback is needed on the GPU.
+        this.pathGoals[id]=source;prefixPending[id]=1;
+      }
+    }
     const proposals: {
       id: number;
       cell: number;
@@ -266,18 +296,21 @@ export class CpuUnits {
           proposals.push({ id, cell, middle: -1, slot: 0, track: u[at + S.UJUMP_TRACK], jump: true });
           for (let slot = 0; slot < 5; slot++)
             claims[cell * 5 + slot] = Math.min(claims[cell * 5 + slot], id);
-        }
+        }else this.recordObstruction(id,cell);
         continue;
       }
-      if (goal < 0 || (type.name==='APC'&&u[at+S.UDOOR]) || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
+      if (prefixPending[id] || goal < 0 || (type.name==='APC'&&u[at+S.UDOOR]) || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
         continue;
-      const field = this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
+      const field = prefixFailed[id]?this.flow.lookup[u[at+S.UCELL]]:this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
       const direct=this.pathGoals[id]===S.DIRECT_STEP;
       if (!direct && (field < 0 || !this.flow.fields[field * FIELD_WORDS + 1])) continue;
       let cell = direct ? goal : u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id]);
       if (cell < 0) {
-        if (field >= 0 && this.flow.fields[field * FIELD_WORDS + 1])
+        if (field >= 0 && this.flow.fields[field * FIELD_WORDS + 1]){
+          const source=u[at+S.UCELL];
+          if(goal!==source){const [dx,dy]=DIRECTIONS[cellFacing(source,goal,this.setup.grid.width)];this.recordObstruction(id,source+dy*this.setup.grid.width+dx);}
           this.failedPath(id);
+        }
         continue;
       }
       const from = this.point(u[at + S.UCELL]);
@@ -292,6 +325,7 @@ export class CpuUnits {
       let middle = -1;
       let track = dir * 8 + dir;
       if (slot < 0) {
+        this.recordObstruction(id,cell);
         const blockers = new Set(Array.from(this.occupancy.subarray(cell * 5, cell * 5 + 5)).filter(x => x && x !== id + 1));
         // Ported from UNIT.CPP, Can_Enter_Cell: nearby opposing traffic returns MOVE_NO.
         const headOn = Array.from(blockers).some(x => {
@@ -383,15 +417,18 @@ export class CpuUnits {
     // within the source cell. Both stages belong to the same logical tick.
     for (let pass = 0; pass < 2; pass++) {
       for (const p of proposals) if (p.cell >= 0 && p.approach !== undefined && (pass || p.cell !== u[p.id * S.WORDS + S.UCELL])) {
-        let mask = 0;
+        let mask = 0, hostile = false;
         const at = p.id * S.WORDS;
         for (let slot = 0; slot < 5; slot++) {
           const owner = this.occupancy[p.cell * 5 + slot], queried = this.occupancy[p.approach * 5 + slot];
+          const claim = claims[p.cell * 5 + slot];
+          if(owner&&u[(owner-1)*S.WORDS+S.UOWNER]!==u[at+S.UOWNER]||queried&&u[(queried-1)*S.WORDS+S.UOWNER]!==u[at+S.UOWNER]||
+            claim<p.id&&u[claim*S.WORDS+S.UOWNER]!==u[at+S.UOWNER])hostile=true;
           const progress = distance(...this.point(p.cell, slot), ...this.point(p.approach)) < distance(u[at], u[at + 1], ...this.point(p.approach));
           if (progress && (!owner || owner === p.id + 1) && (!queried || queried === p.id + 1) && claims[p.cell * 5 + slot] > p.id)
             mask |= 1 << slot;
         }
-        p.slot = freeSpot(mask, entrySpot(u[at], u[at + 1], ...this.point(p.approach)), randomWord(this.setup.seed, this.frame, p.id, 2) % 4);
+        p.slot = freeSpot(hostile ? 0 : mask, entrySpot(u[at], u[at + 1], ...this.point(p.approach)), randomWord(this.setup.seed, this.frame, p.id, 2) % 4);
         if (p.slot >= 0)
           claims[p.cell * 5 + p.slot] = p.id;
       }
@@ -462,6 +499,10 @@ export class CpuUnits {
         u[id * S.WORDS + S.UJUMP_TRACK] = -1;
       }
     this.occupy();
+    for(const id of this.shimmers){
+      const at=id*S.WORDS;
+      if(u[at+S.UHEALTH]>0&&u[at+S.UCLOAK]===2){u[at+S.UCLOAK]=1;u[at+S.UCLOAK_STAGE]=19;}
+    }
     for (const id of scatter)
       if (this.goals[id] < 0)
         this.scatter(id);
@@ -472,8 +513,9 @@ export class CpuUnits {
       for (let id = 0; id < this.goals.length; id++)
         if (command.ids.includes(id)) {
           const at = id * S.WORDS;
-          if (u[at + S.UOWNER] !== 0 || u[at + S.UHEALTH] <= 0)
+          if (u[at + S.UHEALTH] <= 0)
             continue;
+          u[at+S.UOBSTRUCTION]=0;
           if (command.kind === 'scatter')
             this.scatter(id);
           else {

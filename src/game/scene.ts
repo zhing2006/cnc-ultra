@@ -85,7 +85,7 @@ interface Drawn {
   sprites: PendingSprite[];
 }
 
-/** Builds an original scenario, or a supplied static scenario for the asset preview. */
+/** Builds the indexed scene for an original or caller-supplied scenario. */
 export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakStage | ReadonlyMap<number, CloakStage> = 'normal', animated = false, extraShapes: readonly string[] = []): GameScene {
   const scenario = typeof source === 'string'
     ? readScenario(new TextDecoder('latin1').decode(mix.require(`${source}.INI`)), mix.require(`${source}.BIN`))
@@ -168,7 +168,7 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
       indexedBlend: extraShapes.length ? mix.require(`${theater.suffix[0]}TRANS.MRF`) : undefined,
       filters: [specialGhost(mix.require(`${theater.root}.PAL`))],
       singleUseFilter: animated ? mix.require(`${theater.suffix[0]}WHITE.MRF`).slice(256,512) : undefined,
-      displacement: sprites.some(sprite => sprite.displace) ? cloakDisplacement(atlas) : undefined,
+      displacement: animated || sprites.some(sprite => sprite.displace) ? cloakDisplacement(atlas) : undefined,
     },
     sprites,
     objects,

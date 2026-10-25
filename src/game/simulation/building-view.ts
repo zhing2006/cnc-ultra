@@ -26,7 +26,7 @@ export class BuildingView {
   readonly bibs:StorageBufferAttribute;
   private mapVersion=-1;
   constructor(readonly economy:EconomyRuntime,ground:GpuGround,pipeline:PalettePipeline,ore:GpuTiberium){
-    const {battle,scene:demo}=economy,{scene}=demo,{layout}=ground,{width,height}=battle.setup.grid,cells=width*height;
+    const {battle,scene:world}=economy,{scene}=world,{layout}=ground,{width,height}=battle.setup.grid,cells=width*height;
     const keep=(a:Int32Array)=>{const b=new StorageBufferAttribute(a,1);this.attributes.push(b);return b;};
     const rects:number[]=[],values:number[]=[];
     const frames=(name:string)=>{const list=scene.animation!.frames.get(name)??[],at=rects.length/4;for(const r of list)rects.push(r.x,r.y,r.width,r.height);return[at,list.length];};
@@ -54,7 +54,7 @@ export class BuildingView {
     const bibs=storage(this.bibs,'int',cells*2).toReadOnly();
     const amount=storage(ore.amount,'int',cells).toReadOnly(),variants=storage(ore.variants,'int',cells).toReadOnly();
     this.passes.push(Fn(()=>{
-      const cell=int(instanceIndex),oreIndex=cell.add(demo.oreStart),bibIndex=cell.add(demo.bibStart);
+      const cell=int(instanceIndex),oreIndex=cell.add(world.oreStart),bibIndex=cell.add(world.bibStart);
       sprites.element(oreIndex.mul(3)).assign(vec4(0));sprites.element(bibIndex.mul(3)).assign(vec4(0));
       If(amount.element(cell).greaterThanEqual(0),()=>{
         const region=rectangle(data.element(variants.element(cell).add(tiBase)).add(amount.element(cell)));
@@ -102,6 +102,7 @@ export class BuildingView {
               });
             });
             If(type.equal(movementType('FACT')).and(visual.element(meta.add(4)).bitAnd(4).notEqual(0)),()=>{frame.assign(clock.element(0).div(3).mod(20).add(4));});
+            If(type.equal(movementType('TMPL')).and(visual.element(meta.add(4)).shiftRight(3).greaterThan(0)),()=>{frame.assign(visual.element(meta.add(4)).shiftRight(3).sub(1));});
             If(type.equal(movementType('HPAD')).and(units.element(at.add(U.UDOOR)).notEqual(0)),()=>{frame.assign(clock.element(0).div(4).mod(7));});
             If(type.equal(movementType('OBLI')),()=>{frame.assign(intMin(int(3),combat.element(id.mul(C.CWORDS).add(C.CCHARGE)).div(15)));});
             If(data.element(row.add(8)).notEqual(0),()=>{
@@ -144,8 +145,9 @@ export class BuildingView {
       });
     })().compute(layout.count));
   }
-  update(){
-    // SMUDGE.CPP Disown: the foundation remains after its building is removed.
+  step(){
+    // SMUDGE.CPP Disown: the foundation remains even if a building is born and removed
+    // between two renders. Capture placement changes on every logic tick.
     const bibs=this.bibs.array as Int32Array;
     if(this.mapVersion!==this.economy.placementVersion)for(const b of this.economy.buildings.values()){
       const shape=BUILDINGS.get(b.type)!;if(!shape.bib)continue;
@@ -154,7 +156,8 @@ export class BuildingView {
         if(bibs[at]!==4-shape.width||bibs[at+1]!==y*shape.width+x){bibs.set([4-shape.width,y*shape.width+x],at);this.bibs.addUpdateRange(at,2);this.bibs.needsUpdate=true;}
       }
     }
-    this.mapVersion=this.economy.placementVersion;this.economy.battle.renderer.compute(this.passes);
+    this.mapVersion=this.economy.placementVersion;
   }
+  update(){this.step();this.economy.battle.renderer.compute(this.passes);}
   dispose(){for(const pass of this.passes)pass.dispose();releaseStorage(this.economy.battle.renderer,this.attributes);}
 }

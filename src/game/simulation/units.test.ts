@@ -17,6 +17,27 @@ function arrival(s:S.UnitsSetup){
 }
 
 describe('original unit movement',()=>{
+  it('reserves an empty infantry cell for only one side when enemies arrive together',()=>{
+    const s=setup('E1');s.units=[{cell:17,type:movementType('E1')},{cell:19,type:movementType('E1'),owner:1}];
+    const cpu=new CpuUnits(s);cpu.step([{frame:1,kind:'move',ids:[0,1],target:18}]);
+    for(let frame=2;frame<=200;frame++){
+      cpu.step();
+      const reserved=[0,1].map(id=>cpu.units[id*S.WORDS+S.UDEST]>=0?cpu.units[id*S.WORDS+S.UDEST]:cpu.units[id*S.WORDS+S.UCELL]);
+      // INFANTRY.CPP Can_Enter_Cell: a hostile InfType is MOVE_DESTROYABLE, even with free spots.
+      expect(reserved[0],`opposing reservations at tick ${frame}`).not.toBe(reserved[1]);
+    }
+  });
+  it.each(['E1','MTNK'])('keeps the reachable path prefix when a %s destination is in a sealed region',name=>{
+    const width=12,height=8,passable=new Uint8Array(width*height).fill(1);
+    for(let y=0;y<height;y++)passable[y*width+8]=0;
+    const cpu=new CpuUnits({grid:gridEdges(width,height,passable,true),passable,land:new Uint8Array(passable.length),seed:1995,
+      units:[{cell:3*width+2,type:movementType(name),facing:64}]});
+    cpu.step([{frame:1,kind:'move',ids:[0],target:3*width+10}]);
+    for(let tick=2;tick<=400;tick++)cpu.step();
+    // FINDPATH.CPP Find_Path returns its accumulated commands at end_of_list even when Follow_Edge fails.
+    expect(cpu.units[S.UCELL]).toBe(3*width+7);
+    expect(cpu.goals[0]).toBe(-1);
+  });
   it.each([[9,'MTNK'],[12,'MTNK'],[16,'MTNK'],[12,'JEEP'],[30,'E1']] as const)(
     'settles all %i %s after a shared destination becomes occupied', (count,name)=>{
       const width=40,height=24,target=12*width+30;
@@ -160,8 +181,11 @@ describe('original unit movement',()=>{
     s.grid=gridEdges(8,5,passable,true);
     const cpu=new CpuUnits(s);
     cpu.step([{frame:1,kind:'move',target:22,ids:[0]}]);
-    // DRIVE.CPP Start_Of_Move eventually clears NavCom after failed Basic_Path calls.
-    while(cpu.frame<200)cpu.step();
+    // Find_Path first returns the reachable prefix; retry exhaustion starts at its end.
+    while(cpu.frame<200&&cpu.units[S.UCELL]!==19)cpu.step();
+    expect(cpu.units[S.UCELL]).toBe(19);
+    const retryDeadline=cpu.frame+200;
+    while(cpu.frame<retryDeadline)cpu.step();
     expect(cpu.goals[0]).toBe(-1);
   });
   it('reroutes close opposing vehicles instead of treating them as moving blockers forever',()=>{

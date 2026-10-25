@@ -15,6 +15,14 @@ import { checkSelectionReady } from './startup.ts';
 import { checkUnits } from './units.ts';
 import { checkEconomy,checkTransport,checkCoordination,checkCompaction } from './economy.ts';
 import { discoverGpus, identifyGpu, launchGpu } from './gpu.ts';
+import { checkMatchFoundations } from './match-foundations.ts';
+import { checkMatchRendering } from './match-rendering.ts';
+import { checkMatch } from './match.ts';
+import { checkMatchAI } from './match-ai.ts';
+import { checkNavigation } from './navigation.ts';
+import { checkMatchCrew } from './match-crew.ts';
+import { checkMatchRegressions } from './match-regressions.ts';
+import { checkHarvest } from './harvest.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -67,6 +75,14 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Independent house sight and fixed-tick fast-forward', checkMatchFoundations],
+    ['Fixed-tick effects and deferred sprite projection', checkMatchRendering],
+    ['Two AI openings, control handover and deterministic restart', checkMatch],
+    ['AI production deployment and blocked construction', checkMatchAI],
+    ['Reachable prefixes for sealed movement destinations', checkNavigation],
+    ['Dual-house economy, capture and crew missions', checkMatchCrew],
+    ['Match rule and cloak regressions', checkMatchRegressions],
+    ['Refinery queue, interrupted docking and apron clearance', checkHarvest],
     [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
     ['Reusable actor slots, laser beams and building effects',checkCompaction],
     ['Ground layer transitions and mass aircraft coordination',checkCoordination],
@@ -104,17 +120,24 @@ try {
     if(peers===0)releasePerformance();
     const session: Session = { browser, baseUrl, gpu, performanceReady, acceptance };
     const suiteStart = Date.now();
-    const results = await Promise.allSettled(checks.map(async ([name, check]) => {
-      const start = performance.now();
-      try {
-        await check(session);
-        console.log(`ok   [${gpu.vendor}] ${name} (${seconds(start)})`);
-      } catch (error) {
-        console.error(`FAIL [${gpu.vendor}] ${name} (${seconds(start)})`);
-        console.error(error);
-        throw error;
-      } finally {
-        if (check !== checkCombat && --peers === 0) releasePerformance();
+    // Bound simultaneous shader preparation rather than stretching startup deadlines.
+    // Combat may wait for the other checks before benchmarking; the other three workers keep draining the queue.
+    const results: PromiseSettledResult<void>[] = new Array(checks.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, checks.length) }, async () => {
+      while (next < checks.length) {
+        const index = next++, [name, check] = checks[index], start = performance.now();
+        try {
+          await check(session);
+          console.log(`ok   [${gpu.vendor}] ${name} (${seconds(start)})`);
+          results[index] = { status: 'fulfilled', value: undefined };
+        } catch (error) {
+          console.error(`FAIL [${gpu.vendor}] ${name} (${seconds(start)})`);
+          console.error(error);
+          results[index] = { status: 'rejected', reason: error };
+        } finally {
+          if (check !== checkCombat && --peers === 0) releasePerformance();
+        }
       }
     }));
     const failures = results.flatMap((result, i) => result.status === 'rejected' ? [{ check: checks[i][0], error: String(result.reason) }] : []);

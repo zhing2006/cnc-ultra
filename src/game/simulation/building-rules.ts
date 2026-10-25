@@ -50,8 +50,8 @@ export function buildingPower(type:ProductionType,health:number) {
   return (((type.power??0)*Math.trunc(health*256/type.strength))+128)>>8;
 }
 
-/** TECHNO.CPP Refund_Amount: a human receives half raw cost, independently of damage. */
-export function saleRefund(type:ProductionType) { return Math.trunc(rawCost(type)/2); }
+/** TECHNO.CPP Refund_Amount: half raw cost for a human, full raw cost for the computer. */
+export function saleRefund(type:ProductionType,human=true) { return Math.trunc(rawCost(type)/(human?2:1)); }
 
 /** UNIT.CPP Try_To_Deploy: northwest origin and the MCV's health ratio carried into the yard. */
 export function deployYard(grid:PlacementGrid,cell:number,health:number,unit:number,owner:number) {

@@ -7,6 +7,11 @@ import { intMax, intMin } from '../engine/simulation/integer-nodes.ts';
 import type { MixSet } from './formats/mix.ts';
 import type { EconomyRuntime } from './simulation/economy-runtime.ts';
 import type { Radar } from './radar.ts';
+import { PRODUCTION_TYPES, type ProductionType } from './data/production.ts';
+import type { SuperKind } from './simulation/super-weapons.ts';
+type SidebarEntry = Pick<ProductionType,'name'|'category'> & { special?:SuperKind };
+
+const POWER_BOUNCE = [0,-1,0,1,0,-1,-2,-1,0,1,2,1,0];
 
 /** SIDEBAR.CPP: original Gold artwork, two strips and the 109-step clock overlay. */
 export class Sidebar {
@@ -35,6 +40,10 @@ export class Sidebar {
   private drainBounce=0;
   private powerDirection=0;
   private drainDirection=0;
+  private desiredPower=0;
+  private desiredDrain=0;
+  private dirty=true;
+  private strips:SidebarEntry[][]=[[],[]];
   private radarFrame=0;
   private radarExists=false;
   private radarActive=false;
@@ -43,9 +52,15 @@ export class Sidebar {
   private readonly radarEnabled=uniform(0,'int');
   onRadarCell?:(cell:number)=>void;
   constructor(readonly economy:EconomyRuntime,readonly data:MixSet,readonly radar?:Radar){
-    for(const name of ['HSIDE1.SHP','HSIDE2.SHP','HSTRIP.SHP','HCLOCK.SHP','HREPAIR.SHP','HSELL.SHP','HMAP.SHP','HTABS.SHP','HSTRIPUP.SHP','HSTRIPDN.SHP','HPWRBAR.SHP','HPOWER.SHP','HPIPS.SHP',`HRADAR.${economy.faction===2?'NOD':'GDI'}`]){
+    for(const name of ['HSIDE1.SHP','HSIDE2.SHP','HSTRIP.SHP','HCLOCK.SHP','HREPAIR.SHP','HSELL.SHP','HMAP.SHP','HTABS.SHP','HSTRIPUP.SHP','HSTRIPDN.SHP','HPWRBAR.SHP','HPOWER.SHP','HPIPS.SHP','HRADAR.GDI','HRADAR.NOD']){
       const bytes=data.get(name);if(bytes)this.shapes.set(name,decodeShp(bytes));
     }
+    // Decode before play, including cameos that will only become available after construction.
+    for(const type of PRODUCTION_TYPES){
+      const bytes=data.get(`${type.name}ICNH.TEM`)??data.get(`${type.name}ICON.SHP`);
+      if(bytes)this.cameos.set(type.name,decodeShp(bytes));
+    }
+    for(const name of ['ION','ATOM']){const bytes=data.get(`${name}ICNH.SHP`)??data.get(`${name}ICON.SHP`);if(bytes)this.cameos.set(name,decodeShp(bytes));}
     this.font=decodeFont(data.require('6POINT.FNT'));
     this.clockMap=data.require('TCLOCK.MRF');
     const texture=(data:Uint8Array,width:number,height:number,rgba=false)=>{
@@ -91,18 +106,30 @@ export class Sidebar {
       x+=glyph.width+1;
     }
   }
-  columns(){const all=this.economy.available;return [all.filter(t=>t.category==='building'),all.filter(t=>t.category!=='building')];}
+  columns():SidebarEntry[][]{
+    const all=this.economy.available,right:SidebarEntry[]=all.filter(t=>t.category!=='building');
+    for(const kind of ['ion','nuke'] as const)if(this.economy.supers?.charges[this.economy.owner][kind].present)right.push({name:kind==='ion'?'ION':'ATOM',category:'aircraft',special:kind});
+    return [all.filter(t=>t.category==='building'),right];
+  }
   hit(x:number,y:number,button:number){
     x-=this.viewport.value.x-160;if(x<0)return false;
     if(this.radarActive&&x>=16&&x<144&&y>=21&&y<149&&button===0){const cell=this.radar?.cellAt(x-16,y-21);if(cell!==undefined)this.onRadarCell?.(cell);return true;}
-    if(y>=160&&y<176&&button===0){if(x<54)this.economy.toggle('repair');else if(x<108)this.economy.toggle('sell');else this.radar?.toggle();return true;}
+    if(y>=160&&y<176&&button===0){if(x<54)this.economy.toggle('repair');else if(x<108)this.economy.toggle('sell');else this.radar?.toggle();this.dirty=true;return true;}
     const col=x<86?0:1,left=col?88:18;
-    if(!this.scrollDirection[col]&&x>=left&&x<left+64&&y>=184&&y<376){const item=this.columns()[col][this.scroll[col]+Math.trunc((y-184)/48)];if(item)this.economy.choose(item.name,button===2);}
+    if(!this.scrollDirection[col]&&x>=left&&x<left+64&&y>=184&&y<376){const item=this.columns()[col][this.scroll[col]+Math.trunc((y-184)/48)];if(item){if(item.special){if(button===0)this.economy.chooseSuper(item.special);}else this.economy.choose(item.name,button===2);}}
     if(y>=376&&y<396&&button===0)this.scrollQueue[col]+=x-left<32?-1:1;
     return true;
   }
-  update(){
-    this.pixels.fill(0);
+  resetHouse(){
+    for(const values of [this.scroll,this.scrollQueue,this.scrollOffset,this.scrollDirection])values.fill(0);
+    this.powerHeight=this.drainHeight=this.desiredPower=this.desiredDrain=this.powerBounce=this.drainBounce=this.powerDirection=this.drainDirection=0;
+    this.recordedPower=this.recordedDrain=-1;
+    this.radarFrame=0;this.radarExists=this.radarActive=this.radarActivating=this.radarDeactivating=false;
+    this.radarEnabled.value=0;this.strips=this.columns();this.dirty=true;
+  }
+  /** Advance original UI timers once per logic tick; drawing may be deferred until a render. */
+  update(paint=true){
+    this.dirty=true;
     // Ported from RADAR.CPP Radar_Activate and AI; a restored radar opens backwards.
     if(this.economy.radar&&!this.radarActive&&!this.radarActivating){
       this.radarActivating=true;
@@ -117,29 +144,17 @@ export class Sidebar {
     }
     if(this.radarDeactivating&&++this.radarFrame>=41)this.radarDeactivating=false;
     this.radarEnabled.value=Number(this.radarActive);
-    this.shape('HTABS.SHP',0,0,0);
-    this.shape(`HRADAR.${this.economy.faction===2?'NOD':'GDI'}`,this.radarFrame,0,15);
-    this.shape('HSIDE1.SHP',0,0,158);this.shape('HSIDE2.SHP',0,0,276);
     // POWER.CPP Power_Height: each 100 power fills one sixth of the remaining bar.
     const powerHeight=(value:number)=>{let h=0;while(value>=100){h+=Math.trunc((218-h)/6);value-=100;}return h+Math.trunc(Math.trunc((218-h)/6)*value/100);};
     // Ported from POWER.CPP AI and Draw_It, including the twelve-tick overshoot.
-    const desiredPower=powerHeight(this.economy.house.power),desiredDrain=powerHeight(this.economy.house.drain);
+    const desiredPower=this.desiredPower=powerHeight(this.economy.house.power),desiredDrain=this.desiredDrain=powerHeight(this.economy.house.drain);
     if(this.recordedPower!==this.economy.house.power){this.recordedPower=this.economy.house.power;this.powerDirection=Math.sign(desiredPower-this.powerHeight);this.powerBounce=this.powerDirection?12:0;}
     if(this.recordedDrain!==this.economy.house.drain){this.recordedDrain=this.economy.house.drain;this.drainDirection=Math.sign(desiredDrain-this.drainHeight);this.drainBounce=this.drainDirection?12:0;}
     if(this.powerHeight!==desiredPower)this.powerHeight+=this.powerDirection;else if(this.powerBounce)this.powerBounce--;
     if(this.drainHeight!==desiredDrain)this.drainHeight+=this.drainDirection;else if(this.drainBounce)this.drainBounce--;
-    const bounce=[0,-1,0,1,0,-1,-2,-1,0,1,2,1,0];
-    const power=Math.max(0,Math.min(218,this.powerHeight+(this.powerHeight===desiredPower?bounce[this.powerBounce]*this.powerDirection:0)));
-    const drain=Math.max(0,Math.min(218,this.drainHeight+(this.drainHeight===desiredDrain?bounce[this.drainBounce]*this.drainDirection:0)));
-    const bottom=399-power,bar=this.shapes.get('HPWRBAR.SHP'),color=this.economy.house.drain>this.economy.house.power*2?4:this.economy.house.drain>this.economy.house.power?2:0;
-    this.blit(bar,0,0,180,false,0,bottom);this.blit(bar,1,0,280,false,0,bottom);
-    this.blit(bar,2+color,0,180,false,bottom);this.blit(bar,3+color,0,280,false,bottom);this.shape('HPOWER.SHP',0,0,400-drain);
-    this.shape('HREPAIR.SHP',Number(this.economy.mode==='repair'),4,160);
-    this.shape('HSELL.SHP',Number(this.economy.mode==='sell'),57,160);this.shape('HMAP.SHP',0,110,160);
-    this.text(String(this.economy.house.money),45,3);
-    const columns=this.columns();
+    const columns=this.strips=this.columns();
     for(let col=0;col<2;col++){
-      const x=col?88:18;this.scroll[col]=Math.min(this.scroll[col],Math.max(0,columns[col].length-4));
+      this.scroll[col]=Math.min(this.scroll[col],Math.max(0,columns[col].length-4));
       // SIDEBAR.CPP StripClass::AI: scroll one cameo at eight pixels per logic tick.
       if(!this.scrollDirection[col]&&this.scrollQueue[col]){
         const direction=Math.sign(this.scrollQueue[col]);
@@ -155,13 +170,35 @@ export class Sidebar {
           this.scrollOffset[col]=this.scrollDirection[col]=0;
         }
       }
+    }
+    if(paint)this.drawPixels();
+  }
+  /** Rasterize only the last UI state that will actually be shown, without advancing timers. */
+  drawPixels(){
+    if(!this.dirty)return;
+    this.dirty=false;
+    this.pixels.fill(0);
+    this.shape('HTABS.SHP',0,0,0);
+    this.shape(`HRADAR.${this.economy.faction===2?'NOD':'GDI'}`,this.radarFrame,0,15);
+    this.shape('HSIDE1.SHP',0,0,158);this.shape('HSIDE2.SHP',0,0,276);
+    const power=Math.max(0,Math.min(218,this.powerHeight+(this.powerHeight===this.desiredPower?POWER_BOUNCE[this.powerBounce]*this.powerDirection:0)));
+    const drain=Math.max(0,Math.min(218,this.drainHeight+(this.drainHeight===this.desiredDrain?POWER_BOUNCE[this.drainBounce]*this.drainDirection:0)));
+    const bottom=399-power,bar=this.shapes.get('HPWRBAR.SHP'),color=this.economy.house.drain>this.economy.house.power*2?4:this.economy.house.drain>this.economy.house.power?2:0;
+    this.blit(bar,0,0,180,false,0,bottom);this.blit(bar,1,0,280,false,0,bottom);
+    this.blit(bar,2+color,0,180,false,bottom);this.blit(bar,3+color,0,280,false,bottom);this.shape('HPOWER.SHP',0,0,400-drain);
+    this.shape('HREPAIR.SHP',Number(this.economy.mode==='repair'),4,160);
+    this.shape('HSELL.SHP',Number(this.economy.mode==='sell'),57,160);this.shape('HMAP.SHP',0,110,160);
+    this.text(String(this.economy.house.money),45,3);
+    const columns=this.strips;
+    for(let col=0;col<2;col++){
+      const x=col?88:18;
       this.shape('HSTRIP.SHP',col,x,184);
       for(let row=0;row<(this.scrollDirection[col]?5:4);row++){
         const type=columns[col][this.scroll[col]+row];if(!type)continue;
-        let cameo=this.cameos.get(type.name);
-        if(!cameo){const bytes=this.data.get(`${type.name}ICNH.TEM`)??this.data.get(`${type.name}ICON.SHP`);if(bytes){cameo=decodeShp(bytes);this.cameos.set(type.name,cameo);}}
+        const cameo=this.cameos.get(type.name);
         const y=184+row*48+this.scrollOffset[col];this.blit(cameo,0,x,y,false,184,376);
-        const item=this.economy.queues.items.get(type.category);
+        const charge=type.special?this.economy.supers.charges[this.economy.owner][type.special]:undefined;
+        const item=charge?{type:{name:type.name},stage:charge.stage(this.economy.frame),complete:charge.ready,suspended:charge.suspended}:this.economy.queues.items.get(type.category);
         if(item){
           const selected=item.type.name===type.name;
           if(!selected||!item.complete)this.blit(this.shapes.get('HCLOCK.SHP'),selected?item.stage+1:0,x,y,true,184,376);

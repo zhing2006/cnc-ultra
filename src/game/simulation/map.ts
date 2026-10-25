@@ -16,7 +16,7 @@ export const LOGIC_HZ = 15;
 
 /**
  * Ported from CELL.CPP, Recalc_Attributes; UNIT.CPP/INFANTRY.CPP, Can_Enter_Cell;
- * TERRAIN.CPP/BUILDING.CPP, Occupy_List. Combat and building entry are not part of this movement demo.
+ * TERRAIN.CPP/BUILDING.CPP, Occupy_List. Dynamic occupancy and building entry are handled by the simulation.
  */
 export function movementMap(mix: MixSet, scenario: Scenario) {
   const width = ORIGINAL_MAP_SIZE, passable = new Uint8Array(width * width);

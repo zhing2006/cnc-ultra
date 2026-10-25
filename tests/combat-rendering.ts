@@ -6,7 +6,7 @@ import { GpuGround, groundLayout } from '../src/game/simulation/ground.ts';
 import { initialUnits, WORDS, UHEALTH } from '../src/game/simulation/units-state.ts';
 import { MOVEMENT, movementType } from '../src/game/data/movement.ts';
 import { combatTypes } from '../src/game/data/combat.ts';
-import type { combatScene } from '../src/game/simulation/combat-scene.ts';
+import type { combatScene } from '../src/demo/combat-scene.ts';
 import * as C from '../src/game/simulation/combat-state.ts';
 
 /** Check the actual draw records against UNIT.CPP and INFANTRY.CPP, Draw_It. */
@@ -45,7 +45,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
       }
       battle.state.needsUpdate = true;
       if (stage === 'dying') battle.units.needsUpdate = true;
-      ground.updateSprites();
+      view.step(); ground.updateSprites();
       view.update();
       const sprites = new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
       for (let slot = 0; slot < order.length; slot++) {
@@ -85,7 +85,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
       shots[shot + C.BFACE] = (facing + 96) & 255;
       shots[shot + C.BFIRE_FACE] = facing;
       battle.state.needsUpdate = battle.projectiles.needsUpdate = true;
-      ground.updateSprites();
+      view.step(); ground.updateSprites();
       view.update();
       const sprites = new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
       const record = (layout.count + setup.units.length * C.SHOTS_PER_UNIT + flame) * 12;
@@ -97,7 +97,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
     const damaged=setup.units.findIndex(u=>MOVEMENT[u.type].name==='MTNK');
     (battle.units.array as Int32Array)[damaged*WORDS+UHEALTH]=199;
     battle.units.needsUpdate=true;
-    ground.updateSprites();view.update();
+    view.step();ground.updateSprites();view.update();
     const effects=new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
     const smoke=scene.animation!.frames.get('SMOKE_M')![0];
     let smoking=false;
@@ -116,7 +116,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
     shots[b+C.BTRAIL_TICK]=1;shots[b+C.BTRAIL_X]=2560;shots[b+C.BTRAIL_Y]=2560;
     (battle.movement.control.array as Int32Array)[0]=1;
     battle.movement.control.needsUpdate=battle.projectiles.needsUpdate=true;
-    view.update();
+    view.step();view.update();
     const trail=new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
     const puff=scene.animation!.frames.get('SMOKEY')![0];
     let hasTrail=false;
@@ -128,7 +128,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
     (battle.units.array as Int32Array)[damaged*WORDS+UHEALTH]=0;
     state[damaged*C.CWORDS+C.CDEATH]=1;state[damaged*C.CWORDS+C.CAMMO]=1;
     battle.units.needsUpdate=battle.state.needsUpdate=true;
-    ground.updateSprites();view.update();
+    view.step();ground.updateSprites();view.update();
     const loaded=new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
     const napalm=scene.animation!.frames.get('NAPALM3')![0];
     let loadedBlast=false;
@@ -147,7 +147,7 @@ export async function verifyCombatSprites(renderer: WebGPURenderer, demo: Return
       state[commando*C.CWORDS+C.CACTION]=action;
       state[commando*C.CWORDS+C.CSTAGE]=4;
       battle.units.needsUpdate=battle.state.needsUpdate=true;
-      ground.updateSprites();view.update();
+      view.step();ground.updateSprites();view.update();
       const drawn=new Float32Array(await renderer.getArrayBufferAsync(pipeline.spriteBuffer));
       // IDATA.CPP CommandoDos and INFANTRY.CPP MasterDoControls: frame 2 after four ticks.
       const expected=scene.animation!.frames.get('RMBO')![start+2];

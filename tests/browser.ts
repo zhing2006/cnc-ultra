@@ -57,6 +57,11 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
     await page.goto(`${session.baseUrl}${options.path ?? '/'}`);
     await check(page);
   } catch(error) {
+    console.error('Browser failure state:', await page.evaluate(() => ({
+      url: location.href, hidden: document.hidden,
+      status: document.querySelector('canvas')?.getAttribute('data-status'),
+      stage: document.querySelector('[data-loading-stage]')?.textContent,
+    })).catch(() => 'Page is unavailable'));
     const unexpected=errors.filter(text=>!(options.expectedErrors??[]).some(pattern=>pattern.test(text)));
     if(unexpected.length)throw new AggregateError([error,...unexpected.map(text=>new Error(text))],'Browser check and page errors');
     throw error;

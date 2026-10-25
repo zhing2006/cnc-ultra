@@ -15,7 +15,7 @@ import { promisify } from 'node:util';
 import { INFANTRY } from '../src/game/data/infantry.ts';
 import { TEMPLATES, THEATER_TEMPERATE } from '../src/game/data/templates.ts';
 import { UNITS } from '../src/game/data/units.ts';
-import { PREVIEW_DATA_FILES } from '../src/game/data-files.ts';
+import { DESERT_DATA_FILES } from '../src/game/data-files.ts';
 import { BUILDINGS } from '../src/game/data/buildings.ts';
 import { TERRAIN } from '../src/game/data/terrain.ts';
 import { OVERLAYS } from '../src/game/data/overlays.ts';
@@ -58,7 +58,7 @@ try {
   writeFileSync(exporter, exporterSource);
 }
 
-const mix = new MixSet(PREVIEW_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(`assets/dev/${name}`, root)))));
+const mix = new MixSet(DESERT_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(`assets/dev/${name}`, root)))));
 
 // Every temperate template, every vehicle and infantry shape, and the mouse pointers. OpenRA's cnc mod
 // reads keyframed shapes and templates; only its ra mod reads the older shape library of MOUSE.SHP.

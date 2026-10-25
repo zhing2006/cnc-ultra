@@ -10,7 +10,7 @@ import { movementType,MOVEMENT } from '../data/movement.ts';
 import { HBASE,HWORDS,HLOAD } from './harvest-cpu.ts';
 import { SERVICE_BASE,SERVICE_WORDS,SMODE,SFACILITY } from './services-cpu.ts';
 
-export const REPORT_HEADER=18,REPORT_RECORD=8;
+export const REPORT_COUNTS=20,REPORT_HEADER=REPORT_COUNTS+MOVEMENT.length*2,REPORT_RECORD=16;
 /** CPU decisions receive requested actors, account totals and a bounded list of reusable slots. */
 export class EconomyReport {
   readonly result:StorageBufferAttribute;
@@ -29,7 +29,8 @@ export class EconomyReport {
     const count=battle.setup.units.length;
     this.result=new StorageBufferAttribute(new Int32Array(REPORT_HEADER+count*(REPORT_RECORD+2)),1);
     this.requests=new StorageBufferAttribute(new Int32Array(count+3),1);(this.requests.array as Int32Array)[0]=-1;
-    const initial=new Int32Array(count*4+1);initial.fill(-1000,count,count*2);
+    const inventoryOffset=count*4+2,inventorySize=MOVEMENT.length*2;
+    const initial=new Int32Array(inventoryOffset+inventorySize);initial.fill(-1000,count,count*2);
     for(const [id,unit] of battle.setup.units.entries())initial[id]=unit.health??MOVEMENT[unit.type].strength;
     this.scratch=new StorageBufferAttribute(initial,1);this.available=new StorageBufferAttribute(new Uint32Array(count),1);
     this.freePrefix=new GpuPrefixSum(battle.renderer,this.available,count);
@@ -40,16 +41,22 @@ export class EconomyReport {
     const credits=storage(ledger,'int',ledger.count).toReadOnly(),deliveries=storage(transport,'int',transport.count).toReadOnly(),repairs=storage(services,'int',services.count).toReadOnly();
     const scratch=storage(this.scratch,'int',initial.length),totals=storage(this.scratch,'int',initial.length).toAtomic();
     const available=storage(this.available,'uint',count),prefix=storage(this.freePrefix.output,'uint',count+1).toReadOnly();
-    const reset=Fn(()=>{const id=int(instanceIndex);scratch.element(id.add(count*2)).assign(0);scratch.element(id.add(count*3)).assign(0);})().compute(count);
+    const reset=Fn(()=>{const id=int(instanceIndex);
+      If(id.lessThan(count),()=>{scratch.element(id.add(count*2)).assign(0);scratch.element(id.add(count*3)).assign(0);});
+      If(id.lessThan(inventorySize),()=>{scratch.element(id.add(inventoryOffset)).assign(0);});
+    })().compute(Math.max(count,inventorySize));
     const observe=Fn(()=>{
       const id=int(instanceIndex),at=id.mul(U.WORDS),health=u.element(at.add(U.UHEALTH));
       If(atomicLoad(totals.element(id)).greaterThan(0).and(health.lessThanEqual(0)),()=>{
         atomicStore(totals.element(id.add(count)),clock.element(0));
-        If(combat.element(id.mul(C.CWORDS).add(C.CDEATH)).greaterThanEqual(0).and(u.element(at.add(U.UOWNER)).equal(0)).and(u.element(at.add(U.UDOMAIN)).notEqual(2)),()=>{atomicAdd(totals.element(count*4),int(1));});
+        const owner=u.element(at.add(U.UOWNER));
+        If(combat.element(id.mul(C.CWORDS).add(C.CDEATH)).greaterThanEqual(0).and(owner.greaterThanEqual(0)).and(owner.lessThan(2)).and(u.element(at.add(U.UDOMAIN)).notEqual(2)),()=>{atomicAdd(totals.element(owner.add(count*4)),int(1));});
       });
       atomicStore(totals.element(id),health);
       available.element(id).assign(uint(health.lessThanEqual(0).and(clock.element(0).add(1).sub(atomicLoad(totals.element(id.add(count)))).greaterThanEqual(90))));
       If(health.greaterThan(0),()=>{
+        const owner=u.element(at.add(U.UOWNER));
+        If(owner.greaterThanEqual(0).and(owner.lessThan(2)),()=>{atomicAdd(totals.element(owner.mul(MOVEMENT.length).add(u.element(at.add(U.UTYPE))).add(inventoryOffset)),int(1));});
         const enter=u.element(at.add(U.UENTER)),factory=select(enter.lessThan(0),enter.negate(),select(u.element(at.add(U.UTYPE)).equal(movementType('C17')),enter,u.element(at.add(U.UATTACHED)))).toVar();
         If(factory.greaterThan(0),()=>{atomicStore(totals.element(factory.sub(1).add(count*2)),int(1));});
         const service=id.mul(SERVICE_WORDS).add(SERVICE_BASE);
@@ -59,8 +66,10 @@ export class EconomyReport {
     this.facts=Fn(()=>{
       const index=int(instanceIndex),id=request.element(index.add(3)).toVar(),at=id.mul(U.WORDS),out=index.mul(REPORT_RECORD).add(REPORT_HEADER);
       const dock=scratch.element(id.add(count*3)).sub(1).toVar(),load=int(0).toVar();
+      const saboteur=u.element(at.add(U.UBOMB_SOURCE)).sub(1).toVar(),repay=int(-1).toVar();
+      If(saboteur.greaterThanEqual(int(0)),()=>{If(u.element(saboteur.mul(U.WORDS).add(U.UHEALTH)).greaterThan(int(0)),()=>{repay.assign(saboteur);});});
       If(dock.greaterThanEqual(0),()=>{load.assign(credits.element(dock.mul(HWORDS).add(HBASE+HLOAD)));});
-      const fields=[id,u.element(at.add(U.UHEALTH)),u.element(at.add(U.UGENERATION)),combat.element(id.mul(C.CWORDS).add(C.CDEATH)),scratch.element(id.add(count*2)),dock,load,u.element(at.add(U.UTYPE))];
+      const fields=[id,u.element(at.add(U.UHEALTH)),u.element(at.add(U.UGENERATION)),combat.element(id.mul(C.CWORDS).add(C.CDEATH)),scratch.element(id.add(count*2)),dock,load,u.element(at.add(U.UTYPE)),u.element(at.add(U.UCELL)),u.element(at.add(U.UFACE)),u.element(at.add(U.UDEST)),goals.element(id),u.element(at.add(U.UOWNER)),combat.element(id.mul(C.CWORDS).add(C.CMISSION)).mul(2).add(int(u.element(at.add(U.UATTACHED)).notEqual(0).or(u.element(at.add(U.UENTER)).notEqual(0)))),select(combat.element(id.mul(C.CWORDS).add(C.CHIT_FRAME)).equal(clock.element(0)),combat.element(id.mul(C.CWORDS).add(C.CHIT_SOURCE)).sub(1),int(-1)),repay];
       for(const [i,value] of fields.entries())result.element(out.add(i)).assign(value);
     })().compute(1);
     const free=Fn(()=>{
@@ -77,8 +86,10 @@ export class EconomyReport {
       for(let i=0;i<3;i++)result.element(10+i).assign(deliveries.element(i));
       result.element(13).assign(repairs.element(0));result.element(14).assign(repairs.element(1));result.element(15).assign(scratch.element(count*4));
       result.element(16).assign(request.element(1));result.element(17).assign(intMin(int(prefix.element(count)),request.element(2)));
+      result.element(18).assign(deliveries.element(5));result.element(19).assign(scratch.element(count*4+1));
     })().compute(1);
-    this.kernels=[reset,observe,...this.freePrefix.kernels,free,detail,account];
+    const inventory=Fn(()=>{const id=int(instanceIndex);result.element(id.add(REPORT_COUNTS)).assign(scratch.element(id.add(inventoryOffset)));})().compute(inventorySize);
+    this.kernels=[reset,observe,...this.freePrefix.kernels,free,detail,account,inventory];
   }
   select(id:number){const values=this.requests.array as Int32Array;if(values[0]===id)return;values[0]=id;this.requests.addUpdateRange(0,1);this.requests.needsUpdate=true;}
   request(ids:Iterable<number>,freeLimit:number){

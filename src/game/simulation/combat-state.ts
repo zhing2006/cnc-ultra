@@ -1,7 +1,7 @@
 import type { UnitsSetup } from './units-state.ts';
 import { combatTypes } from '../data/combat.ts';
 export const ROUTE_STEPS = 32;
-export const CWORDS = 77;
+export const CWORDS = 85;
 export const CTARGET = 0, CMISSION = 1, CARM = 2, CSECOND = 3, CTURRET = 4, CTURN = 5;
 export const CSCAN = 6, CFIRE = 7, CFEAR = 8, CPRONE = 9, CDEATH = 10, CWARHEAD = 11;
 export const CLAST_FIRE = 12, CCURSOR = 13, CAMMO = 14, CRELOAD = 15, CKILLER = 16;
@@ -15,8 +15,17 @@ export const CSTOKED = 64, CCOMMENT = 65, CCELEBRATED = 66, CTAUNT = 67;
 export const CPOWER=68,CACTIVE=69,CSAM=70,CSTIMER=71,CCHARGE=72,CRECOIL=73;
 export const CMUZZLEX=74,CMUZZLEY=75;
 export const CWALL=76;
-export const GUARD = 0, MOVE = 1, ATTACK = 2, HUNT = 3;
+/** Last damaging hit on a structure, for the house's Base_Is_Attacked response. */
+export const CHIT_FRAME=77, CHIT_SOURCE=78;
+export const CSABOTAGE=79;
+/** MISSION.CPP / TECHNO.CPP / FOOT.CPP Override_Mission; mission + 1, zero means none. */
+export const CSUSPENDED_MISSION=80, CSUSPENDED_TARGET=81, CSUSPENDED_GOAL=82, CSUSPENDED_ABILITY=83;
+/** FOOT.CPP ArchiveTarget, encoded as cell + 1. */
+export const CGUARD_CELL=84;
+export const GUARD = 0, MOVE = 1, ATTACK = 2, HUNT = 3, GUARD_AREA = 4;
 export const BWORDS = 28, SHOTS_PER_UNIT = 8;
+export const MAX_SPECIAL_BLASTS = 128, SPECIAL_BLAST_WORDS = 7;
+export interface ExplosionCommand { frame:number; x:number; y:number; damage:number; warhead:number; source:number; scorch?:boolean; crater?:boolean }
 /** Overrun removes infantry directly, without a normal damage/death animation. */
 export const CRUSHED = -2;
 export const BX = 0, BY = 1, BTARGET = 2, BTYPE = 3, BDAMAGE = 4, BACTIVE = 5;
@@ -35,12 +44,13 @@ export function initialProjectiles(units: number) {
 }
 export interface CombatSetup extends UnitsSetup {
   dynamicTypes?: boolean;
+  multiplayer?: boolean;
   /** Parent vehicle index for each reserved survivor; -1 for initially present units. */
   crewParents?: readonly number[];
 }
 export interface AttackCommand {
   frame: number;
-  kind: 'attack' | 'attack-ground';
+  kind: 'attack' | 'attack-ground' | 'capture' | 'sabotage';
   target: number;
   ids: readonly number[];
 }

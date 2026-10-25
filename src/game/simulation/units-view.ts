@@ -12,17 +12,20 @@ import { HBASE,HWORDS,HLOAD } from './harvest-cpu.ts';
 import { TBASE,TWORDS,TORDER } from './transport-cpu.ts';
 import { CWORDS,CAMMO } from './combat-state.ts';
 import { BUILDING_WORDS } from './economy-runtime.ts';
+import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
 import type { MixSet } from '../formats/mix.ts';
 import type { GameScene } from '../scene.ts';
 import { unitDistance } from './units-nodes.ts';
-import { WORDS, UKIND, UTYPE, UHEALTH, UOWNER, UDOMAIN, UALTITUDE,UATTACHED } from './units-state.ts';
+import { WORDS, UKIND, UTYPE, UHEALTH, UOWNER, UDOMAIN, UALTITUDE,UATTACHED,UCLOAK } from './units-state.ts';
 import { cellEntryNode } from './cell-entry.ts';
 import type { GpuUnits } from './units-gpu.ts';
 import type { GpuSight } from './sight.ts';
+import { SightView } from './sight-view.ts';
 import type { GpuSelection } from './selection.ts';
 /** Original indexed shroud and selection marks, followed by diagnostic layers and the cursor. */
 export class UnitsView {
   readonly pointer = uniform(new Vector2(-1, -1));
+  readonly special = uniform(0,'int');
   readonly band = uniform(new Vector4(-1, -1, -1, -1));
   readonly flow = uniform(0, 'int');
   readonly vision = uniform(0, 'int');
@@ -39,8 +42,13 @@ export class UnitsView {
   private readonly projected:ComputeNode[]=[];
   private readonly relations?:GpuUnits['actorIndex'];
   private relationFrame=-1;
+  private readonly sightView: SightView;
+  private readonly ownsSightView: boolean;
   constructor(private readonly renderer: WebGPURenderer, private readonly simulation: GpuUnits, sight: GpuSight, selection: GpuSelection, scene: GameScene, mixFiles: MixSet, combat = false,
-    status?:{combat:StorageBufferAttribute;transport?:StorageBufferAttribute;mining?:StorageBufferAttribute;buildings?:StorageBufferAttribute}) {
+    status?:{combat:StorageBufferAttribute;transport?:StorageBufferAttribute;mining?:StorageBufferAttribute;buildings?:StorageBufferAttribute},
+    perspective?: SightView) {
+    this.sightView = perspective ?? new SightView(sight);
+    this.ownsSightView = !perspective;
     const { width, height } = simulation.setup.grid;
     const cells = width * height;
     const texture = (data: Uint8Array, w: number, h: number, rgba = false) => {
@@ -144,13 +152,14 @@ export class UnitsView {
       return id;
     };
     const canEnter = cellEntryNode(simulation, attribute => this.buffers.push(attribute), u, occupancy);
-    const shadow = storage(sight.shadow, 'int', cells).toReadOnly();
-    const current = storage(sight.current, 'uint', cells).toReadOnly();
+    const shadow = { element: this.sightView.shadowAt };
+    const current = { element: this.sightView.currentAt };
     const goals = storage(simulation.pathGoals, 'int', simulation.pathGoals.count).toReadOnly();
     const lookup = storage(simulation.flow.lookup, 'int', cells).toReadOnly();
     const next = storage(simulation.flow.next, 'int', simulation.flow.next.count).toReadOnly();
     const valid = (p: Node<'ivec2'>) => p.x.greaterThanEqual(0).and(p.y.greaterThanEqual(0)).and(p.x.lessThan(width)).and(p.y.lessThan(height));
     const sample = (pos: Node<'ivec2'>) => int(textureLoad(atlas, pos).r.mul(255).round());
+    const capturable=uniformArray<'int'>(MOVEMENT.map(t=>Number(CAPTURABLE_BUILDINGS.has(t.name))),'int');
     this.hover = Fn(() => {
       hovered.element(0).assign(-1);
       hovered.element(1).assign(result.element(1));
@@ -176,7 +185,7 @@ export class UnitsView {
                   If(id.greaterThanEqual(0), () => {
                     const at = id.mul(WORDS);
                     const d = unitDistance(ivec2(this.pointer.mul(256).add(12).div(24)), ivec2(u.element(at), u.element(at.add(1)).sub(u.element(at.add(UALTITUDE)).mul(256).add(12).div(24))));
-                    If(d.lessThan(best), () => {
+                    If(d.lessThan(best).and(u.element(at.add(UCLOAK)).notEqual(2).or(u.element(at.add(UOWNER)).equal(selection.owner))), () => {
                       best.assign(d);
                       hovered.element(0).assign(id);
                     });
@@ -190,7 +199,7 @@ export class UnitsView {
         const chosen=hovered.element(0).toVar(),first=result.element(0).toVar();
         If(chosen.greaterThanEqual(0).and(this.shift.equal(0)).and(this.ctrl.equal(0)),()=>{
           const source=first.mul(WORDS),target=chosen.mul(WORDS),type=u.element(target.add(UTYPE));
-          If(u.element(target.add(UOWNER)).equal(0),()=>{
+          If(u.element(target.add(UOWNER)).equal(selection.owner),()=>{
             If(first.equal(chosen).and(type.equal(movementType('TRAN')).or(type.equal(movementType('APC')))),()=>{
               if(status)If(hovered.element(first.mul(2).add(statusBase)).notEqual(0),()=>{hovered.element(4).assign(53);});
             }).ElseIf(type.equal(movementType('TRAN')).or(type.equal(movementType('APC'))).and(u.element(source.add(UKIND)).notEqual(0)),()=>{
@@ -200,6 +209,9 @@ export class UnitsView {
                 .or(type.equal(movementType('FIX')).and(u.element(source.add(UKIND)).equal(0)).and(u.element(source.add(UDOMAIN)).notEqual(2)))
                 .or(type.equal(movementType('PROC')).and(u.element(source.add(UTYPE)).equal(movementType('HARV')))),()=>{hovered.element(4).assign(119);})
               .ElseIf(first.equal(chosen).and(type.equal(movementType('MCV'))),()=>{hovered.element(4).assign(53);});
+          }).ElseIf(u.element(target.add(UDOMAIN)).equal(2),()=>{
+            If(u.element(source.add(UTYPE)).equal(movementType('E6')).and(capturable.element(type).notEqual(0)),()=>{hovered.element(4).assign(119);});
+            If(u.element(source.add(UTYPE)).equal(movementType('RMBO')),()=>{hovered.element(4).assign(122);});
           });
         });
         const goal = goals.element(result.element(0));
@@ -270,7 +282,7 @@ export class UnitsView {
                 If(unit.greaterThanEqual(0), () => {
                   const at = unit.mul(WORDS);
                   const type = u.element(at.add(UTYPE)).mul(3);
-                  If(selected.element(unit).notEqual(0), () => {
+                  If(selected.element(unit).notEqual(0).and(u.element(at.add(UCLOAK)).notEqual(2).or(u.element(at.add(UOWNER)).equal(selection.owner))), () => {
                     const cx = u.element(at).mul(24).add(128).div(256);
                     const cy = u.element(at.add(1)).mul(24).add(128).div(256).sub(u.element(at.add(UALTITUDE))).sub(select(u.element(at.add(UKIND)).notEqual(0), int(6), int(0)));
                     const w = stats.element(type);
@@ -297,7 +309,7 @@ export class UnitsView {
                     If(horizontal.or(vertical), () => {
                       out.assign(vec4(textureLoad(palette, ivec2(15, 0)).rgb, 1));
                     });
-                    If(u.element(at.add(UOWNER)).equal(0)
+                    If(u.element(at.add(UOWNER)).equal(selection.owner)
                       .and(xx.greaterThanEqual(lx))
                       .and(xx.lessThan(lx.add(w)))
                       .and(yy.greaterThanEqual(ty))
@@ -310,7 +322,7 @@ export class UnitsView {
                         out.assign(vec4(textureLoad(palette, ivec2(color, 0)).rgb, 1));
                       });
                     });
-                    if(status&&pips&&pipTexture)If(u.element(at.add(UOWNER)).equal(0),()=>{
+                    if(status&&pips&&pipTexture)If(u.element(at.add(UOWNER)).equal(selection.owner),()=>{
                       const packed=hovered.element(unit.mul(2).add(statusBase)),meta=hovered.element(unit.mul(2).add(statusBase+1));
                       const drawPip=(frame:Node<'int'>,x:Node<'int'>,y:Node<'int'>)=>{
                         const local=p.sub(ivec2(x,y));
@@ -344,11 +356,13 @@ export class UnitsView {
           frame.assign(this.cursor);
           hot.assign(ivec2(15, 12));
         }).Else(() => {
-          If(hovered.element(4).greaterThanEqual(0),()=>{
-            const start=hovered.element(4),frames=select(start.equal(119),int(3),int(9));
+          If(this.special.notEqual(0),()=>{
+            frame.assign(select(this.special.equal(1),int(103).add(this.time.div(133).mod(16)),int(96).add(this.time.div(267).mod(7))));hot.assign(ivec2(15,12));
+          }).ElseIf(hovered.element(4).greaterThanEqual(0),()=>{
+            const start=hovered.element(4),frames=select(start.equal(119).or(start.equal(122)),int(3),int(9));
             frame.assign(start.add(this.time.div(267).mod(frames)));hot.assign(ivec2(15,12));
           }).ElseIf(int(combat ? 1 : 0).notEqual(0).and(hovered.element(1).greaterThan(0)).and(this.ctrl.notEqual(0)
-            .or(hovered.element(0).greaterThanEqual(0).and(u.element(hovered.element(0).mul(WORDS).add(UOWNER)).notEqual(0)))), () => {
+            .or(hovered.element(0).greaterThanEqual(0).and(u.element(hovered.element(0).mul(WORDS).add(UOWNER)).notEqual(selection.owner)))), () => {
             frame.assign(int(18).add(this.time.div(67).mod(8))); hot.assign(ivec2(15,12));
           }).ElseIf(hovered.element(0).greaterThanEqual(0), () => {
             frame.assign(int(12).add(this.time.div(67).mod(6)));
@@ -372,11 +386,13 @@ export class UnitsView {
     })();
   }
   update() {
+    this.sightView.update(this.simulation.frame);
     if(this.relations&&this.relationFrame!==this.simulation.frame){this.relations.refresh();this.relationFrame=this.simulation.frame;}
     if(this.projected.length)this.renderer.compute(this.projected);
     this.renderer.compute(this.hover);
   }
   dispose() {
+    if (this.ownsSightView) this.sightView.dispose();
     this.hover.dispose();
     for(const kernel of this.projected)kernel.dispose();
     for (const t of this.textures)

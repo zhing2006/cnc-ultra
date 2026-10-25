@@ -97,8 +97,31 @@ export async function verifyCombatAudio(renderer: WebGPURenderer, battle: GpuCom
       while(audio['busy']) await new Promise(resolve=>setTimeout(resolve,0));
       if(!played.some(p=>p.name===comments[i])) throw new Error(`Commando comment ${comments[i]} was not played`);
     }
+    // A readback started before mute may arrive after unmute. It must not replay that old event.
+    const beforeMute = played.length, read = renderer.getArrayBufferAsync;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    // The wrapper forwards both overloads without changing their argument/return relationship.
+    renderer.getArrayBufferAsync = (async (...args: Parameters<typeof read>) => {
+      const result = await read.apply(renderer, args); await held; return result;
+    }) as typeof read;
+    try {
+      state[commando*C.CWORDS+C.CCELEBRATED]=8;
+      (clock.array as Int32Array)[0]=8;
+      battle.state.needsUpdate=clock.needsUpdate=true;
+      audio.update(0,0,16384,16384);
+      audio.setMuted(true); audio.setMuted(false); release();
+      while(audio['busy']) await new Promise(resolve=>setTimeout(resolve,0));
+      if(played.length!==beforeMute) throw new Error('Unmuting replayed a pre-mute readback');
+    } finally { release(); renderer.getArrayBufferAsync=read; }
+    state[commando*C.CWORDS+C.CCELEBRATED]=9;
+    (clock.array as Int32Array)[0]=9;
+    battle.state.needsUpdate=clock.needsUpdate=true;
+    audio.update(0,0,16384,16384);
+    while(audio['busy']) await new Promise(resolve=>setTimeout(resolve,0));
+    if(played.length!==beforeMute+1) throw new Error('Unmuting did not resume new combat events');
     if (copies !== 1)
-      throw new Error(`Audio allocated ${copies} readback buffers for seven ticks`);
+      throw new Error(`Audio allocated ${copies} readback buffers for nine ticks`);
   }
   finally {
     device.createBuffer = create;

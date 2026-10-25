@@ -2,7 +2,7 @@ import type { Grid } from '../../engine/simulation/state.ts';
 import { MOVEMENT } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { INFANTRY_SPOTS } from './map.ts';
-export const WORDS = 38;
+export const WORDS = 51;
 export const UX = 0;
 export const UY = 1;
 export const UCELL = 2;
@@ -46,6 +46,16 @@ export const UATTACHED = 35;
 /** Requested docking/boarding object ID + 1, zero for no contact. */
 export const UENTER=36;
 export const UDOOR=37;
+/** TECHNO.CPP: uncloaked, cloaking, cloaked, uncloaking. */
+export const UCLOAK=38, UCLOAK_STAGE=39, UCLOAK_WAIT=40;
+export const UBOMB_TICK=41, UBOMB_SOURCE=42;
+/** INFANTRY.CPP: capture/sabotage approach and the final occupied-cell step. */
+export const UABILITY_TARGET=43, UABILITY_MODE=44, UABILITY_ENTRY=45, UABILITY_ORIGIN=46;
+export const UCAPTURE_TICK=47;
+/** Tick << 3, plus detach/sound/uncloak event bits. */
+export const UCLOAK_EVENT=48;
+/** Destructible obstruction ID + 1 and the navigation order it interrupted. */
+export const UOBSTRUCTION=49, UOBSTRUCTION_GOAL=50;
 /** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
 export const DIRECT_STEP = -2;
 export interface UnitPlacement {
@@ -105,6 +115,7 @@ export function initialUnits(setup: UnitsSetup) {
     result[at + UORIGIN] = placed.cell;
     result[at + UGENERATION] = result[at+UHEALTH]>0?1:0;
     result[at+UATTACHED]=placed.attached??0;result[at+UENTER]=placed.enter??0;
+    if(type.name==='STNK')result[at+UCLOAK_STAGE]=1;
     if(type.domain===2){
       const building=BUILDINGS.get(type.name)!;
       result[at+UX]=placed.cell%setup.grid.width*256+(building.width===2?255:building.width*128);

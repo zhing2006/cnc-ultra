@@ -8,7 +8,7 @@ import { GpuUnits } from '../src/game/simulation/units-gpu.ts';
 import { CpuSight,GpuSight } from '../src/game/simulation/sight.ts';
 import { movementType } from '../src/game/data/movement.ts';
 import { loadData } from '../src/game/data-files.ts';
-import { unitsScene } from '../src/game/simulation/units-scene.ts';
+import { unitsScene } from '../src/demo/units-scene.ts';
 import { GpuSelection } from '../src/game/simulation/selection.ts';
 import { groundLayout,GpuGround,groundSprites,updateGroundKeys,bubbleGround } from '../src/game/simulation/ground.ts';
 import { PalettePipeline } from '../src/engine/indexed/pipeline.ts';

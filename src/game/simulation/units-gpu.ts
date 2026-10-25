@@ -6,7 +6,7 @@ import { GpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { randomNode, intMin, intMax } from '../../engine/simulation/integer-nodes.ts';
 import { GpuChecksum } from '../../engine/simulation/checksum.ts';
-import { DIRECTIONS } from '../../engine/simulation/state.ts';
+import { DIRECTIONS, UNREACHABLE } from '../../engine/simulation/state.ts';
 import { MOVEMENT, GROUND_SPEED,movementType } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { combatTypes } from '../data/combat.ts';
@@ -68,6 +68,8 @@ export class GpuUnits {
   /** Per-unit scatter flags followed by an occupancy invalidation flag. */
   readonly occupancyChanges: StorageBufferAttribute;
   readonly flow: GpuFlowFields;
+  /** Shared scatter operations use the same writable bindings as movement. */
+  readonly scattering:{unit(id:I,field:number):I;goal(id:I):I;move(id:I):I};
   readonly pending: StorageBufferAttribute;
   private readonly mapData:StorageBufferAttribute;
   private readonly mapOffsets:{land:number;edges:number;open:number};
@@ -240,7 +242,7 @@ export class GpuUnits {
     };
     const free = (cell: I, id: I, withClaims = false, physicalCell: I = cell) => {
       const chosen = int(-1).toVar();
-      const available = int(0).toVar();
+      const available = int(0).toVar(), hostile = int(0).toVar();
       const at = id.mul(int(S.WORDS)).toVar();
       Loop(5, ({ i: s }) => {
         const owner = atomicLoad(occupancy.element(cell.mul(int(5)).add(s)));
@@ -252,8 +254,20 @@ export class GpuUnits {
             unused.assign(true);
           });
         });
+        If(owner.greaterThan(uint(0)).and(unused.not()),()=>{
+          If(u.element(int(owner).sub(1).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+        });
         const physicalOwner = atomicLoad(occupancy.element(physicalCell.mul(int(5)).add(s)));
         const physicalFree = physicalOwner.equal(uint(0)).or(physicalOwner.equal(uint(id.add(int(1)))));
+        if(withClaims){
+          If(physicalOwner.greaterThan(uint(0)),()=>{
+            If(u.element(int(physicalOwner).sub(1).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+          });
+          const claim=atomicLoad(claims.element(physicalCell.mul(5).add(s)));
+          If(claim.lessThan(uint(id)),()=>{
+            If(u.element(int(claim).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+          });
+        }
         const progress = unitDistance(point(physicalCell, s), point(cell)).lessThan(unitDistance(position(at), point(cell)));
         const allowed = withClaims
           ? unused.and(physicalFree).and(progress).and(atomicLoad(claims.element(physicalCell.mul(int(5)).add(s))).greaterThan(uint(id)))
@@ -284,7 +298,26 @@ export class GpuUnits {
           });
         });
       });
+      If(hostile.notEqual(int(0)),()=>{chosen.assign(-1);});
       return chosen;
+    };
+    // UNIT.CPP / INFANTRY.CPP Can_Enter_Cell: report the enemy without changing a mission here.
+    const recordObstruction=(id:I,at:I,cell:I)=>{
+      const blocking=int(0).toVar();
+      Loop(5,({i:slot})=>{
+        const owner=int(atomicLoad(occupancy.element(cell.mul(5).add(slot)))).toVar();
+        If(owner.greaterThan(int(0)).and(blocking.equal(int(0))),()=>{
+          const other=owner.sub(1).mul(S.WORDS);
+          If(u.element(other.add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER)))
+            .and(type(at,TYPE_CRUSHER).equal(int(0)).or(u.element(other.add(S.UKIND)).equal(int(0)))),()=>{blocking.assign(owner);});
+        });
+      });
+      If(blocking.greaterThan(int(0)),()=>{
+        If(u.element(blocking.sub(1).mul(S.WORDS).add(S.UCLOAK)).equal(int(2)),()=>{
+          // Defer shimmer until every mover has read the same cloak state.
+          atomicOr(nudges.element(blocking.sub(1)),uint(2));
+        }).Else(()=>{u.element(at.add(S.UOBSTRUCTION)).assign(blocking);u.element(at.add(S.UOBSTRUCTION_GOAL)).assign(goals.element(id));});
+      });
     };
     const meta = storage(this.flow.fields, 'int', this.flow.fields.count).setName('unit_meta').toReadOnly();
     const lookup = storage(this.flow.lookup, 'int', cells).setName('unit_lookup').toReadOnly();
@@ -427,7 +460,9 @@ export class GpuUnits {
       u.element(at.add(int(S.UROUTE))).assign(-1);
       u.element(at.add(int(S.USTALLED))).assign(0);
       pathGoals.element(id).assign(-1);
+      return chosen;
     };
+    this.scattering={unit:(id,field)=>u.element(id.mul(S.WORDS).add(field)),goal:id=>goals.element(id),move:scatter};
     // Ported from DRIVE.CPP, Start_Of_Move, and INFANTRY.CPP, AI; FOOT.H path constants.
     const failedPath = (id: I, at: I) => {
       u.element(at.add(int(S.UWAIT))).assign(PATH_DELAY);
@@ -451,6 +486,7 @@ export class GpuUnits {
       proposal.element(p.add(int(P_ROTATED))).assign(0);
       u.element(at.add(int(S.UJUMP))).assign(-1);
       u.element(at.add(S.UOVERRUN_CELL)).assign(-1);
+      u.element(at.add(S.UOBSTRUCTION)).assign(0);
       u.element(at.add(int(S.UJUMP_TRACK))).assign(-1);
       atomicStore(nudges.element(id), 0);
       If(u.element(at.add(int(S.UWAIT))).greaterThan(int(0)), () => {
@@ -518,12 +554,12 @@ export class GpuUnits {
         atomicStore(occupancy.element(instanceIndex), uint(0));
       });
     });
-    const query = kernel(count, () => {
+    const makeQuery = (resolvePrefix:boolean) => kernel(count, () => {
       const id = int(instanceIndex);
       const p = id.mul(int(PROPOSAL_WORDS)).toVar();
       const at = id.mul(int(S.WORDS)).toVar();
-      const goal = pathGoals.element(id);
-      const cell = u.element(at.add(int(S.UCELL)));
+      const goal = pathGoals.element(id).toVar();
+      const cell = u.element(at.add(int(S.UCELL))).toVar();
       proposal.element(p.add(int(P_NEXT))).assign(-1);
       proposal.element(p.add(int(P_FOLLOWING))).assign(-1);
       proposal.element(p.add(int(P_READY))).assign(0);
@@ -534,7 +570,7 @@ export class GpuUnits {
         // kernel within WebGPU's eight-storage-buffer baseline.
         proposal.element(p.add(int(P_NEXT))).assign(proposal.element(p.add(int(P_GOAL))));
       }).ElseIf(goal.greaterThanEqual(int(0)), () => {
-        const field = lookup.element(goal);
+        const field = lookup.element(goal).toVar();
         If(field.greaterThanEqual(int(0)), () => {
           If(meta.element(field.mul(int(FIELD_WORDS)).add(int(1))).notEqual(int(0)), () => {
             proposal.element(p.add(int(P_READY))).assign(1);
@@ -557,10 +593,30 @@ export class GpuUnits {
                 });
               });
             }
+            if(resolvePrefix){
+              const requested=proposal.element(p.add(P_GOAL)).toVar();
+              const defer=()=>{proposal.element(p.add(P_READY)).assign(0);proposal.element(p.add(P_NEXT)).assign(-1);};
+              If(requested.greaterThanEqual(int(0)).and(u.element(at.add(S.UHEALTH)).greaterThan(int(0))).and(u.element(at.add(S.UATTACHED)).equal(int(0))).and(u.element(at.add(S.UDOMAIN)).equal(int(0))).and(u.element(at.add(S.UDEST)).lessThan(int(0))).and(u.element(at.add(S.UWAIT)).equal(int(0))),()=>{
+                If(goal.equal(cell).and(requested.notEqual(cell)),()=>{
+                  const cursor=cell.toVar(),prefix=cell.toVar();
+                  Loop(Math.max(setup.grid.width,setup.grid.height),()=>{
+                    If(cursor.equal(requested),()=>{Break();});
+                    const direction=cellFacing(requested.mod(setup.grid.width).sub(cursor.mod(setup.grid.width)),requested.div(setup.grid.width).sub(cursor.div(setup.grid.width)));
+                    cursor.addAssign(data.element(direction.mul(2).add(directionsBase+1)).mul(setup.grid.width).add(data.element(direction.mul(2).add(directionsBase))));
+                    If(distance.element(field.mul(cells).add(cursor)).lessThan(int(UNREACHABLE)),()=>{prefix.assign(cursor);});
+                  });
+                  If(prefix.notEqual(cell),()=>{pathGoals.element(id).assign(prefix);defer();})
+                    .Else(()=>{pathGoals.element(id).assign(-1);});
+                }).ElseIf(distance.element(field.mul(cells).add(cell)).equal(int(UNREACHABLE)),()=>{
+                  pathGoals.element(id).assign(cell);defer();
+                });
+              });
+            }
           });
         });
       });
     });
+    const query=makeQuery(false),proposalQuery=makeQuery(true);
     const snapshotGoals = kernel(count, () => {
       proposal.element(int(instanceIndex).mul(int(PROPOSAL_WORDS)).add(int(P_GOAL))).assign(goals.element(instanceIndex));
     });
@@ -589,7 +645,7 @@ export class GpuUnits {
           Loop(5, ({ i: s }) => {
             atomicMin(claims.element(target.mul(int(5)).add(s)), uint(id));
           });
-        });
+        }).Else(()=>{recordObstruction(id,at,target);});
       });
       If(u.element(at.add(S.UTYPE)).notEqual(movementType('APC')).or(u.element(at.add(S.UDOOR)).equal(0)).and(goal.greaterThanEqual(int(0))).and(cell.lessThan(int(0))).and(proposal.element(p.add(int(P_READY))).notEqual(int(0)))
         .and(u.element(at.add(int(S.UDEST))).lessThan(int(0))).and(u.element(at.add(int(S.UWAIT))).equal(int(0)))
@@ -597,6 +653,12 @@ export class GpuUnits {
           .and(proposal.element(p.add(int(P_ROTATED))).equal(int(0)))
           .and(infantry.equal(int(0))
           .or(proposal.element(p.add(int(P_WAS_DRIVING))).equal(int(0)))), () => {
+        const source=u.element(at.add(S.UCELL)).toVar();
+        If(goal.notEqual(source),()=>{
+          const direction=cellFacing(goal.mod(setup.grid.width).sub(source.mod(setup.grid.width)),goal.div(setup.grid.width).sub(source.div(setup.grid.width)));
+          const next=source.add(data.element(direction.mul(2).add(directionsBase+1)).mul(setup.grid.width)).add(data.element(direction.mul(2).add(directionsBase)));
+          recordObstruction(id,at,next);
+        });
         failedPath(id, at);
       });
       If(u.element(at.add(S.UTYPE)).notEqual(movementType('APC')).or(u.element(at.add(S.UDOOR)).equal(0)).and(goal.greaterThanEqual(int(0))).and(cell.greaterThanEqual(int(0))).and(u.element(at.add(int(S.UDEST))).lessThan(int(0)))
@@ -613,6 +675,7 @@ export class GpuUnits {
         If(ok.notEqual(int(0)), () => {
           slot.assign(free(cell, id));
           If(slot.lessThan(int(0)), () => {
+            recordObstruction(id,at,cell);
             const moving = int(0).toVar();
             const headOn = int(0).toVar();
             Loop(5, ({ i: s }) => {
@@ -868,14 +931,19 @@ export class GpuUnits {
     });
     const yieldSpace = kernel(count, () => {
       const id = int(instanceIndex);
-      If(atomicLoad(nudges.element(id)).notEqual(uint(0)).and(goals.element(id).lessThan(int(0))), () => {
+      const flags=atomicLoad(nudges.element(id)),at=id.mul(S.WORDS);
+      If(flags.bitAnd(uint(2)).notEqual(uint(0)).and(u.element(at.add(S.UHEALTH)).greaterThan(int(0))).and(u.element(at.add(S.UCLOAK)).equal(int(2))),()=>{
+        u.element(at.add(S.UCLOAK)).assign(1);u.element(at.add(S.UCLOAK_STAGE)).assign(19);
+      });
+      If(flags.bitAnd(uint(1)).notEqual(uint(0)).and(goals.element(id).lessThan(int(0))), () => {
         scatter(id);
       });
     });
     this.command = kernel(count, () => {
       const id = int(instanceIndex);
       const at = id.mul(int(S.WORDS)).toVar();
-      If(ids.element(id).notEqual(int(0)).and(u.element(at.add(int(S.UOWNER))).equal(int(0))), () => {
+      If(ids.element(id).notEqual(int(0)), () => {
+        u.element(at.add(S.UOBSTRUCTION)).assign(0);
         If(this.commandKind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
@@ -896,6 +964,7 @@ export class GpuUnits {
       const p = id.mul(int(2));
       const kind = pending.element(p);
       If(kind.greaterThanEqual(int(0)).and(kind.lessThan(3)).and(u.element(at.add(S.UHEALTH)).greaterThan(0)), () => {
+        u.element(at.add(S.UOBSTRUCTION)).assign(0);
         If(kind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
@@ -915,7 +984,7 @@ export class GpuUnits {
     // vacated source slots. This preserves same-tick starts without overlapping reservations.
     this.prepare = this.flow.prepareKernels.length ? [this.resolvePaths,...this.flow.prepareKernels] : [];
     this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, ...occupy, finishOccupancy,
-      snapshotGoals, query, propose, prepareInfantry,
+      snapshotGoals, proposalQuery, propose, prepareInfantry,
       clearHeads, linkInfantry(true), allocateInfantry, accept, clear, ...occupy, finishOccupancy,
       clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clearOccupancy, ...occupy, finishOccupancy, yieldSpace, this.applyPending];
     this.occupancyPasses = [clearOccupancy, ...occupy, finishOccupancy];

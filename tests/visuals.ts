@@ -7,7 +7,7 @@ async function compose() {
   const { PalettePipeline } = await import('../src/engine/indexed/pipeline.ts');
   const { loadData } = await import('../src/game/data-files.ts');
   const { buildScene } = await import('../src/game/scene.ts');
-  const { buildPreview } = await import('../src/game/preview.ts');
+  const { buildPreview } = await import('../src/demo/preview.ts');
   const { overlapFixture, OVERLAP_ORDER } = await import('../tests/visual-fixture.ts');
   const { paint } = await import('../tests/reference/paint.ts');
   const canvas = document.createElement('canvas');

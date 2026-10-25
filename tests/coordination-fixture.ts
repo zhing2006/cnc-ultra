@@ -7,7 +7,7 @@ import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { insertGround,groundLayout,updateGroundKeys,groundLayers,transitionGround,bubbleGround,GpuGround } from '../src/game/simulation/ground.ts';
 import { PalettePipeline } from '../src/engine/indexed/pipeline.ts';
 import { loadData } from '../src/game/data-files.ts';
-import { economyScene } from '../src/game/simulation/economy-scene.ts';
+import { economyScene } from '../src/demo/economy-scene.ts';
 import { gridEdges } from '../src/engine/simulation/state.ts';
 import { movementType } from '../src/game/data/movement.ts';
 import { GpuCombat } from '../src/game/simulation/combat-gpu.ts';

@@ -6,7 +6,7 @@ import { GpuCombat } from '../src/game/simulation/combat-gpu.ts';
 import type { CombatSetup, AttackCommand } from '../src/game/simulation/combat-state.ts';
 import { WORDS, UHEALTH } from '../src/game/simulation/units-state.ts';
 import { loadData } from '../src/game/data-files.ts';
-import { combatScene } from '../src/game/simulation/combat-scene.ts';
+import { combatScene } from '../src/demo/combat-scene.ts';
 import { PalettePipeline, type Sprite } from '../src/engine/indexed/pipeline.ts';
 import { animations, ANIMATION_IDS } from '../src/game/data/combat.ts';
 import { compareCombatWorld } from './combat-world.ts';

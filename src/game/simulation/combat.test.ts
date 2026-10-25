@@ -7,12 +7,64 @@ import * as C from './combat-state.ts';
 import * as U from './units-state.ts';
 import { randomWord } from '../../engine/simulation/fixed.ts';
 import { backlineScenario } from '../../../tests/backline-scenario.ts';
+import { obstructionScenario, buildingObstructionScenario } from '../../../tests/obstruction-scenario.ts';
 import { deathAnimation, deathVoice, soundGain } from './combat-effects.ts';
 export function combatFixture(): C.CombatSetup {
   return { grid: gridEdges(16, 12, new Uint8Array(192).fill(1), true), land: new Uint8Array(192), seed: 0x1995,
     units: [{ cell: 66, type: movementType('MTNK'), facing: 64 }, { cell: 70, type: movementType('MTNK'), facing: 192, owner: 1 }] };
 }
 describe('original ground combat', () => {
+  it.each([['E1','MTNK'],['MTNK','MTNK'],['E1','E1']])('lets %s destroy a hostile %s obstruction and resume its move order', (name,blocker) => {
+    const battle=new CpuCombat(obstructionScenario(name,blocker));
+    // Isolate path obstruction handling from retaliation against an incoming shot.
+    battle.state[C.CWORDS+C.CARM]=10000;
+    battle.step([{frame:1,kind:'move',ids:[0],target:70}]);
+    while(battle.frame<1000)battle.step();
+    // DRIVE.CPP Start_Of_Move / INFANTRY.CPP AI, then FOOT.CPP Restore_Mission.
+    expect(battle.units[U.WORDS+U.UHEALTH]).toBeLessThanOrEqual(0);
+    expect(battle.units[U.UCELL]).toBe(70);
+  });
+  it('attacks an enemy building obstruction after reaching the end of a partial route',()=>{
+    const battle=new CpuCombat(buildingObstructionScenario());
+    battle.step([{frame:1,kind:'move',ids:[0],target:70}]);
+    while(battle.frame<250)battle.step();
+    expect(battle.units[U.WORDS+U.UHEALTH]).toBeLessThan(400);
+    expect(battle.state[C.CSUSPENDED_MISSION]).toBe(C.MOVE+1);
+    expect(battle.state[C.CTARGET]).toBe(1);
+  });
+  it('restores a hunt target after destroying an intervening obstruction',()=>{
+    const setup=obstructionScenario('MTNK');
+    setup.units=[...setup.units,{cell:70,type:movementType('MCV'),owner:1}];
+    const battle=new CpuCombat(setup);battle.state[C.CWORDS+C.CARM]=10000;
+    battle.state[C.CMISSION]=C.HUNT;battle.state[C.CTARGET]=2;
+    while(battle.frame<500)battle.step();
+    expect(battle.units[U.WORDS+U.UHEALTH]).toBeLessThanOrEqual(0);
+    expect(battle.state[C.CMISSION]).toBe(C.HUNT);
+    expect(battle.state[C.CTARGET]).toBe(2);
+    expect(battle.units[2*U.WORDS+U.UHEALTH]).toBeLessThan(600);
+  });
+  it('replaces an obstruction override with a new player move order',()=>{
+    const setup=obstructionScenario('MTNK');setup.units=[setup.units[0],{...setup.units[1],health:400}];
+    const battle=new CpuCombat(setup);battle.state[C.CWORDS+C.CARM]=10000;
+    battle.step([{frame:1,kind:'move',ids:[0],target:70}]);
+    while(!battle.state[C.CSUSPENDED_MISSION]&&battle.frame<300)battle.step();
+    expect(battle.state[C.CSUSPENDED_MISSION]).toBe(C.MOVE+1);
+    battle.step([{frame:battle.frame+1,kind:'move',ids:[0],target:50}]);
+    while(battle.frame<700)battle.step();
+    expect(battle.units[U.UCELL]).toBe(50);
+    expect(battle.state[C.CSUSPENDED_MISSION]).toBe(0);
+  });
+  it('lets an idle skirmish infantry guard its area beyond weapon range',()=>{
+    const width=32,setup:C.CombatSetup={grid:gridEdges(width,8,new Uint8Array(width*8).fill(1),true),land:new Uint8Array(width*8),seed:1995,multiplayer:true,
+      units:[{cell:68,type:movementType('E1'),owner:1,facing:64},{cell:72,type:movementType('MTNK'),facing:192}]};
+    const battle=new CpuCombat(setup);battle.state[C.CWORDS+C.CARM]=10000;
+    battle.step([{frame:1,kind:'move',ids:[0],target:69}]);
+    while(battle.frame<300)battle.step();
+    // Remaster INFANTRY.CPP Enter_Idle_Mode; original FOOT.CPP Mission_Guard_Area.
+    expect(battle.state[C.CTARGET]).toBe(1);
+    expect(battle.state[C.CLAST_FIRE]).toBeGreaterThan(0);
+    expect(battle.units[U.UCELL]).toBeGreaterThan(69);
+  });
   it('turns a human gun after an out-of-range hit without issuing a pursuit order',()=>{
     // BUILDING.CPP Take_Damage, default Special.IsSmartDefense == false.
     const setup=combatFixture();setup.units=[{cell:66,type:movementType('GUN')},{cell:185,type:movementType('MTNK'),owner:1}];
@@ -51,6 +103,8 @@ describe('original ground combat', () => {
     setup.units=[{cell:66,type:movementType('RMBO'),facing:64},
       {cell:68,type:movementType('C1'),owner:1,health:1}];
     const battle=new CpuCombat(setup);
+    // INFANTRY.CPP Greatest_Threat: a human commando does not auto-acquire from guard.
+    battle.step([{frame:1,kind:'attack',target:1,ids:[0]}]);
     while(battle.frame<40 && battle.units[U.WORDS+U.UHEALTH]>0) battle.step();
     const killed=battle.state[C.CWORDS+C.CDEATH];
     expect(killed).toBeGreaterThan(0);
@@ -101,7 +155,7 @@ describe('original ground combat', () => {
     expect(battle.state[C.CSTOKED]).toBe(1);
     expect(battle.state[C.CCOMMENT]).toBe(31);
   });
-  it('uses the original bike Risk when scoring close hunt targets', () => {
+  it('uses weapon-derived Risk and the original hunt score floor', () => {
     const setup=combatFixture();
     setup.units=[{cell:66,type:movementType('MTNK'),owner:1},
       {cell:67,type:movementType('MTNK')},{cell:68,type:movementType('BIKE')}];
@@ -109,8 +163,8 @@ describe('original ground combat', () => {
     battle.state[C.CMISSION]=C.HUNT;
     battle.units[U.WORDS+U.UX]=battle.units[U.UX]+60;
     battle.units[2*U.WORDS+U.UX]=battle.units[U.UX]+32;
-    // TECHNO.CPP Evaluate_Object: (80+45)/32 > (80+62)/60.
-    expect(battle['findTarget'](0)).toBe(2);
+    // TECHNO.CPP: (32+45)/32 and (45+62)/60 both clamp to two; the earlier object wins.
+    expect(battle['findTarget'](0)).toBe(1);
   });
   it.each(['LST','BOAT','DELPHI'])('excludes %s from automatic guard targets', name => {
     const setup=combatFixture();

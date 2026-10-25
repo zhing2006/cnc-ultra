@@ -8,36 +8,37 @@ import { GameInput, type ViewSize, type UnitInput } from './input.ts';
 import { buildScene, type CursorImage } from './scene.ts';
 import { Scroller } from './scroll.ts';
 import { PaletteCycle } from './palette-cycle.ts';
+import { PlaybackPresentation } from './playback-presentation.ts';
 import { initialZoom, MAX_ZOOM, zoomOrigin } from './zoom.ts';
-import { SimulationClock, DelayedReadback } from '../engine/simulation/clock.ts';
+import { DelayedReadback } from '../engine/simulation/clock.ts';
+import { SimulationDriver } from '../engine/simulation/driver.ts';
 import { GpuSimulation } from '../engine/simulation/gpu.ts';
 import { GpuChecksum } from '../engine/simulation/checksum.ts';
 import { unitState } from '../engine/simulation/state.ts';
-import { simulationScene } from './simulation/scene.ts';
+import type { PreparedGame } from './game-setup.ts';
+import type { MixSet } from './formats/mix.ts';
+import type { EconomySetup } from './simulation/economy-setup.ts';
 import { GpuGround, groundLayout } from './simulation/ground.ts';
 import { flowOverlay } from './simulation/overlay.ts';
 import { LOGIC_HZ } from './simulation/map.ts';
-import { unitsScene } from './simulation/units-scene.ts';
-import { GpuUnits } from './simulation/units-gpu.ts';
 import { initialUnits, WORDS } from './simulation/units-state.ts';
 import { GpuSight } from './simulation/sight.ts';
+import { SightView, type SightPerspective } from './simulation/sight-view.ts';
 import { GpuSelection, type SelectionCommand } from './simulation/selection.ts';
 import { UnitsView } from './simulation/units-view.ts';
 import { UnitVoices } from './voices.ts';
 import { GpuCombat } from './simulation/combat-gpu.ts';
-import { combatScene } from './simulation/combat-scene.ts';
 import { CombatView, combatExtraSprites } from './simulation/combat-view.ts';
 import { CombatAudio } from './simulation/combat-audio.ts';
 import { MOVEMENT } from './data/movement.ts';
 import { GpuAircraft } from './simulation/aircraft-gpu.ts';
 import { AircraftView } from './simulation/aircraft-view.ts';
-import { economyScene } from './simulation/economy-scene.ts';
 import { EconomyRuntime } from './simulation/economy-runtime.ts';
 import { GpuTiberium } from './simulation/tiberium-gpu.ts';
 import { BuildingView } from './simulation/building-view.ts';
 import { Sidebar } from './sidebar.ts';
 import { GpuHarvest } from './simulation/harvest-gpu.ts';
-import { Eva } from './eva.ts';
+import { Eva, hearHouseEvent } from './eva.ts';
 import { GpuAirOperations } from './simulation/air-operations-gpu.ts';
 import { GpuTransport } from './simulation/transport-gpu.ts';
 import { Radar } from './radar.ts';
@@ -46,6 +47,10 @@ import { GpuServices } from './simulation/services-gpu.ts';
 import { LaserView } from './simulation/laser-view.ts';
 import { GpuBuildingEffects } from './simulation/building-effects-gpu.ts';
 import { buildingEffectCapacity } from './simulation/building-effects-state.ts';
+import { SuperView } from './simulation/super-view.ts';
+import { CloakView } from './simulation/cloak-view.ts';
+import { stepBattle } from './simulation/tick.ts';
+import { SUPER_SPRITES } from './simulation/super-weapons.ts';
 
 /** The default scenario: GDI mission 8, map B. */
 const SCENARIO = 'SCG08EB';
@@ -61,107 +66,135 @@ export interface Game {
   setFlow(enabled: boolean): void;
   setPaused(paused: boolean): void;
   setVision(enabled: boolean): void;
-  setWaves(enabled:boolean):void;
+  setPerspective(perspective: SightPerspective): void;
   setDensity(enabled:boolean):void;
-  setProductionSpeed(speed:1|10|100):void;
+  setSimulationSpeed(speed:1|10|100):void;
+  setController(owner:number|null):void;
 }
 
 export interface GameOptions {
-  simulation?: boolean;
-  units?: boolean;
-  combat?: boolean;
-  buildings?:boolean;
-  economy?:boolean;
-  faction?:number;
+  createEconomy?: (battle: GpuCombat, setup: EconomySetup, faction?: number) => EconomyRuntime;
   onProgress?: (message: string) => void | Promise<void>;
   onStats?: (frame: number, checksum: string) => void;
+  onSpeed?: (actual: number) => void;
+  onOutcome?: (winner: number) => void;
 }
 
 /** Loads the original data and shows scg08eb on the renderer's canvas. */
 export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, options: GameOptions = {}): Promise<Game> {
   await options.onProgress?.('Loading game files');
-  const economic=options.buildings||options.economy;
-  const data = await loadData(false, options.units || options.combat || economic, economic);
+  const data = await loadData();
   await options.onProgress?.('Building the battlefield');
-  const baseDemo=economic?economyScene(data,!!options.buildings):undefined;
-  const battleDemo = baseDemo ?? (options.combat ? combatScene(data) : options.units ? unitsScene(data,true,true) : undefined);
-  const unitDemo = battleDemo ?? (options.units ? unitsScene(data) : undefined);
-  const demo = options.simulation ? simulationScene(data) : undefined;
-  const scene = unitDemo?.scene ?? demo?.scene ?? buildScene(data, SCENARIO);
+  return startPreparedGame(renderer, canvas, data, { kind: 'map', scene: buildScene(data, SCENARIO) }, options);
+}
+
+/** Runs a prepared scenario without knowing which menu, campaign or diagnostic selected it. */
+export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasElement, data: MixSet,
+  world: PreparedGame, options: GameOptions = {}): Promise<Game> {
+  const combatSetup = world.kind === 'combat' ? world : undefined;
+  const simulationSetup = world.kind === 'simulation' ? world : undefined;
+  const economySetup = combatSetup?.economy;
+  const { scene } = world;
   await options.onProgress?.('Preparing units and controls');
-  const battle = battleDemo && new GpuCombat(renderer.three, battleDemo.setup);
-  const simulation = demo && new GpuSimulation(renderer.three, demo.setup);
-  const units = battle?.movement ?? (unitDemo && new GpuUnits(renderer.three, unitDemo.setup));
-  const aircraft=units&&unitDemo?.setup.units.some(unit=>MOVEMENT[unit.type].domain===1)?new GpuAircraft(units):undefined;
-  const airOperations=battle&&aircraft?new GpuAirOperations(battle,aircraft,baseDemo?.playable??Int32Array.from({length:battle.setup.grid.edges.length},()=>1)):undefined;
-  const active = battle ?? units ?? simulation;
-  const sight = battle?.sight ?? (units && new GpuSight(renderer.three, units.setup.grid.width, units.setup.grid.height, units.units));
-  const selection = units && sight && new GpuSelection(renderer.three, units, sight, !!battle);
-  const economy=battle&&baseDemo?new EconomyRuntime(battle,baseDemo,options.faction):undefined;
+  const battle = combatSetup && new GpuCombat(renderer.three, combatSetup.setup);
+  const simulation = simulationSetup && new GpuSimulation(renderer.three, simulationSetup.setup);
+  const units = battle?.movement;
+  const aircraft=units&&combatSetup?.setup.units.some(unit=>MOVEMENT[unit.type].domain===1)?new GpuAircraft(units):undefined;
+  const airOperations=battle&&aircraft?new GpuAirOperations(battle,aircraft,economySetup?.playable??Int32Array.from({length:battle.setup.grid.edges.length},()=>1)):undefined;
+  const active = battle ?? simulation;
+  const sight = battle?.sight;
+  const opposingSight = units && new GpuSight(renderer.three, units.setup.grid.width, units.setup.grid.height, units.units, 1, units.setup.bounds);
+  const perspective = sight && opposingSight && new SightView(sight, opposingSight);
+  const controlSight = sight && opposingSight && new SightView(sight, opposingSight);
+  const selection = units && controlSight && new GpuSelection(renderer.three, units, controlSight, true);
+  const economy=battle&&economySetup?(options.createEconomy?.(battle,economySetup,combatSetup?.faction)??new EconomyRuntime(battle,economySetup,combatSetup?.faction)):undefined;
+  let controlledOwner = economy ? economy.controlledOwner : 0;
+  selection?.setOwner(controlledOwner??-1);
   if(economy&&aircraft)economy.lifecycle.useAircraft(aircraft.state);
-  const transport=battle&&(aircraft||battle.setup.units.some(unit=>MOVEMENT[unit.type].name==='APC'))?new GpuTransport(battle,aircraft,baseDemo?.playable??Int32Array.from({length:battle.setup.grid.edges.length},()=>1),economy?.transportState):undefined;
+  const transport=battle&&(aircraft||battle.setup.units.some(unit=>MOVEMENT[unit.type].name==='APC'))?new GpuTransport(battle,aircraft,economySetup?.playable??Int32Array.from({length:battle.setup.grid.edges.length},()=>1),economy?.transportState):undefined;
   const services=battle?new GpuServices(battle,economy?.serviceState):undefined;
-  const ore=baseDemo?new GpuTiberium(renderer.three,baseDemo.tiberium,units?.occupancy):undefined;
-  if(ore&&battle&&baseDemo)ore.connect(battle,baseDemo.baseLand,()=>economy!.placement.bibs);
+  const ore=economySetup?new GpuTiberium(renderer.three,economySetup.tiberium,units?.occupancy):undefined;
+  if(ore&&battle&&economySetup)ore.connect(battle,economySetup.baseLand,()=>economy!.placement.bibs);
   const harvest=economy&&ore?new GpuHarvest(economy,ore):undefined;
   if(economy&&ore)economy.lifecycle.validateTerrain(ore.amount);
   const construction=economy&&ore?new ConstructionPreview(economy,ore):undefined;
   const lasers=economy?new LaserView(economy.battle,scene.setup.palette):undefined;
-  const radar=economy&&ore?new Radar(economy,ore,data):undefined;
+  const radar=economy&&ore?new Radar(economy,ore,data,perspective):undefined;
   const sidebar=economy?new Sidebar(economy,data,radar):undefined;
   const eva=economy?new Eva(data):undefined;
-  if(economy&&eva)economy.onEvent=name=>eva.speak(name);
+  if(economy&&eva)economy.onEvent=(name,owner)=>{if(hearHouseEvent(name,owner,economy.controlledOwner))eva.speak(name);};
   await selection?.prepare();
   if (battle) {battle.movement.enableOccupancyEdits();await battle.prepareForPlay();}
-  else await units?.prepareForPlay();
   if(aircraft)await renderer.three.compileComputeAsync(aircraft.kernels);
   if(airOperations)await renderer.three.compileComputeAsync([...airOperations.beforePass,airOperations.afterPass]);
   if(transport)await renderer.three.compileComputeAsync(transport.kernels);
   if(services)await renderer.three.compileComputeAsync(services.kernels);
   if(harvest)await renderer.three.compileComputeAsync(harvest.kernels);
   await ore?.prepareForPlay();
-  await economy?.lifecycle.prepareForPlay();
-  await economy?.report.prepareForPlay();
+  await economy?.prepareForPlay();
   await options.onProgress?.('Preparing graphics and sound');
   const unitView = units && sight && selection && new UnitsView(renderer.three,units,sight,selection,scene,data,!!battle,
-    battle?{combat:battle.state,transport:transport?.state,mining:economy?.miningState,buildings:economy?.visuals}:undefined);
+    battle?{combat:battle.state,transport:transport?.state,mining:economy?.miningState,buildings:economy?.visuals}:undefined,perspective);
   const combatAudio = battle && new CombatAudio(renderer.three, battle, data);
   const voices = units && new UnitVoices(data);
   await combatAudio?.prepareForPlay();
-  const layout = unitDemo ? groundLayout(scene, initialUnits(unitDemo.setup), WORDS, true) : demo && groundLayout(scene, unitState(demo.setup));
+  const layout = combatSetup ? groundLayout(scene, initialUnits(combatSetup.setup), WORDS, true) : simulationSetup && groundLayout(scene, unitState(simulationSetup.setup));
   const flow = simulation && flowOverlay(simulation);
   const spriteSize = [...scene.sprites, ...[...(scene.animation?.frames.values() ?? [])].flat().map(region => ({region}))].reduce((size, sprite) => ({
     maxWidth: Math.max(size.maxWidth, sprite.region.width), maxHeight: Math.max(size.maxHeight, sprite.region.height),
   }), {maxWidth:1,maxHeight:1});
   const effectCapacity=economy?buildingEffectCapacity(economy.battle.setup.units.length):0;
-  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: (layout?.count ?? scene.sprites.length) + 1 + (battle ? combatExtraSprites(battle.setup,scene) : 0)+effectCapacity,
+  const superCapacity=economy?SUPER_SPRITES:0;
+  const pipeline = new PalettePipeline(renderer.three, { ...scene.setup, spriteCapacity: (layout?.count ?? scene.sprites.length) + 1 + (battle ? combatExtraSprites(battle.setup,scene) : 0)+effectCapacity+superCapacity,
     ...(layout && { dynamicSprites: spriteSize, overlay: sidebar&&unitView ? (pixel,color)=>{
       let out=lasers?lasers.draw(pixel,color):color;out=radar?radar.densityDraw(pixel,out):out;if(construction)out=construction.draw(pixel,out);return sidebar.draw(pixel,unitView.draw(pixel,out));
     } : unitView?.draw ?? flow!.draw }),
     ...(unitView && { indexEffect: unitView.indexEffect }) });
-  const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, unitDemo ? scene : undefined,
+  const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, combatSetup ? scene : undefined,
     selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined);
-  const combatView = battle && ground && battleDemo && new CombatView(renderer.three, battle, ground, pipeline, scene, battleDemo.decalStart,!!economy);
+  const combatView = battle && ground && combatSetup && new CombatView(renderer.three, battle, ground, pipeline, scene, combatSetup.decalStart,!!economy);
   const buildingEffects=economy&&combatView?new GpuBuildingEffects(economy.battle,scene.animation!.frames,combatView.smudges):undefined;
   if(buildingEffects&&combatView){buildingEffects.setView(pipeline,scene,combatView.count);await buildingEffects.prepareForPlay();}
   const aircraftView=aircraft&&ground?new AircraftView(aircraft,ground,pipeline,scene):undefined;
   const buildingView=economy&&ground&&ore?new BuildingView(economy,ground,pipeline,ore):undefined;
-  buildingView?.update();aircraftView?.update();buildingEffects?.update();
-  if(ground)pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity);
+  const superView=economy&&combatView?new SuperView(economy,pipeline,scene,combatView.count+effectCapacity):undefined;
+  const cloakView=battle&&ground&&perspective&&ground.layout.slots>=3?new CloakView(battle,ground,pipeline,perspective):undefined;
+  buildingView?.update();aircraftView?.update();buildingEffects?.update();superView?.update();cloakView?.update();
+  if(ground)pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
+  const battleSystems=battle?{battle,economy,ore,transport,services,harvest,aircraft,airOperations,opposingSight,buildingEffects}:undefined;
+  const afterFlight=()=>{if(aircraft)ground?.transitionLayers();};
   const checksum = active && ground && new GpuChecksum(renderer.three,
-    [...active.buffers(), ...(aircraft?[aircraft.state]:[]), ...(ore?ore.buffers():[]), ...(economy?[economy.miningState]:[]), ...(transport?[transport.state]:[]), ...(services?[services.state]:[]), ...(units ? [] : [ground.order.order]), ...(sight && !battle ? [sight.mapped] : [])]);
+    [...active.buffers(), ...(aircraft?[aircraft.state]:[]), ...(ore?ore.buffers():[]), ...(economy?[economy.miningState,...economy.extraSimulationBuffers]:[]), ...(transport?[transport.state]:[]), ...(services?[services.state]:[]), ...(units ? [] : [ground.order.order])]);
   // Compile the periodic diagnostic before play, alongside the first selection.
   await checksum?.read();
-  const clock = new SimulationClock(LOGIC_HZ);
+  const driver = new SimulationDriver(LOGIC_HZ, stepSimulation);
+  const presentation = new PlaybackPresentation();
   const readback = new DelayedReadback<Uint32Array>();
-  let paused = false, target: number | undefined, digest = '';
+  let paused = false, digest = '', spritesDirty = false;
+  let simulationSpeed:1|10|100 = 1;
+  let sampleTime = 0, sampleFrame = 0;
   let shakeUntil = 0;
   if (combatAudio) combatAudio.onShake = () => { shakeUntil=performance.now()+100; };
-  const visibility = () => { clock.pause(); };
+  const syncPlayback = () => {
+    const stopped = paused || document.hidden;
+    driver.setPaused(stopped);
+    presentation.configure(simulationSpeed, stopped);
+    const muted = stopped || simulationSpeed !== 1;
+    combatAudio?.setMuted(muted); voices?.setMuted(muted); eva?.setMuted(muted);
+    if (muted) shakeUntil = 0;
+    sampleTime = 0;
+    options.onSpeed?.(0);
+  };
+  const visibility = syncPlayback;
+  syncPlayback();
   document.addEventListener('visibilitychange', visibility);
   const { scenario } = scene;
-  const mapWidth=units?.setup.grid.width??demo?.setup.grid.width??ORIGINAL_MAP_SIZE;
+  const mapWidth=units?.setup.grid.width??simulationSetup?.setup.grid.width??ORIGINAL_MAP_SIZE;
   const scroller = new Scroller(scenario);
+  if(economy){
+    economy.onSound=(name,x,y)=>combatAudio?.playExternal(name,x,y,{x:scroller.x,y:scroller.y,width:pixelToLepton(view.width),height:pixelToLepton(view.height)});
+    economy.onShake=()=>{if(simulationSpeed===1&&!paused)shakeUntil=performance.now()+150;};
+  }
   if(sidebar)sidebar.onRadarCell=cell=>scroller.setPosition((cell%mapWidth)*256-pixelToLepton(view.width-160)/2,Math.trunc(cell/mapWidth)*256-pixelToLepton(view.height)/2);
   const palette = new PaletteCycle(scene.setup.palette);
 
@@ -173,14 +206,14 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
     Math.floor(cell / mapWidth) * CELL_LEPTONS);
 
   let view: ViewSize = { width: 1, height: 1, scale: 1 };
-  let released = false, renderFrame = 0;
+  let released = false, renderFrame = 0, inputEpoch = 0;
   let bandStart: {x:number;y:number} | null = null;
-  const responses: {frame:number;value:Int32Array}[] = [];
+  const responses: {frame:number;value:Int32Array;voiceEpoch:number|undefined}[] = [];
   const act = (command: SelectionCommand) => {
-    if (!selection) return;
+    if (!selection || controlledOwner === null) return;
     selection.apply(command);
-    const frame = renderFrame;
-    void selection.read().then(value => { if (!released) responses.push({frame,value}); });
+    const frame = renderFrame, voiceEpoch = voices?.epoch, epoch = inputEpoch;
+    void selection.read().then(value => { if (!released && epoch === inputEpoch) responses.push({frame,value,voiceEpoch}); });
   };
   let scale = 0;
   let bufferWidth = 1, bufferHeight = 1;
@@ -193,12 +226,14 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
   const unitActions: UnitInput | undefined = unitView && selection ? {
     gesture() { voices?.unlock(); combatAudio?.unlock(); eva?.unlock(); },
     down(position,button) {
+      if(controlledOwner===null)return;
       if(sidebar&&position.x>=view.width-160)return;
       if (button === 2) { bandStart = null; act({action:'clear'}); }
       if(button===2)economy?.cancelPlacement();
       if (button === 0) { const origin=viewOrigin();bandStart={x:position.x+origin.x,y:position.y+origin.y}; }
     },
     up(position,button,shift,ctrl) {
+      if(controlledOwner===null)return;
       if(sidebar?.hit(position.x,position.y,button)){bandStart=null;return;}
       if (button !== 0 || !bandStart) return;
       const origin=viewOrigin(),x=position.x+origin.x,y=position.y+origin.y;
@@ -208,6 +243,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       bandStart=null;
     },
     key(event) {
+      if(controlledOwner===null)return false;
       voices?.unlock();
       eva?.unlock();
       const modifier=event.ctrlKey?2:event.altKey?3:event.shiftKey?1:0;
@@ -247,10 +283,11 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
     const inset = padding();
     scroller.setPosition(pixelToLepton(x + inset.x), pixelToLepton(y + inset.y));
   }, (position) => {
-    if (!demo) return;
+    if (!simulationSetup) return;
     const origin = viewOrigin(), x = Math.floor((position.x + origin.x) / CELL_PIXELS), y = Math.floor((position.y + origin.y) / CELL_PIXELS);
-    if (x >= 0 && y >= 0 && x < demo.setup.grid.width && y < demo.setup.grid.height && demo.passable[y * demo.setup.grid.width + x]) {
-      target = y * demo.setup.grid.width + x;
+    const { width, height } = simulationSetup.setup.grid;
+    if (x >= 0 && y >= 0 && x < width && y < height && simulationSetup.passable[y * width + x]) {
+      simulationSetup.onMapClick(y * width + x);
     }
   }, unitActions);
 
@@ -258,8 +295,33 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
   let lastTick = 0;
   let startTime = 0;
   let cursor: CursorImage = scene.cursors.normal;
-  // The original-map viewer uploads static sprites once; the demo writes them on the GPU.
+  // Static scenarios upload sprites once; an active simulation updates them on the GPU.
   if (!active) pipeline.setSprites(scene.sprites);
+
+  function stepSimulation() {
+    if (!active || !ground) return;
+    if (economy && !economy.beginTick()) {
+      if(economy.outcome!==undefined){paused=true;syncPlayback();options.onOutcome?.(economy.outcome);}
+      return false;
+    }
+    // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
+    // rendered with the order computed from the previous tick's positions.
+    ground.sort();
+    if(battleSystems)stepBattle(battleSystems,afterFlight);
+    else simulation!.step(simulationSetup!.commands(simulation!.frame + 1));
+    combatView?.step();
+    buildingView?.step();
+    spritesDirty = true;
+    const completion = economy?.endTick();
+    sidebar?.update(false);
+    eva?.step();
+    combatAudio?.update(scroller.x, scroller.y, pixelToLepton(view.width), pixelToLepton(view.height));
+    if (active.frame % 15 === 0 && checksum) readback.request(active.frame, () => checksum.read());
+    const completed = readback.take(active.frame);
+    if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
+    options.onStats?.(active.frame, digest);
+    return completion;
+  }
 
   const drawFrame: FrameCallback = (width, height, time) => {
     renderFrame++;
@@ -280,39 +342,16 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
 
     if (palette.update(time - startTime)) pipeline.setPalette(palette.colors);
 
-    if (active && ground && !paused && !document.hidden) clock.advance(time, () => {
-      if(economy&&!economy.beginTick())return false;
-      // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
-      // rendered with the order computed from the previous tick's positions.
-      ground.sort();
-      battle?.movement.beginOccupancyEdits();
-      ore?.step();
-      transport?.step();
-      services?.step(economy?.house.money??0);
-      harvest?.step();
-      airOperations?.before();
-      aircraft?.step();
-      battle?.movement.endOccupancyEdits();
-      if (battle) battle.step();
-      else if (units) { units.step(); sight!.step(); }
-      else simulation!.step(target === undefined ? [] : [{ frame: simulation!.frame + 1, target }]);
-      airOperations?.after();
-      if(battle)ore?.damage(battle.frame);
-      if(aircraft)ground.transitionLayers();
-      target = undefined;
-      if(buildingEffects)battle!.movement.beginOccupancyEdits();
-      buildingEffects?.step();
-      if(buildingEffects)battle!.movement.endOccupancyEdits();
-      ground.updateSprites(false); combatView?.update(false);buildingView?.update();aircraftView?.update();buildingEffects?.update();
-      pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity);
-      economy?.endTick();sidebar?.update();
-      eva?.step();
-      combatAudio?.update(scroller.x, scroller.y, pixelToLepton(view.width), pixelToLepton(view.height));
-      if (active.frame % 15 === 0 && checksum) readback.request(active.frame, () => checksum.read());
-      const completed = readback.take(active.frame);
-      if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
-      options.onStats?.(active.frame, digest);
-    });
+    if (active) {
+      driver.advance(time);
+      if (!sampleTime) { sampleTime = time; sampleFrame = active.frame; }
+      if (time - sampleTime >= 500) {
+        const actual = (active.frame - sampleFrame) * 1000 / (LOGIC_HZ * (time - sampleTime));
+        options.onSpeed?.(actual);
+        presentation.sample(actual);
+        sampleTime = time; sampleFrame = active.frame;
+      }
+    }
 
     for (let steps = 0; time - lastTick >= TICK; steps++) {
       if (steps === MAX_STEPS) {
@@ -327,15 +366,21 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
 
     const { x, y } = viewOrigin();
     while(responses.length && responses[0].frame < renderFrame){
-      const {value}=responses.shift()!;
-      if(value[0]>=0 && unitDemo){
+      const {value,voiceEpoch}=responses.shift()!;
+      if(value[0]>=0 && combatSetup){
         economy?.select(value[0]);
         if(value[2]===4)economy?.deploy();
         if(value[2]===5)economy?.selectPrimary(value[0]);
-        const placed=unitDemo.setup.units[value[0]],type=MOVEMENT[economy?.types[value[0]]??placed.type];
-        if(value[2]>0&&value[2]<=3&&type.domain!==2) voices?.play(type.name,!!type.infantry,type.infantry?value[0]-scene.scenario.units.length:value[0],value[2],active!.frame);
+        const placed=combatSetup.setup.units[value[0]],type=MOVEMENT[economy?.types[value[0]]??placed.type];
+        if(value[2]>0&&value[2]<=3&&type.domain!==2) voices?.play(type.name,!!type.infantry,type.infantry?value[0]-scene.scenario.units.length:value[0],value[2],active!.frame,voiceEpoch);
         if(value[7]) scroller.setPosition(Math.floor((value[3]+value[5])/2)-pixelToLepton(view.width/2),Math.floor((value[4]+value[6])/2)-pixelToLepton(view.height/2));
       }
+    }
+    if (!presentation.draw(time)) return;
+    if (spritesDirty && ground) {
+      ground.updateSprites(false); combatView?.update(false); buildingView?.update(); aircraftView?.update(); buildingEffects?.update();superView?.update();cloakView?.update();
+      pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
+      spritesDirty = false;
     }
     // The original draws the mouse last, over everything else.
     const mouse = input.mouse && {
@@ -348,6 +393,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       unitView.shift.value=input.shift?1:0;unitView.ctrl.value=input.ctrl?1:0;
       const pointerIndex=scene.cursors.scroll.indexOf(cursor),blockedIndex=scene.cursors.blocked.indexOf(cursor);
       unitView.cursor.value=pointerIndex>=0?pointerIndex+1:blockedIndex>=0?blockedIndex+130:-1;
+      unitView.special.value=controlledOwner!==null&&economy?.current.specialTarget?(economy.current.specialTarget==='ion'?1:2):0;
       if(bandStart && input.mouse && (Math.abs(x+input.mouse.x-bandStart.x)>4 || Math.abs(y+input.mouse.y-bandStart.y)>4))
         unitView.band.value.set(bandStart.x,bandStart.y,x+input.mouse.x,y+input.mouse.y);
       else unitView.band.value.set(-1,-1,-1,-1);
@@ -355,6 +401,7 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
     }else pipeline.setOverlay(mouse || null);
     pipeline.setTime(time - startTime);
     if(sidebar){sidebar.origin.value.set(x,y);sidebar.viewport.value.set(view.width,view.height);sidebar.pointer.value.set(input.mouse?input.mouse.x-view.width+160:-100,input.mouse?.y??-100);}
+    sidebar?.drawPixels();
     radar?.update(x,y,view.width-160,view.height);
     lasers?.update(x,y,view.width,view.height);
     construction?.update(input.mouse&&input.mouse.x<view.width-160?input.mouse.x+x:-100,input.mouse?input.mouse.y+y:-100);
@@ -367,18 +414,23 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
   const size = renderer.three.getDrawingBufferSize(new Vector2());
   drawFrame(size.x, size.y, performance.now());
   await finishGpuSetup(renderer.three);
-  clock.pause();
+  syncPlayback();
   renderer.setFrame(drawFrame);
 
   return {
     setFlow(enabled) { if (flow) flow.enabled.value = enabled ? 1 : 0; if(unitView) unitView.flow.value=enabled?1:0; },
     setVision(enabled) { if(unitView) unitView.vision.value=enabled?1:0; },
-    setPaused(value) { paused = value; clock.pause(); },
-    setWaves(value){if(economy)economy.waves=value;},
+    setPerspective(value) { perspective?.setPerspective(value);spritesDirty=true; },
+    setPaused(value) { paused = value || economy?.outcome!==undefined; syncPlayback(); },
+    setController(owner) {
+      controlledOwner=owner;inputEpoch++;responses.length=0;bandStart=null;
+      eva?.clear();economy?.setController(owner);selection?.setOwner(owner??-1);sidebar?.resetHouse();
+    },
+    setSimulationSpeed(value) { simulationSpeed = value; driver.setSpeed(value); syncPlayback(); },
     setDensity(value){if(radar)radar.densityEnabled.value=Number(value);},
-    setProductionSpeed(value){economy?.setProductionSpeed(value);},
     dispose() {
       released=true;
+      driver.dispose();
       renderer.setFrame(null);
       input.dispose();
       document.removeEventListener('visibilitychange', visibility);
@@ -388,14 +440,15 @@ export async function startGame(renderer: Renderer, canvas: HTMLCanvasElement, o
       airOperations?.dispose();
       transport?.dispose();
       services?.dispose();
-      buildingEffects?.dispose();buildingView?.dispose();harvest?.dispose();ore?.dispose();sidebar?.dispose();economy?.dispose();
+      cloakView?.dispose();superView?.dispose();buildingEffects?.dispose();buildingView?.dispose();harvest?.dispose();ore?.dispose();sidebar?.dispose();economy?.dispose();
       eva?.dispose();
       radar?.dispose();
       construction?.dispose();
       lasers?.dispose();
       simulation?.dispose();
       canvas.style.transform='';combatView?.dispose();combatAudio?.dispose();battle?.dispose();
-      if (!battle) { units?.dispose(); sight?.dispose(); } selection?.dispose();unitView?.dispose();voices?.dispose();
+      perspective?.dispose();controlSight?.dispose();
+      opposingSight?.dispose();selection?.dispose();unitView?.dispose();voices?.dispose();
       pipeline.dispose();
     },
   };

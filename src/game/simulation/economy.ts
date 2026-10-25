@@ -168,11 +168,11 @@ export class ProductionQueues {
     this.items.get(category)?.abandon();
     this.items.delete(category);
   }
-  step(speed:1|10|100=1) {
+  step() {
     for (const [category, item] of this.items) {
       const count = this.buildings.filter(b => b.active && PRODUCTION.get(b.type)?.factory === category).length;
       if (!count||!this.available(item.type)) this.cancel(category);
-      else item.step(count*speed);
+      else item.step(count);
     }
   }
 }

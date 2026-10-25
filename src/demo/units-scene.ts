@@ -1,10 +1,10 @@
-import type { MixSet } from '../formats/mix.ts';
-import { readScenario } from '../formats/scenario.ts';
-import { buildScene } from '../scene.ts';
-import { movementType } from '../data/movement.ts';
-import { movementMap } from './map.ts';
-import type { UnitPlacement, UnitsSetup } from './units-state.ts';
-import { animations,bullets } from '../data/combat.ts';
+import type { MixSet } from '../game/formats/mix.ts';
+import { readScenario } from '../game/formats/scenario.ts';
+import { buildScene } from '../game/scene.ts';
+import { movementType } from '../game/data/movement.ts';
+import { movementMap } from '../game/simulation/map.ts';
+import type { UnitPlacement, UnitsSetup } from '../game/simulation/units-state.ts';
+import { animations,bullets } from '../game/data/combat.ts';
 
 /** A controlled mixed army on the original terrain, with both tight and open routes nearby. */
 export function unitsScene(mix:MixSet,includeAircraft=true,combat=false){

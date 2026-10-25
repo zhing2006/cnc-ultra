@@ -1,5 +1,9 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { movementType } from '../data/movement.ts';
+import { combatTypes } from '../data/combat.ts';
+import { INTERRUPTIBLE_INFANTRY_ACTIONS } from '../data/abilities.ts';
+import type { CpuCombat } from './combat-cpu.ts';
+import * as C from './combat-state.ts';
 import { distance } from '../coord.ts';
 import { harvestBail } from './tiberium-cpu.ts';
 import { BUILDING_WORDS } from './economy-runtime.ts';
@@ -8,13 +12,15 @@ import * as U from './units-state.ts';
 export const HWORDS=10,HBASE=3,HMODE=0,HTIMER=1,HLOAD=2,HREF=3,HGOAL=4,HGEN=5,HARCHIVE=6,HSTAGE=7,HCREDIT=8,HCLIENT=9;
 export function initialHarvest(count:number){return new Int32Array(HBASE+count*HWORDS);}
 export interface HarvestContext {
-  units:Int32Array;goals:Int32Array;paths:Int32Array;ore:Int32Array;state:Int32Array;occupancy:Int32Array|Uint32Array;
-  buildings:Int32Array;playable:Int32Array;passable:Uint8Array;width:number;
+  battle:CpuCombat;ore:Int32Array;state:Int32Array;
+  buildings:Int32Array;playable:Int32Array;passable:Uint8Array;
   buildable?:ArrayLike<number>;bibs?:ArrayLike<number>;
 }
 /** UNIT.CPP Mission_Harvest/Goto_Tiberium/Harvesting; BUILDING.CPP Mission_Harvest. */
 export function stepHarvest(v:HarvestContext){
-  const {units:u,goals,paths,ore,state:h,occupancy,buildings,playable,passable,width}=v,count=goals.length;
+  const {battle,ore,state:h,buildings,playable,passable}=v;
+  const u=battle.units,{goals,pathGoals:paths,occupancy}=battle.movement,{width}=battle.setup.grid,count=goals.length;
+  const clearance=new Set<number>();
   h[2]++;
   const seek=(id:number)=>{
     const cell=u[id*U.WORDS+U.UCELL];
@@ -89,12 +95,20 @@ export function stepHarvest(v:HarvestContext){
       h[p+HTIMER]=1;
       let busy=false;for(let other=0;other<count;other++)if(other!==id&&u[other*U.WORDS+U.UHEALTH]>0&&h[HBASE+other*HWORDS+HREF]===ref&&(h[HBASE+other*HWORDS+HMODE]>=4||other<id&&h[HBASE+other*HWORDS+HMODE]===3))busy=true;
       if(busy)continue;
-      if(goals[id]<0&&u[at+U.UDEST]<0&&cell===u[ref*U.WORDS+U.UCELL]+width-1){
-        u[at+U.UDESIRED]=160;
-        if(u[at+U.UFACE]===160){forceHarvestTrack(u,at,64,cell-width,width);h[p+HMODE]=8;}
+      if(goals[id]<0&&u[at+U.UDEST]<0){
+        const dock=u[ref*U.WORDS+U.UCELL]+width-1;
+        // BUILDING.CPP Receive_Message(RADIO_DOCKING): repeat MOVE_HERE after interrupted navigation.
+        if(cell!==dock)setGoal(dock);
+        else{
+          u[at+U.UDESIRED]=160;
+          if(u[at+U.UFACE]===160){forceHarvestTrack(u,at,64,cell-width,width);h[p+HMODE]=8;}
+        }
       }
     }else if(mode===4){h[p+HMODE]=5;h[p+HTIMER]=20;h[p+HSTAGE]=0;
     }else if(mode===5){
+      // BUILDING.CPP Mission_Harvest(MIDDLE): Incoming(0,true) clears the bib before each bail.
+      const exit=u[ref*U.WORDS+U.UCELL]+width-1;
+      for(let slot=0;slot<5;slot++){const other=occupancy[exit*5+slot]-1;if(other>=0)clearance.add(other);}
       if(h[p+HLOAD]>0){h[p+HLOAD]--;h[u[at+U.UOWNER]]+=25;}
       h[p+HTIMER]=20;h[p+HSTAGE]=0;
       if(!h[p+HLOAD]){h[p+HMODE]=6;h[p+HTIMER]=24;}
@@ -114,6 +128,23 @@ export function stepHarvest(v:HarvestContext){
   for(let id=0;id<count;id++){
     const p=HBASE+id*HWORDS,ref=h[p+HREF];
     if(u[id*U.WORDS+U.UHEALTH]>0&&u[id*U.WORDS+U.UTYPE]===movementType('HARV')&&ref>=0&&h[p+HMODE]>=3&&h[p+HMODE]<=6)h[HBASE+ref*HWORDS+HCLIENT]=id+1;
+  }
+  for(const id of clearance)clearRefineryExit(battle,id);
+}
+
+/** CELL.CPP Incoming with IsScatter enabled; UNIT.CPP / INFANTRY.CPP Scatter. */
+function clearRefineryExit(battle:CpuCombat,id:number){
+  const u=battle.units,s=battle.state,at=id*U.WORDS,c=id*C.CWORDS;
+  if(u[at+U.UHEALTH]<=0||u[at+U.UATTACHED]||u[at+U.UDOMAIN]!==0)return;
+  const type=combatTypes[u[at+U.UTYPE]];
+  if(type.name==='BOAT'||type.name==='LST')return;
+  if(u[at+U.UKIND]){
+    if(!type.fraidy&&(u[at+U.UDEST]>=0||battle.movement.goals[id]>=0))return;
+    if(s[c+C.CACTION]>=0&&!INTERRUPTIBLE_INFANTRY_ACTIONS.has(s[c+C.CACTION]))return;
+  }
+  if(battle.movement.scatter(id)>=0&&u[at+U.UKIND]){
+    s[c+C.CMISSION]=C.MOVE;s[c+C.CFIRE]=-1;s[c+C.CACTION]=0;s[c+C.CSTAGE]=0;
+    s[c+C.CLOCAL_ROUTE]=s[c+C.CROUTE_LENGTH]=0;s[c+C.CLOCAL_DEST]=-1;
   }
 }
 

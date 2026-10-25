@@ -21,7 +21,7 @@ export async function checkSimulation(session: Session) {
     const destination = await page.evaluate(async () => {
       const {PalettePipeline} = await import('../src/engine/indexed/pipeline.ts');
       const {loadData} = await import('../src/game/data-files.ts');
-      const {simulationScene} = await import('../src/game/simulation/scene.ts');
+      const {simulationScene} = await import('../src/demo/simulation-scene.ts');
       const {passable,setup,scene} = simulationScene(await loadData());
       scene.setup.displacement?.dispose();
       return new Promise<{x:number;y:number;cell:number}>(resolve => {
@@ -50,8 +50,11 @@ export async function checkSimulation(session: Session) {
           step.call(this,commands);
           if (commands.length) { clearTimeout(timeout); GpuSimulation.prototype.step = step; resolve(commands[0].target); }
         };
+        (window as unknown as { simulationCommandReady: boolean }).simulationCommandReady = true;
       });
     });
+    // The async import must finish before input; fast ticks can consume the command before a late hook.
+    await page.waitForFunction(() => (window as unknown as { simulationCommandReady?: boolean }).simulationCommandReady);
     await page.mouse.click(destination.x,destination.y);
     await page.waitForFunction(() => document.pointerLockElement !== null);
     await page.mouse.click(destination.x,destination.y);

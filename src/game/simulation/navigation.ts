@@ -1,5 +1,5 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { DIRECTIONS } from '../../engine/simulation/state.ts';
+import { DIRECTIONS, UNREACHABLE } from '../../engine/simulation/state.ts';
 import { distance } from '../coord.ts';
 import { GROUND_SPEED, MOVEMENT } from '../data/movement.ts';
 import * as S from './units-state.ts';
@@ -16,6 +16,16 @@ export function cellFacing(from: number, to: number, width: number) {
   if (Math.min(ax, ay) < ((Math.max(ax, ay) + 1) >> 1))
     return ax >= ay ? (dx < 0 ? 6 : 2) : (dy < 0 ? 0 : 4);
   return dx < 0 ? (dy > 0 ? 5 : 7) : (dy > 0 ? 3 : 1);
+}
+
+/** FINDPATH.CPP Find_Path preserves a reachable prefix when the final open region is sealed. */
+export function reachablePrefix(setup:S.UnitsSetup,source:number,goal:number,distances:Int32Array,base:number){
+  let cursor=source,prefix=source;
+  for(let step=0;step<Math.max(setup.grid.width,setup.grid.height)&&cursor!==goal;step++){
+    const [dx,dy]=DIRECTIONS[cellFacing(cursor,goal,setup.grid.width)];cursor+=dy*setup.grid.width+dx;
+    if(distances[base+cursor]<UNREACHABLE)prefix=cursor;
+  }
+  return prefix===source?-1:prefix;
 }
 
 /** Ported from FOOT.CPP, Basic_Path. NavCom remains the clicked cell. */

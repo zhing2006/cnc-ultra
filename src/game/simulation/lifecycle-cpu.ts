@@ -1,7 +1,7 @@
 import type { CpuCombat } from './combat-cpu.ts';
 import { placementOffsets } from './building-rules.ts';
 import { MOVEMENT } from '../data/movement.ts';
-import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY } from './lifecycle-state.ts';
+import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 import { FACTORY_POINT,FACTORY_EXITS } from './services-cpu.ts';
@@ -48,6 +48,7 @@ export function applyLifecycle(battle:CpuCombat,commands:Int32Array,placementCle
         if(commands[p+12]<0){const parent=(-commands[p+12]-1)*U.WORDS,origin=u[parent+U.UORIGIN],point=FACTORY_POINT[MOVEMENT[u[parent+U.UTYPE]].name];if(point){u[at]=origin%width*256+point[0];u[at+1]=Math.trunc(origin/width)*256+point[1];u[at+U.UCELL]=origin+Math.trunc(point[1]/256)*width+Math.trunc(point[0]/256);}}
         s[c+C.CSEEN]=1;s[c+C.CMISSION]=commands[p+8];s[c+C.CARM]=mask&STATUS?0:commands[p+10];
         m.goals[id]=m.pathGoals[id]=-1;
+        if(mask&INITIAL_ORDER){m.goals[id]=commands[p+13];s[c+C.CTARGET]=commands[p+14];}
         if(domain===1&&commands[p+12]>0){
           const parent=(commands[p+12]-1)*U.WORDS,origin=u[parent+U.UORIGIN];
           if(MOVEMENT[u[parent+U.UTYPE]].name==='HPAD'&&battle.setup.units.some((_,other)=>other!==id&&u[other*U.WORDS+U.UDOMAIN]===1&&u[other*U.WORDS+U.UHEALTH]>0&&

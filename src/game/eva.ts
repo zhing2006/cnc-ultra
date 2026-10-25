@@ -4,7 +4,12 @@ import type { MixSet } from './formats/mix.ts';
 
 const SPEECH:Record<string,string>={complete:'CONSTRU1',unitready:'UNITREDY',newoptions:'NEWOPT1',cantdeploy:'DEPLOY1',cantbuild:'DEPLOY1',
   funds:'NOCASH1',reinforcements:'REINFOR1',cancelled:'CANCEL1',building:'BLDGING1',lowpower:'LOPOWER1',underattack:'BASEATK1',
-  unitlost:'UNITLOST',buildinglost:'STRCLOST',harvester:'NEEDHARV',silos:'SILOS1',hold:'ONHOLD1',primary:'PRIBLDG1',busy:'BLDG1'};
+  unitlost:'UNITLOST',buildinglost:'STRCLOST',harvester:'NEEDHARV',silos:'SILOS1',hold:'ONHOLD1',primary:'PRIBLDG1',busy:'BLDG1',
+  ioncharging:'IONCHRG1',ionready:'IONREDY1',nukeready:'NUKAVAIL',nukelaunched:'NUKLNCH1',nukeincoming:'NUKE1',notready:'NOREDY1',gdicaptured:'GDICAPT1',nodcaptured:'NODCAPT1'};
+
+const GLOBAL_SPEECH=new Set(['nukeincoming','gdicaptured','nodcaptured']);
+/** HOUSE.CPP AI/Attacked, BUILDING.CPP Captured; spectators hear only global announcements. */
+export function hearHouseEvent(event:string,owner:number,controller:number|null){return owner===controller||GLOBAL_SPEECH.has(event);}
 
 /** AUDIO.CPP Speak/Speak_AI: one queued line, with duplicate current/queued requests discarded. */
 export class Eva {
@@ -13,6 +18,7 @@ export class Eva {
   private source:AudioBufferSourceNode|undefined;
   private current='';
   private queued='';
+  private muted=false;
   constructor(mix:MixSet){
     for(const name of new Set(Object.values(SPEECH))){
       const bytes=mix.get(`${name}.AUD`);if(!bytes)continue;
@@ -26,9 +32,14 @@ export class Eva {
     }
   }
   unlock(){if(this.context.state==='suspended')void this.context.resume();}
-  speak(event:string){const name=SPEECH[event];if(name&&name!==this.current&&!this.queued)this.queued=name;}
+  setMuted(muted:boolean){
+    this.muted=muted;
+    if(muted)this.clear();
+  }
+  clear(){this.queued='';this.current='';this.source?.stop();this.source=undefined;}
+  speak(event:string){const name=SPEECH[event];if(!this.muted&&name&&name!==this.current&&!this.queued)this.queued=name;}
   step(){
-    if(this.source||!this.queued||this.context.state!=='running')return;
+    if(this.muted||this.source||!this.queued||this.context.state!=='running')return;
     const name=this.queued;this.queued='';const buffer=this.buffers.get(name);if(!buffer)return;
     const source=this.context.createBufferSource();source.buffer=buffer;source.connect(this.context.destination);
     this.current=name;this.source=source;source.onended=()=>{if(this.source===source){this.source=undefined;this.current='';}source.disconnect();};source.start();

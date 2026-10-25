@@ -2,19 +2,28 @@
 export class SimulationClock {
   private previous: number | undefined;
   private accumulated = 0;
+  private speed = 1;
   constructor(readonly hz: number, readonly maxCatchUp = 4) {}
   pause() { this.previous = undefined; this.accumulated = 0; }
-  advance(now: number, tick: () => unknown) {
+  setSpeed(speed: number) { this.speed = speed; this.pause(); }
+  get due() { return this.accumulated + 1e-8 >= 1000 / this.hz; }
+  accumulate(now: number) {
     if (this.previous === undefined) { this.previous = now; return; }
-    this.accumulated += Math.max(0, now - this.previous);
+    this.accumulated += Math.max(0, now - this.previous) * this.speed;
     this.previous = now;
-    const duration = 1000 / this.hz;
-    // Slow the simulation under sustained overload instead of accumulating unbounded debt.
-    this.accumulated = Math.min(this.accumulated, duration * this.maxCatchUp);
-    while (this.accumulated + 1e-8 >= duration) {
+    // Bound wall-time debt, not the number of ticks per rendering frame. Every executed
+    // tick still advances the simulation by exactly one fixed step at every speed.
+    this.accumulated = Math.min(this.accumulated, 1000 / this.hz * this.maxCatchUp * this.speed);
+  }
+  drain(tick: () => unknown) {
+    while (this.due) {
       if (tick() === false) break;
-      this.accumulated -= duration;
+      this.accumulated -= 1000 / this.hz;
     }
+  }
+  advance(now: number, tick: () => unknown) {
+    this.accumulate(now);
+    this.drain(tick);
   }
 }
 

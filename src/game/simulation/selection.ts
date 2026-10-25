@@ -8,9 +8,10 @@ import { movementType,MOVEMENT } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { EXTRA_ACTORS } from '../data/extra-actors.ts';
 import { unitDistance } from './units-nodes.ts';
-import { WORDS, UOWNER, UTYPE, UHEALTH, UALTITUDE, UATTACHED,UDOMAIN,UKIND,UORIGIN } from './units-state.ts';
+import { WORDS, UOWNER, UTYPE, UHEALTH, UALTITUDE, UATTACHED,UDOMAIN,UKIND,UORIGIN,UCLOAK } from './units-state.ts';
 import type { GpuUnits } from './units-gpu.ts';
 import type { GpuSight } from './sight.ts';
+import { SightView } from './sight-view.ts';
 import { cellEntryNode } from './cell-entry.ts';
 export type SelectionAction = 'point' | 'box' | 'clear' | 'group' | 'next' | 'home' | 'center' | 'stop' | 'scatter';
 const ACTIONS: SelectionAction[] = ['point', 'box', 'clear', 'group', 'next', 'home', 'center', 'stop', 'scatter'];
@@ -28,6 +29,7 @@ export class GpuSelection {
   readonly result: StorageBufferAttribute;
   readonly state: StorageBufferAttribute;
   readonly flashOffset: number;
+  readonly owner = uniform(0, 'int');
   private readonly pass;
   private readonly args = uniform(0, 'int');
   private readonly x = uniform(0, 'int');
@@ -37,7 +39,7 @@ export class GpuSelection {
   private readonly modifier = uniform(0, 'int');
   private readonly group = uniform(0, 'int');
   private readonly attributes: StorageBufferAttribute[] = [];
-  constructor(private readonly renderer: WebGPURenderer, simulation: GpuUnits, sight: GpuSight, combat = false) {
+  constructor(private readonly renderer: WebGPURenderer, private readonly simulation: GpuUnits, private readonly sight: GpuSight | SightView, combat = false) {
     const count = simulation.setup.units.length;
     const { width, height } = simulation.setup.grid;
     this.result = new StorageBufferAttribute(new Int32Array(8), 1);
@@ -56,7 +58,7 @@ export class GpuSelection {
     const result = storage(this.result, 'int', 8);
     const u = storage(simulation.units, 'int', simulation.units.count).toReadOnly();
     const pending = storage(simulation.pending, 'int', count * 2);
-    const shadow = storage(sight.shadow, 'int', width * height).toReadOnly();
+    const shadow = sight instanceof SightView ? { element: sight.shadowAt } : storage(sight.shadow, 'int', width * height).toReadOnly();
     const canEnter = cellEntryNode(simulation, attribute => this.attributes.push(attribute), u);
     const footprints=uniformArray<'ivec4'>(MOVEMENT.map(t=>{const b=BUILDINGS.get(t.name);return new Vector4(b?.width??0,b?.height??0,b?.occupy.reduce((mask,[x,y])=>mask|(1<<(y*4+x)),0)??0,Number(EXTRA_ACTORS.find(e=>e.name===t.name)?.selectable??true));}), 'ivec4');
     this.pass = Fn(() => {
@@ -66,8 +68,8 @@ export class GpuSelection {
       const voice = int(0).toVar();
       const center = int(0).toVar();
       Loop(count, ({ i }) => {
-        If(u.element(int(i).mul(WORDS).add(UHEALTH)).lessThanEqual(0).or(u.element(int(i).mul(WORDS).add(UATTACHED)).notEqual(0)), () => { selected.element(int(i)).assign(0); });
-        If(first.lessThan(int(0)).and(selected.element(int(i)).notEqual(int(0))), () => {
+        If(u.element(int(i).mul(WORDS).add(UHEALTH)).lessThanEqual(0).or(u.element(int(i).mul(WORDS).add(UATTACHED)).notEqual(0)).or(u.element(i.mul(WORDS).add(UCLOAK)).equal(2).and(u.element(i.mul(WORDS).add(UOWNER)).notEqual(this.owner))), () => { selected.element(int(i)).assign(0); });
+        If(first.lessThan(int(0)).and(selected.element(int(i)).notEqual(int(0))).and(u.element(i.mul(WORDS).add(UOWNER)).equal(this.owner)), () => {
           first.assign(int(i));
         });
       });
@@ -92,7 +94,7 @@ export class GpuSelection {
               If(dx.greaterThanEqual(0).and(dy.greaterThanEqual(0)).and(dx.lessThan(shape.x)).and(dy.lessThan(shape.y))
                 .and(shape.z.bitAnd(int(1).shiftLeft(dy.mul(4).add(dx))).notEqual(0)),()=>{d.assign(0);});
             });
-            If(d.lessThan(best).and(footprints.element(u.element(at.add(UTYPE))).w.notEqual(0)).and(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0))), () => {
+            If(d.lessThan(best).and(footprints.element(u.element(at.add(UTYPE))).w.notEqual(0)).and(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0))).and(u.element(at.add(UCLOAK)).notEqual(2).or(u.element(at.add(UOWNER)).equal(this.owner))), () => {
               best.assign(d);
               chosen.assign(int(i));
             });
@@ -100,13 +102,13 @@ export class GpuSelection {
         });
         If(chosen.greaterThanEqual(int(0)), () => {
           If(int(combat ? 1 : 0).notEqual(0).and(first.greaterThanEqual(0))
-            .and(u.element(chosen.mul(WORDS).add(UOWNER)).notEqual(0).or(this.modifier.equal(2))), () => {
+            .and(u.element(chosen.mul(WORDS).add(UOWNER)).notEqual(this.owner).or(this.modifier.equal(2))), () => {
             Loop(count, ({i}) => {
               const type=u.element(int(i).mul(WORDS).add(UTYPE));
-              If(selected.element(int(i)).notEqual(0).and(type.notEqual(movementType('SAM'))).and(type.notEqual(movementType('TRAN'))), () => { pending.element(int(i).mul(2)).assign(3); pending.element(int(i).mul(2).add(1)).assign(chosen); });
+              If(selected.element(int(i)).notEqual(0).and(u.element(i.mul(WORDS).add(UOWNER)).equal(this.owner)).and(type.notEqual(movementType('SAM'))).and(type.notEqual(movementType('TRAN'))), () => { pending.element(int(i).mul(2)).assign(3); pending.element(int(i).mul(2).add(1)).assign(chosen); });
             });
             voice.assign(3);
-          }).ElseIf(first.greaterThanEqual(0).and(this.modifier.equal(0)).and(u.element(chosen.mul(WORDS).add(UOWNER)).equal(0)),()=>{
+          }).ElseIf(first.greaterThanEqual(0).and(this.modifier.equal(0)).and(u.element(chosen.mul(WORDS).add(UOWNER)).equal(this.owner)),()=>{
             const kind=u.element(chosen.mul(WORDS).add(UTYPE)),at=first.mul(WORDS);
             const passengers=int(0).toVar();
             If(kind.equal(movementType('TRAN')).or(kind.equal(movementType('APC'))),()=>{Loop(count,({i})=>{If(u.element(i.mul(WORDS).add(UHEALTH)).greaterThan(0).and(u.element(i.mul(WORDS).add(UATTACHED)).equal(chosen.add(1))),()=>{passengers.addAssign(1);});});});
@@ -115,7 +117,7 @@ export class GpuSelection {
               .or(kind.equal(movementType('FIX')).and(u.element(at.add(UKIND)).equal(0)).and(u.element(at.add(UDOMAIN)).notEqual(2)))
               .or(kind.equal(movementType('PROC')).and(u.element(at.add(UTYPE)).equal(movementType('HARV'))));
             If(boarding.or(docking),()=>{
-              Loop(count,({i})=>{If(selected.element(i).notEqual(0),()=>{pending.element(i.mul(2)).assign(5);pending.element(i.mul(2).add(1)).assign(chosen);});});voice.assign(2);
+              Loop(count,({i})=>{If(selected.element(i).notEqual(0).and(u.element(i.mul(WORDS).add(UOWNER)).equal(this.owner)),()=>{pending.element(i.mul(2)).assign(5);pending.element(i.mul(2).add(1)).assign(chosen);});});voice.assign(2);
             }).ElseIf(chosen.equal(first).and(kind.equal(movementType('TRAN')).or(kind.equal(movementType('APC')))).and(passengers.greaterThan(0)),()=>{pending.element(first.mul(2)).assign(6);voice.assign(2);})
               .ElseIf(chosen.equal(first).and(kind.equal(movementType('MCV'))),()=>{voice.assign(4);})
               .ElseIf(chosen.equal(first).and(u.element(at.add(UDOMAIN)).equal(2)),()=>{voice.assign(5);})
@@ -139,7 +141,7 @@ export class GpuSelection {
             Loop(count, ({ i }) => {
               const at = int(i).mul(int(WORDS));
               const attackAllowed=this.modifier.notEqual(2).or(u.element(at.add(UTYPE)).notEqual(movementType('SAM')).and(u.element(at.add(UTYPE)).notEqual(movementType('TRAN'))));
-              If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(attackAllowed).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
+              If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(attackAllowed).and(u.element(at.add(int(UOWNER))).equal(this.owner)), () => {
                 pending.element(int(i).mul(int(2))).assign(select(int(combat ? 1 : 0).notEqual(0).and(this.modifier.equal(2)), int(4), int(0)));
                 pending.element(int(i).mul(int(2)).add(int(1))).assign(cell);
               });
@@ -161,7 +163,7 @@ export class GpuSelection {
           const at = int(i).mul(int(WORDS));
           const xx = u.element(at);
           const yy = u.element(at.add(int(1)));
-          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UDOMAIN)).notEqual(2)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))).and(u.element(at.add(int(UOWNER))).equal(int(0)))
+          selected.element(at.div(int(WORDS))).assign(int(u.element(at.add(UHEALTH)).greaterThan(0).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UDOMAIN)).notEqual(2)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))).and(u.element(at.add(int(UOWNER))).equal(this.owner))
             .and(xx.greaterThanEqual(intMin(this.x, this.x2)))
 
               .and(xx.lessThanEqual(intMax(this.x, this.x2)))
@@ -180,7 +182,7 @@ export class GpuSelection {
         If(this.modifier.equal(int(2)), () => {
           Loop(count, ({ i }) => {
             const at = int(i).mul(int(WORDS));
-            If(u.element(at.add(int(UOWNER))).equal(int(0)), () => {
+            If(u.element(at.add(int(UOWNER))).equal(this.owner), () => {
               If(groups.element(at.div(int(WORDS))).equal(this.group), () => {
                 groups.element(at.div(int(WORDS))).assign(-1);
               });
@@ -196,7 +198,7 @@ export class GpuSelection {
             If(replace, () => {
               selected.element(at.div(int(WORDS))).assign(0);
             });
-            If(groups.element(at.div(int(WORDS))).equal(this.group).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
+            If(groups.element(at.div(int(WORDS))).equal(this.group).and(u.element(at.add(int(UOWNER))).equal(this.owner)), () => {
               selected.element(at.div(int(WORDS))).assign(1);
             });
           });
@@ -210,7 +212,7 @@ export class GpuSelection {
           const following = first.add(int(i)).add(int(1)).mod(int(count));
           const id = select(kind.equal(int(5)), int(i), select(this.modifier.notEqual(int(0)), previous, following));
           const at = id.mul(int(WORDS)).toVar();
-          If(chosen.lessThan(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))).and(u.element(at.add(UHEALTH)).greaterThan(0)).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))), () => {
+          If(chosen.lessThan(int(0)).and(u.element(at.add(int(UOWNER))).equal(this.owner)).and(u.element(at.add(UHEALTH)).greaterThan(0)).and(u.element(at.add(UATTACHED)).equal(0)).and(u.element(at.add(UTYPE)).notEqual(movementType('C17'))), () => {
             If(kind.equal(int(4)).or(u.element(at.add(int(UTYPE))).equal(int(movementType('MCV')))), () => {
               chosen.assign(id);
             });
@@ -230,7 +232,7 @@ export class GpuSelection {
       If(kind.equal(int(7)).or(kind.equal(int(8))), () => {
         Loop(count, ({ i }) => {
           const at = int(i).mul(int(WORDS));
-          If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(u.element(at.add(int(UOWNER))).equal(int(0))), () => {
+          If(selected.element(at.div(int(WORDS))).notEqual(int(0)).and(u.element(at.add(int(UOWNER))).equal(this.owner)), () => {
             pending.element(int(i).mul(int(2))).assign(kind.sub(int(6)));
           });
         });
@@ -256,7 +258,13 @@ export class GpuSelection {
       result.element(7).assign(center);
     })().compute(1);
   }
+  setOwner(owner: number) {
+    this.owner.value = owner;
+    if (this.sight instanceof SightView) this.sight.setPerspective(owner === 1 ? 1 : 0);
+    this.apply({ action: 'clear' });
+  }
   apply(command: SelectionCommand) {
+    if (this.sight instanceof SightView) this.sight.update(this.simulation.frame);
     this.args.value = ACTIONS.indexOf(command.action);
     this.x.value = command.x ?? 0;
     this.y.value = command.y ?? 0;

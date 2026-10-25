@@ -2,6 +2,7 @@
 import { StorageBufferAttribute, type ComputeNode, type WebGPURenderer } from 'three/webgpu';
 import { Fn, If, int, uint, storage, instanceIndex, vec4, ivec4, atomicMin, atomicAdd, atomicStore, atomicLoad, select, abs } from 'three/tsl';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
+import { randomNode } from '../../engine/simulation/integer-nodes.ts';
 import type { PalettePipeline } from '../../engine/indexed/pipeline.ts';
 import type { GameScene } from '../scene.ts';
 import { BODY_SHAPE, HUMAN_SHAPE, facingTo32 } from '../coord.ts';
@@ -33,8 +34,10 @@ export function combatExtraSprites(setup: C.CombatSetup, scene: GameScene) {
 export class CombatView {
   readonly count: number;
   readonly smudges:StorageBufferAttribute;
+  readonly effects:StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[] = [];
-  private readonly passes: ComputeNode[];
+  private readonly historyPasses: ComputeNode[];
+  private readonly drawPasses: ComputeNode[];
   constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, ground: GpuGround, private readonly pipeline: PalettePipeline, scene: GameScene, decalStart: number,buildingEffects=false) {
     const units = battle.setup.units.length, shots = units * C.SHOTS_PER_UNIT, cells = battle.setup.grid.edges.length;
     const trails = trailLayout(battle.setup, scene), mainCount = ground.layout.count + shots + units;
@@ -117,6 +120,19 @@ export class CombatView {
         });
       });
     })().compute(shots + units);
+    const external=storage(battle.externalExplosions,'int',battle.externalExplosions.count).toReadOnly();
+    const markExternal=Fn(()=>{
+      const id=int(instanceIndex),at=id.mul(C.SPECIAL_BLAST_WORDS).add(2);
+      If(id.lessThan(external.element(0)).and(external.element(1).equal(clock.element(0))),()=>{
+        const scorch=external.element(at.add(5)),crater=external.element(at.add(6));
+        const cell=external.element(at.add(1)).div(256).mul(battle.setup.grid.width).add(external.element(at).div(256));
+        If(scorch.notEqual(0).or(crater.notEqual(0)),()=>{
+          const variant=select(scorch.notEqual(0),int(randomNode(uint(battle.setup.seed),uint(clock.element(0)),uint(cell),uint(450)).mod(uint(6))).add(7),int(1));
+          atomicMin(pending.element(cell.mul(2)),uint(id.add(shots+units).mul(16).add(variant)));
+          If(crater.notEqual(0),()=>{atomicAdd(pending.element(cell.mul(2).add(1)),uint(1));});
+        });
+      });
+    })().compute(C.MAX_SPECIAL_BLASTS);
     const settle = Fn(() => {
       const cell = int(instanceIndex), candidate = atomicLoad(pending.element(cell.mul(2)));
       If(candidate.notEqual(uint(0xffffffff)), () => {
@@ -249,7 +265,8 @@ export class CombatView {
     const smokeLoop = 67, smokeEnd = Math.max(smokeLoop + 1, smokeFrames - 1);
     const smokeDuration = smokeFrames + (smokeEnd - smokeLoop) * 5;
     const stateArray = new Int32Array(units * 2 + trails.count * 3).fill(-1);
-    const effects = storage(keep(stateArray), 'int', stateArray.length);
+    this.effects = keep(stateArray);
+    const effects = storage(this.effects, 'int', stateArray.length);
     const stamp = Fn(() => {
       const id = int(instanceIndex);
       If(id.lessThan(units), () => {
@@ -317,12 +334,16 @@ export class CombatView {
         });
       });
     })().compute(units * 2 + trails.count);
-    this.passes = [clear, mark, settle, draw, stamp, extra];
-    this.update();
+    // ANIM.CPP smudges and UNIT/BULLET.CPP smoke retain events from every logic tick.
+    // draw/extra only project that history and the current battle state into sprites.
+    this.historyPasses = [clear, mark, markExternal, settle, stamp];
+    this.drawPasses = [draw, extra];
+    this.step(); this.update();
   }
-  update(rebuildIndex=true) { this.renderer.compute(this.passes); if(rebuildIndex)this.pipeline.updateGpuSprites(this.count); }
+  step() { this.renderer.compute(this.historyPasses); }
+  update(rebuildIndex=true) { this.renderer.compute(this.drawPasses); if(rebuildIndex)this.pipeline.updateGpuSprites(this.count); }
   dispose() {
-    for (const p of this.passes)
+    for (const p of [...this.historyPasses, ...this.drawPasses])
       p.dispose();
     releaseStorage(this.renderer, this.attributes);
   }

@@ -6,7 +6,7 @@ import { createRenderer } from '../src/engine/renderer.ts';
 import { gridEdges } from '../src/engine/simulation/state.ts';
 import { loadData } from '../src/game/data-files.ts';
 import { movementType } from '../src/game/data/movement.ts';
-import { economyScene } from '../src/game/simulation/economy-scene.ts';
+import { economyScene } from '../src/demo/economy-scene.ts';
 import { BUILDING_WORDS } from '../src/game/simulation/economy-runtime.ts';
 import { GpuCombat } from '../src/game/simulation/combat-gpu.ts';
 import { GpuAircraft } from '../src/game/simulation/aircraft-gpu.ts';

@@ -9,12 +9,24 @@ import { movementType } from '../data/movement.ts';
 import { initialAircraft,AIR_WORDS,ACONTACT } from './aircraft-cpu.ts';
 import { initialTransport,stepTransport } from './transport-cpu.ts';
 import * as U from './units-state.ts';
-import { initialHarvest,stepHarvest,HBASE,HWORDS,HGEN,HMODE,HLOAD,HREF,HTIMER } from './harvest-cpu.ts';
+import { initialHarvest,stepHarvest,HBASE,HWORDS,HGEN,HMODE,HLOAD,HREF,HGOAL,HTIMER } from './harvest-cpu.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { applyLifecycle } from './lifecycle-cpu.ts';
-import { CREATE,CHANGE_WORDS } from './lifecycle-state.ts';
+import { CREATE,CHANGE_WORDS,INITIAL_ORDER } from './lifecycle-state.ts';
 import { initialServices,stepServices,FACTORY_POINT } from './services-cpu.ts';
 import { BUILDING_WORDS } from './economy-runtime.ts';
+import * as C from './combat-state.ts';
+
+it('creates a crew with separate scatter, mission and retaliation targets',()=>{
+  const setup={grid:gridEdges(12,6,new Uint8Array(72).fill(1),true),land:new Uint8Array(72),seed:1995,
+    units:[{cell:15,type:movementType('E1'),health:0},{cell:20,type:movementType('MTNK'),owner:1}]};
+  const battle=new CpuCombat(setup),commands=new Int32Array(2*CHANGE_WORDS);
+  commands.set([CREATE|INITIAL_ORDER,movementType('E1'),0,15,50,64,0,-1,C.ATTACK,-1,0,0,0,16,1]);
+  applyLifecycle(battle,commands);
+  expect(battle.movement.goals[0]).toBe(16);
+  expect(battle.state[C.CMISSION]).toBe(C.ATTACK);
+  expect(battle.state[C.CTARGET]).toBe(1);
+});
 
 it.each(['PYLE','HAND'])('places six %s recruits in distinct original infantry spots',name=>{
   // BUILDING.CPP Find_Exit_Cell; INFANTRY.CPP Start_Driver; CELL.CPP Closest_Free_Spot.
@@ -77,14 +89,61 @@ it('moves a full harvester near a busy refinery and retries contact after fiftee
     {type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:52,attached:1},{type:movementType('HARV'),cell:150}]});
   const state=initialHarvest(3),buildings=new Int32Array(3*BUILDING_WORDS);buildings[3]=1;
   for(const [id,mode] of [[1,5],[2,2]]){state[HBASE+id*HWORDS+HGEN]=1;state[HBASE+id*HWORDS+HMODE]=mode;state[HBASE+id*HWORDS+HLOAD]=28;state[HBASE+id*HWORDS+HREF]=id===1?0:-1;}
-  const context={units:battle.units,goals:battle.movement.goals,paths:battle.movement.pathGoals,ore:new Int32Array(cells).fill(-1),state,occupancy:battle.movement.occupancy,buildings,playable:new Int32Array(cells).fill(1),passable,width};
+  const context={battle,ore:new Int32Array(cells).fill(-1),state,buildings,playable:new Int32Array(cells).fill(1),passable};
   stepHarvest(context);
-  const goal=context.goals[2];
+  const goal=battle.movement.goals[2];
   expect(goal).toBeGreaterThanOrEqual(0);
   expect(Math.abs(goal%width-36%width)).toBeLessThanOrEqual(3);
   expect(Math.abs(Math.trunc(goal/width)-Math.trunc(36/width))).toBeLessThanOrEqual(3);
   expect(state[HBASE+2*HWORDS+HMODE]).toBe(2);
   expect(state[HBASE+2*HWORDS+HTIMER]).toBe(15);
+});
+
+it('reissues an interrupted refinery approach and resumes harvesting after unloading',()=>{
+  const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,
+    units:[{type:movementType('PROC'),cell:36,owner:1},{type:movementType('HARV'),cell:70,owner:1,facing:192}]});
+  const state=initialHarvest(2),p=HBASE+HWORDS,buildings=new Int32Array(2*BUILDING_WORDS),ore=new Int32Array(cells).fill(-1);
+  buildings[3]=1;ore[124]=36;
+  state[p+HGEN]=1;state[p+HMODE]=3;state[p+HREF]=0;state[p+HGOAL]=68;state[p+HLOAD]=28;
+  const context={battle,ore,state,buildings,playable:new Int32Array(cells).fill(1),passable};
+  // BUILDING.CPP Receive_Message(RADIO_DOCKING) repeats MOVE_HERE when NavCom has been cleared.
+  stepHarvest(context);
+  expect(battle.movement.goals[1]).toBe(68);
+  expect(state[p+HREF]).toBe(0);
+  for(let tick=0;tick<1400;tick++){battle.movement.step();stepHarvest(context);}
+  expect(state[1]).toBeGreaterThanOrEqual(700);
+  expect(ore[124]).toBeLessThan(36);
+});
+
+it('clears a refinery apron while unloading so its harvester can leave and mine again',()=>{
+  const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,multiplayer:true,
+    units:[{type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:52,attached:1},{type:movementType('E1'),cell:68}]});
+  battle.humanOwner=-1;battle.state[2*C.CWORDS+C.CMISSION]=C.GUARD_AREA;battle.state[2*C.CWORDS+C.CGUARD_CELL]=69;
+  const state=initialHarvest(3),p=HBASE+HWORDS,buildings=new Int32Array(3*BUILDING_WORDS),ore=new Int32Array(cells).fill(-1);
+  buildings[3]=1;ore[124]=36;state[p+HGEN]=1;state[p+HMODE]=5;state[p+HREF]=0;state[p+HLOAD]=10;
+  const context={battle,ore,state,buildings,playable:new Int32Array(cells).fill(1),passable};
+  // BUILDING.CPP Mission_Harvest(MIDDLE) forces bib occupants to scatter before each bail.
+  stepHarvest(context);
+  expect(battle.movement.goals[2]).toBeGreaterThanOrEqual(0);
+  expect(battle.movement.goals[2]).not.toBe(68);
+  for(let tick=0;tick<1200;tick++){battle.step();stepHarvest(context);}
+  expect(state[0]).toBeGreaterThanOrEqual(250);
+  expect(ore[124]).toBeLessThan(36);
+});
+
+it.each([
+  ['E1',150,0,false],['E1',-1,27,false],['C1',150,0,true],['MTNK',150,0,true],
+] as const)('apron clearance respects %s navigation %i and action %i',(name,goal,action,redirect)=>{
+  const width=16,cells=width*12,passable=new Uint8Array(cells).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(width,12,passable,true),land:new Uint8Array(cells),passable,seed:1995,
+    units:[{type:movementType('PROC'),cell:36},{type:movementType('HARV'),cell:52,attached:1},{type:movementType(name),cell:68}]});
+  battle.movement.goals[2]=goal;battle.state[2*C.CWORDS+C.CACTION]=action;
+  const state=initialHarvest(3),p=HBASE+HWORDS,buildings=new Int32Array(3*BUILDING_WORDS);buildings[3]=1;
+  state[p+HGEN]=1;state[p+HMODE]=5;state[p+HREF]=0;state[p+HLOAD]=10;
+  stepHarvest({battle,ore:new Int32Array(cells).fill(-1),state,buildings,playable:new Int32Array(cells).fill(1),passable});
+  expect(battle.movement.goals[2]!==goal).toBe(redirect);
 });
 
 it('walks infantry into a Chinook one passenger at a time before attaching cargo',()=>{
@@ -171,15 +230,6 @@ describe('Original construction and credits', () => {
     expect(queues.items.get('vehicle')?.complete).toBe(true);
     expect(queues.items.get('building')?.complete).toBe(true);
     expect(queues.items.get('infantry')?.complete).toBe(true);
-  });
-  it.each([[1,216],[10,22],[100,3]] as const)('finishes demo production at x%i in %i ticks and charges the original price',(speed,ticks)=>{
-    const owner=house(),queues=new ProductionQueues(owner,[{type:'FACT',faction:1,active:true}]);
-    queues.begin('NUKE');
-    for(let tick=1;tick<ticks;tick++)queues.step(speed);
-    expect(queues.items.get('building')?.complete).toBe(false);
-    queues.step(speed);
-    expect(queues.items.get('building')?.complete).toBe(true);
-    expect(owner.money).toBe(9700);
   });
   it('repairs buildings using their effective strength and excludes bundled units', () => {
     // BDATA.CPP doubles constructor strength, then Repair_Cost halves the raw per-step cost.

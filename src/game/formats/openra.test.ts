@@ -4,14 +4,14 @@ import {
   framesDigest, parseReferences, PNG_DIRECTORY, REFERENCE_FILE, type Frame, type ReferenceEntry,
 } from '../../../tests/reference/digest.ts';
 import { readIndexedPng } from '../../../tests/reference/png.ts';
-import { PREVIEW_DATA_FILES } from '../data-files.ts';
+import { DESERT_DATA_FILES } from '../data-files.ts';
 import { decodeIconSet } from './icons.ts';
 import { MixFile, MixSet } from './mix.ts';
 import { decodeShapeLibrary } from './shapes.ts';
 import { decodeShp } from './shp.ts';
 
 const assets = new URL('../../../assets/dev/', import.meta.url);
-const mix = new MixSet(PREVIEW_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(name, assets)))));
+const mix = new MixSet(DESERT_DATA_FILES.map((name) => new MixFile(readFileSync(new URL(name, assets)))));
 
 // OpenRA's ShpD2Loader gives a shape without a color table Dune II's unit colors, 1 to 4 becoming
 // 0x7F down to 0x7C. The original's mouse code keeps the indices as they are (WWMOUSE.ASM), so the

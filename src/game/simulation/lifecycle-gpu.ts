@@ -14,8 +14,8 @@ import * as C from './combat-state.ts';
 import { FACTORY_POINT,FACTORY_EXITS } from './services-cpu.ts';
 import { AIR_WORDS,ACONTACT,AGENERATION } from './aircraft-cpu.ts';
 
-import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY } from './lifecycle-state.ts';
-export { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY } from './lifecycle-state.ts';
+import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
+export { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
 const AIR_EDGE=512;
 /** Recorded CPU construction commands are applied without copying live GPU state to the CPU. */
 export class GpuLifecycle {
@@ -148,6 +148,7 @@ export class GpuLifecycle {
             for(const field of [U.UDEST,U.UTRACK,U.UJUMP,U.UJUMP_TRACK,U.UROUTE,U.UMIDDLE,U.UOVERRUN_CELL])u.element(at.add(field)).assign(-1);
             for(const field of [C.CTARGET,C.CAPPROACH_GOAL,C.CLOCAL_DEST,C.CFIRE,C.CDEATH,C.CLAST_FIRE,C.CCELEBRATED,C.CKILLER,C.CCREW])s.element(c.add(field)).assign(-1);
             u.element(at.add(U.UGENERATION)).assign(generation);u.element(at.add(U.UTYPE)).assign(type);
+            u.element(at.add(U.UCLOAK_STAGE)).assign(select(type.equal(movementType('STNK')),int(1),int(0)));
             u.element(at.add(U.UX)).assign(cell.mod(width).mul(256).add(data.element(row.add(5))));
             u.element(at.add(U.UY)).assign(cell.div(width).mul(256).add(data.element(row.add(6))));
             u.element(at.add(U.UCELL)).assign(u.element(at.add(U.UY)).div(256).mul(width).add(u.element(at.add(U.UX)).div(256)));u.element(at.add(U.UORIGIN)).assign(cell);
@@ -168,6 +169,7 @@ export class GpuLifecycle {
             s.element(c.add(C.CSEEN)).assign(1);s.element(c.add(C.CMISSION)).assign(cmd.element(p.add(8)));s.element(c.add(C.CARM)).assign(select(mask.bitAnd(STATUS).notEqual(0),int(0),cmd.element(p.add(10))));
             s.element(c.add(C.CPOWER)).assign(256);s.element(c.add(C.CACTIVE)).assign(1);
             goals.element(id).assign(-1);paths.element(id).assign(-1);pending.element(id.mul(2)).assign(-1);
+            If(mask.bitAnd(INITIAL_ORDER).notEqual(int(0)),()=>{goals.element(id).assign(cmd.element(p.add(13)));s.element(c.add(C.CTARGET)).assign(cmd.element(p.add(14)));});
             If(domain.equal(1).and(cmd.element(p.add(12)).greaterThan(0)),()=>{
               const parent=cmd.element(p.add(12)).sub(1).mul(U.WORDS),origin=u.element(parent.add(U.UORIGIN));
               If(u.element(parent.add(U.UTYPE)).equal(movementType('HPAD')),()=>{
@@ -219,10 +221,11 @@ export class GpuLifecycle {
       });
     })().compute(1);
   }
-  create(id:number,unit:U.UnitPlacement,options:{ignore?:number;arm?:number;mission?:number;nearby?:boolean}={}){
+  create(id:number,unit:U.UnitPlacement,options:{ignore?:number;arm?:number;mission?:number;nearby?:boolean;destination?:number;target?:number}={}){
     this.changed.add(id);this.statuses[id]=-1;
     const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;
-    data.set([CREATE|(options.nearby?NEARBY:0),unit.type,unit.owner??0,unit.cell,unit.health??MOVEMENT[unit.type].strength,unit.facing??0,unit.altitude??0,-1,options.mission??C.GUARD,options.ignore??-1,options.arm??0,unit.attached??0,unit.enter??0],at);
+    const mask=CREATE|(options.nearby?NEARBY:0)|(options.destination!==undefined||options.target!==undefined?INITIAL_ORDER:0);
+    data.set([mask,unit.type,unit.owner??0,unit.cell,unit.health??MOVEMENT[unit.type].strength,unit.facing??0,unit.altitude??0,-1,options.mission??C.GUARD,options.ignore??-1,options.arm??0,unit.attached??0,unit.enter??0,options.destination??-1,options.target??-1],at);
   }
   setPlacementClear(clear:ArrayLike<number>){const values=this.constants.array as Int32Array;values.set(clear,this.placementOffset);values.set(clear,this.placementOffset+2*this.battle.setup.grid.edges.length);this.constants.needsUpdate=true;this.battle.movement.actorIndex.setBuildable(clear);}
   edit(id:number,mask:number,value=0){this.changed.add(id);const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;data[at]|=mask;data[at+(mask===HEALTH?4:7)]=value;}

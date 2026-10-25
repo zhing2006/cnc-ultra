@@ -1,13 +1,13 @@
 <script lang="ts">
-  import Loading from './Loading.svelte';
+  import Loading from '../Loading.svelte';
   import { onMount, tick } from 'svelte';
-  import { createRenderer, finishGpuSetup, type Renderer } from './engine/renderer.ts';
-  import { PalettePipeline } from './engine/indexed/pipeline.ts';
-  import { loadData } from './game/data-files.ts';
-  import type { MixSet } from './game/formats/mix.ts';
-  import { CLOAK_STAGES, type CloakStage } from './game/cloak.ts';
-  import { buildPreview, type PreviewSettings } from './game/preview.ts';
-  import { PaletteCycle } from './game/palette-cycle.ts';
+  import { createRenderer, finishGpuSetup, type Renderer } from '../engine/renderer.ts';
+  import { PalettePipeline } from '../engine/indexed/pipeline.ts';
+  import { loadData } from '../game/data-files.ts';
+  import type { MixSet } from '../game/formats/mix.ts';
+  import { CLOAK_STAGES, type CloakStage } from '../game/cloak.ts';
+  import { buildPreview, type PreviewSettings } from './preview.ts';
+  import { PaletteCycle } from '../game/palette-cycle.ts';
 
   let canvas: HTMLCanvasElement;
   let renderer = $state.raw<Renderer | null>(null);

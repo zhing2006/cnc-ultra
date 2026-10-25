@@ -122,11 +122,20 @@ export class GpuTiberium {
       });
     })().computeKernel([64]);
     (gather as unknown as {dispatchSize:IndirectStorageBufferAttribute}).dispatchSize=battle.projectileDispatch;
+    const external=storage(battle.externalExplosions,'int',battle.externalExplosions.count).toReadOnly();
+    const gatherExternal=Fn(()=>{
+      const id=int(instanceIndex),at=id.mul(C.SPECIAL_BLAST_WORDS).add(2);
+      If(id.lessThan(external.element(0)).and(external.element(1).equal(this.impactFrame)),()=>{
+        const cell=external.element(at.add(1)).div(256).mul(this.setup.width).add(external.element(at).div(256));
+        const levels=external.element(at.add(2)).div(10).add(external.element(at.add(6)).mul(6));
+        If(cell.greaterThanEqual(0).and(cell.lessThan(this.amount.count)).and(levels.greaterThan(0)),()=>{atomicAdd(damage.element(cell),uint(levels));});
+      });
+    })().compute(C.MAX_SPECIAL_BLASTS);
     const apply=Fn(()=>{
       const cell=int(instanceIndex),levels=int(total.element(cell));
       If(levels.greaterThan(0).and(amount.element(cell).greaterThanEqual(0)),()=>{amount.element(cell).assign(select(amount.element(cell).greaterThan(levels),amount.element(cell).sub(levels),int(-1)));});
     })().compute(this.amount.count);
-    this.impact=[clear,gather,apply];
+    this.impact=[clear,gather,gatherExternal,apply];
   }
   damage(frame:number){if(this.impact.length){this.impactFrame.value=frame;this.renderer.compute(this.impact);}}
   prepareForPlay(){return this.renderer.compileComputeAsync([this.kernel,...this.impact]);}

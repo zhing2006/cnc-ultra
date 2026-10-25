@@ -1,9 +1,9 @@
-import type { MixSet } from '../formats/mix.ts';
-import { readScenario, ORIGINAL_MAP_SIZE } from '../formats/scenario.ts';
-import { buildScene } from '../scene.ts';
-import { CLOAK_STAGES, type CloakStage } from '../cloak.ts';
-import { INFANTRY_SPOTS, movementMap } from './map.ts';
-import type { SimulationSetup } from '../../engine/simulation/state.ts';
+import type { MixSet } from '../game/formats/mix.ts';
+import { readScenario, ORIGINAL_MAP_SIZE } from '../game/formats/scenario.ts';
+import { buildScene } from '../game/scene.ts';
+import { CLOAK_STAGES, type CloakStage } from '../game/cloak.ts';
+import { INFANTRY_SPOTS, movementMap } from '../game/simulation/map.ts';
+import type { SimulationSetup } from '../engine/simulation/state.ts';
 
 export function simulationScene(mix: MixSet, count = 320) {
   const scenario = readScenario(new TextDecoder('latin1').decode(mix.require('SCG08EB.INI')), mix.require('SCG08EB.BIN'));

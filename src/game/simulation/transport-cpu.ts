@@ -8,7 +8,7 @@ import type { CpuCombat } from './combat-cpu.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 
-export const TBASE=5,TWORDS=16,TMODE=0,TTIMER=1,TLAST=2,TGEN=3,TORDER=4,TRESERVED=5,TCONTACT=6,TLOCKED=7;
+export const TBASE=6,TWORDS=16,TMODE=0,TTIMER=1,TLAST=2,TGEN=3,TORDER=4,TRESERVED=5,TCONTACT=6,TLOCKED=7;
 export const APC_LOAD_FACING=[128,160,224,224,32,32,32,96];
 export const LOAD_DIRECTIONS=[4,4,5,3,6,2,7,1];
 export const UNLOAD_DIRECTIONS=[4,5,3,7,1,0,6,2];
@@ -179,7 +179,7 @@ export function stepTransport(battle:CpuCombat,air:Int32Array,t:Int32Array,pendi
             const pp=passenger*U.WORDS;u[pp+U.UATTACHED]=0;u[pp+U.UCELL]=destination;u[pp]=destination%width*256+128;u[pp+1]=Math.trunc(destination/width)*256+128;
             let goal=destination;const start=randomWord(battle.setup.seed,battle.frame+1,passenger,1)%8;
             for(let step=0;step<8;step++){const cell=adjacent(destination,(start+step)&7);if(clear(cell,passenger))goal=cell;}
-            m.goals[passenger]=goal;m.pathGoals[passenger]=-1;c[passenger*C.CWORDS+C.CMISSION]=C.MOVE;if(u[at+U.UOWNER]===0)t[2]++;
+            m.goals[passenger]=goal;m.pathGoals[passenger]=-1;c[passenger*C.CWORDS+C.CMISSION]=C.MOVE;t[u[at+U.UOWNER]===0?2:5]++;
           }
         }
         t[p+TMODE]=1;t[p+TTIMER]=0;u[at+U.UENTER]=0;

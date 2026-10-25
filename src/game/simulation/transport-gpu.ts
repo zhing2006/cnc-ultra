@@ -275,7 +275,7 @@ export class GpuTransport {
         If(destination.greaterThanEqual(0),()=>{
           unit(passenger,U.UATTACHED).assign(0);unit(passenger,U.UCELL).assign(destination);unit(passenger,U.UX).assign(destination.mod(width).mul(256).add(128));unit(passenger,U.UY).assign(destination.div(width).mul(256).add(128));
           const goal=destination.toVar(),start=int(randomNode(uint(battle.setup.seed),uint(t.element(4).add(int(0))),uint(passenger.add(0)),uint(1)).mod(uint(8)));
-          Loop(8,({i})=>{const cell=adjacent(destination,start.add(i).bitAnd(7));If(clear(cell,passenger),()=>{goal.assign(cell);});});goals.element(passenger).assign(goal);paths.element(passenger).assign(-1);combat(passenger,C.CMISSION).assign(C.MOVE);If(unit(id,U.UOWNER).equal(0),()=>{stateAt(id,TDELIVER).assign(1);});
+          Loop(8,({i})=>{const cell=adjacent(destination,start.add(i).bitAnd(7));If(clear(cell,passenger),()=>{goal.assign(cell);});});goals.element(passenger).assign(goal);paths.element(passenger).assign(-1);combat(passenger,C.CMISSION).assign(C.MOVE);stateAt(id,TDELIVER).assign(1);
         });
       });stateAt(id,TMODE).assign(1);stateAt(id,TTIMER).assign(0);unit(id,U.UENTER).assign(0);
     });})().compute(count);
@@ -295,7 +295,7 @@ export class GpuTransport {
     const totals=storage(this.state,'int',this.state.count).toAtomic();
     const settle=Fn(()=>{
       const id=int(instanceIndex),at=id.mul(TWORDS).add(TBASE),refund=atomicLoad(totals.element(at.add(TREFUND))),delivered=atomicLoad(totals.element(at.add(TDELIVER)));
-      If(refund.greaterThan(0),()=>{atomicAdd(totals.element(unit(id,U.UOWNER)),refund);});If(delivered.greaterThan(0),()=>{atomicAdd(totals.element(2),delivered);});
+      If(refund.greaterThan(0),()=>{atomicAdd(totals.element(unit(id,U.UOWNER)),refund);});If(delivered.greaterThan(0),()=>{atomicAdd(totals.element(select(unit(id,U.UOWNER).equal(0),int(2),int(5))),delivered);});
       for(let field=TOLDENTER;field<TWORDS;field++)atomicStore(totals.element(at.add(field)),int(0));
     })().compute(count);
     if(!aircraft)for(const kernel of [retreat,prepareDelivery,drop,fly,refund])kernel.dispose();

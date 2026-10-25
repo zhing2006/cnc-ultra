@@ -9,7 +9,7 @@ export async function compareSimulation() {
   const { gridEdges } = await import('../src/engine/simulation/state.ts');
   const { GpuOrder } = await import('../src/engine/simulation/order.ts');
   const { bubbleGround, insertGround, groundLayout, updateGroundKeys, groundSprites, GpuGround } = await import('../src/game/simulation/ground.ts');
-  const { simulationScene } = await import('../src/game/simulation/scene.ts');
+  const { simulationScene } = await import('../src/demo/simulation-scene.ts');
   const { readScenario } = await import('../src/game/formats/scenario.ts');
   const { buildScene } = await import('../src/game/scene.ts');
   const { loadData } = await import('../src/game/data-files.ts');

@@ -12,6 +12,9 @@ export class UnitVoices {
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly playing = new Set<AudioBufferSourceNode>();
   private sequence = 0;
+  private muted = false;
+  private playbackEpoch = 0;
+  get epoch() { return this.playbackEpoch; }
   constructor(mix: MixSet) {
     const names = new Set([...VEHICLE.flat(), ...INFANTRY.flat()].flatMap(name => ['V00', 'V01', 'V02', 'V03'].map(ext => `${name}.${ext}`)));
     for (const name of COMMANDO.flat())
@@ -32,7 +35,14 @@ export class UnitVoices {
     if (this.context.state === 'suspended')
       void this.context.resume();
   }
-  play(name: string, infantry: boolean, id: number, responseKind: number, frame: number) {
+  setMuted(muted: boolean) {
+    if (muted === this.muted) return;
+    this.muted = muted;
+    this.playbackEpoch++;
+    if (muted) { for (const source of this.playing) source.stop(); this.playing.clear(); }
+  }
+  play(name: string, infantry: boolean, id: number, responseKind: number, frame: number, epoch = this.playbackEpoch) {
+    if (this.muted || epoch !== this.playbackEpoch) return;
     const choices = (name === 'RMBO' ? COMMANDO : infantry ? INFANTRY : VEHICLE)[responseKind - 1];
     const response = choices[randomWord(0x1995, frame, id, this.sequence++) % choices.length];
     // Ported from AUDIO.CPP, Sound_Effect: object index parity selects its persistent voice.

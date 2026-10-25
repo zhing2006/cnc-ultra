@@ -1,12 +1,12 @@
-import type { MixSet } from '../formats/mix.ts';
-import { readScenario } from '../formats/scenario.ts';
-import { buildScene } from '../scene.ts';
-import { movementType } from '../data/movement.ts';
-import { combatTypes, bullets, animations, weapons, ANIMATION_IDS } from '../data/combat.ts';
-import { movementMap } from './map.ts';
-import type { UnitPlacement } from './units-state.ts';
-import type { CombatSetup } from './combat-state.ts';
-import { deathAnimation } from './combat-effects.ts';
+import type { MixSet } from '../game/formats/mix.ts';
+import { readScenario } from '../game/formats/scenario.ts';
+import { buildScene } from '../game/scene.ts';
+import { movementType } from '../game/data/movement.ts';
+import { combatTypes, bullets, animations, weapons, ANIMATION_IDS } from '../game/data/combat.ts';
+import { movementMap } from '../game/simulation/map.ts';
+import type { UnitPlacement } from '../game/simulation/units-state.ts';
+import type { CombatSetup } from '../game/simulation/combat-state.ts';
+import { deathAnimation } from '../game/simulation/combat-effects.ts';
 export function combatScene(mix: MixSet) {
   const scenario = readScenario(new TextDecoder('latin1').decode(mix.require('SCG08EB.INI')), mix.require('SCG08EB.BIN'));
   scenario.units = [];

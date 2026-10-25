@@ -9,6 +9,9 @@ import { distance, desiredFacing256, dirFacing, movePoint } from '../coord.ts';
 import { randomWord } from '../../engine/simulation/fixed.ts';
 import { CpuUnits, rotateFacing } from './units-cpu.ts';
 import * as U from './units-state.ts';
+import { prepareSpecialInfantry, finishSpecialInfantry } from './special-cpu.ts';
+import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
+import { advanceCloak, cloakContacts, uncloakUnit } from './cloak-cpu.ts';
 import * as C from './combat-state.ts';
 import { CpuSight } from './sight.ts';
 /** Ported from TURRET.CPP, Fire_Coord. Offsets are leptons, before projectile physics. */
@@ -56,13 +59,16 @@ export function firePoint(name: string, x: number, y: number, direction: number,
   return movePoint(x, y, direction, forward);
 }
 export class CpuCombat {
+  humanOwner=0;
   readonly movement: CpuUnits;
   readonly state: Int32Array;
   readonly projectiles: Int32Array;
   readonly sight: CpuSight;
+  private readonly explosions: C.ExplosionCommand[] = [];
+  queueExplosions(commands: readonly C.ExplosionCommand[]) { this.explosions.push(...commands); }
   constructor(readonly setup: C.CombatSetup) {
     this.movement = new CpuUnits(setup);
-    this.sight = new CpuSight(setup.grid.width, setup.grid.height, setup.units.length);
+    this.sight = new CpuSight(setup.grid.width, setup.grid.height, setup.units.length, 0, setup.bounds);
     this.sight.step(this.movement.units);
     this.state = C.initialCombat(setup);
     this.projectiles = C.initialProjectiles(setup.units.length);
@@ -104,7 +110,8 @@ export class CpuCombat {
     }
   }
   private canTarget(id:number,target:number,weapon:number){
-    if(weapon<0)return false;
+    if(target>=0&&this.units[target*U.WORDS+U.UCLOAK]===2)return false;
+    if(weapon<0)return target>=0&&MOVEMENT[this.units[id*U.WORDS+U.UTYPE]].name==='E6'&&CAPTURABLE_BUILDINGS.has(MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name);
     const air=target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===1&&this.units[target*U.WORDS+U.UALTITUDE]>0;
     if(combatTypes[this.units[id*U.WORDS+U.UTYPE]].name==='SAM'&&!air)return false;
     return !air||!!bullets[weapons[weapon].bullet].antiAir;
@@ -112,14 +119,20 @@ export class CpuCombat {
   private inRange(id: number, target: number, which = 0) {
     const type = combatTypes[this.units[id * U.WORDS + U.UTYPE]];
     const weapon = which ? type.secondary : type.primary;
+    if(weapon<0)return false;
     const b=target>=0?BUILDINGS.get(MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name):undefined;
     return this.canTarget(id,target,weapon) && distance(...this.muzzle(id, which), ...this.point(target)) <= weapons[weapon].range+(b?(b.width+b.height)*64:0);
   }
   /** TECHNO.CPP, Greatest_Threat/Evaluate_Cell: preserve ring traversal and early exits. */
   private findTarget(id: number) {
     const u = this.units, at = id * U.WORDS, type = combatTypes[u[at + U.UTYPE]];
-    if (type.primary < 0)
-      return -1;
+    const hunter=this.state[id*C.CWORDS+C.CMISSION]===C.HUNT;
+    if(type.primary<0&&!(type.name==='E6'&&hunter)||type.name==='RMBO'&&!hunter&&u[at+U.UOWNER]===this.humanOwner)return -1;
+    const eligible=(other:number)=>{
+      const p=other*U.WORDS,t=combatTypes[u[p+U.UTYPE]];
+      return !(u[at+U.UOWNER]===this.humanOwner&&u[p+U.UDOMAIN]===2&&t.primary<0)&&
+        (type.name!=='RMBO'||u[p+U.UKIND]!==0||u[p+U.UDOMAIN]===2);
+    };
     // FOOT.CPP Mission_Hunt; TECHNO.CPP Greatest_Threat/Evaluate_Object (non-ADVANCED).
     // CPU reference may scan all units. GPU uses a faction reduction and the score's
     // distance upper bound; stable IDs settle equal scores in both versions.
@@ -128,7 +141,7 @@ export class CpuCombat {
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS, target = combatTypes[u[p + U.UTYPE]];
         if ((u[p + U.UHEALTH] <= 0 || u[p + U.UATTACHED] !== 0) || u[p + U.UOWNER] === u[at + U.UOWNER] || !target.targetable ||
-          !this.state[other * C.CWORDS + C.CSEEN] || !this.canTarget(id,other,type.primary)&&!this.canTarget(id,other,type.secondary))
+          !eligible(other)||!this.setup.multiplayer&&!this.state[other * C.CWORDS + C.CSEEN] || !this.canTarget(id,other,type.primary)&&!this.canTarget(id,other,type.secondary))
           continue;
         const raw = target.risk + target.reward;
         const value = Math.max(raw ? 2 : 0, Math.floor((raw + this.state[other * C.CWORDS + C.CKILLS]) /
@@ -141,9 +154,26 @@ export class CpuCombat {
       return best;
     }
     const width = this.setup.grid.width, height = this.setup.grid.height;
-    const [fx, fy] = this.muzzle(id), cx = Math.floor(fx / 256), cy = Math.floor(fy / 256);
-    const range = Math.floor(Math.max(weapons[type.primary].range, type.secondary < 0 ? 0 : weapons[type.secondary].range) / 256) + 1;
-    let best = -1;
+    const area=this.state[id*C.CWORDS+C.CMISSION]===C.GUARD_AREA;
+    const center=area?this.movement.point(this.state[id*C.CWORDS+C.CGUARD_CELL]-1):[u[at],u[at+1]];
+    const [mx,my]=this.muzzle(id),cx=Math.floor((mx-u[at]+center[0])/256),cy=Math.floor((my-u[at+1]+center[1])/256);
+    const maximum=Math.max(weapons[type.primary].range,type.secondary<0?0:weapons[type.secondary].range),areaRange=Math.min(2560,maximum*2);
+    const range=area?Math.floor(areaRange/256):Math.floor(maximum/256)+1;
+    let best = -1, bestValue = -1;
+    const valueOf=(other:number)=>{
+      const t=combatTypes[u[other*U.WORDS+U.UTYPE]],raw=t.risk+t.reward;
+      const d=distance(u[at],u[at+1],...this.point(other));
+      const divisor=area?Math.trunc(d/Math.trunc(areaRange/256)):d;
+      return Math.max(raw?2:0,Math.trunc((raw+this.state[other*C.CWORDS+C.CKILLS])/Math.max(1,divisor)));
+    };
+    const inReach=(other:number)=>area?(this.canTarget(id,other,type.primary)||this.canTarget(id,other,type.secondary))&&distance(center[0],center[1],...this.point(other))<=areaRange:
+      this.inRange(id,other)||this.inRange(id,other,1);
+    // TECHNO.CPP Greatest_Threat scans aircraft separately; flying aircraft never occupy ground cells.
+    if([type.primary,type.secondary].some(w=>w>=0&&bullets[weapons[w].bullet].antiAir))for(let other=0;other<this.setup.units.length;other++){
+      const p=other*U.WORDS;
+      if(u[p+U.UDOMAIN]!==1||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||u[p+U.UOWNER]===u[at+U.UOWNER]||!eligible(other)||!combatTypes[u[p+U.UTYPE]].targetable||!inReach(other))continue;
+      const value=valueOf(other);if(value>bestValue){best=other;bestValue=value;}
+    }
     const visit = (x: number, y: number) => {
       if (x < 0 || y < 0 || x >= width || y >= height)
         return;
@@ -152,16 +182,17 @@ export class CpuCombat {
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS;
         if ((u[p + U.UHEALTH] > 0 && u[p + U.UATTACHED] === 0) && u[p + U.UOWNER] !== u[at + U.UOWNER] &&
-          combatTypes[u[p + U.UTYPE]].targetable &&
-          (u[at + U.UOWNER] !== 0 || this.state[other * C.CWORDS + C.CSEEN]) &&
+          !WALLS[MOVEMENT[u[p+U.UTYPE]].name]&&(u[p+U.UDOMAIN]!==1||u[p+U.UALTITUDE]===0)&&
           Math.floor(u[p] / 256) === x && Math.floor(u[p + 1] / 256) === y) {
           candidate = other;
           break;
         }
       }
       // BUILDING.CPP Greatest_Threat: human defenses omit THREAT_BUILDINGS.
-      if (candidate >= 0 && !(u[at+U.UDOMAIN]===2 && u[at+U.UOWNER]===0 && u[candidate*U.WORDS+U.UDOMAIN]===2)
-        && (this.inRange(id, candidate) || this.inRange(id, candidate, 1)))
+      if (candidate >= 0 && eligible(candidate)&&combatTypes[u[candidate*U.WORDS+U.UTYPE]].targetable&&
+        (this.setup.multiplayer||u[at+U.UOWNER]!==0||this.state[candidate*C.CWORDS+C.CSEEN])&&
+        !(u[at+U.UDOMAIN]===2 && u[at+U.UOWNER]===this.humanOwner && u[candidate*U.WORDS+U.UDOMAIN]===2)
+        && inReach(candidate)&&valueOf(candidate)>bestValue)
         best = candidate;
     };
     for (let r = 1; r < range; r++) {
@@ -182,7 +213,7 @@ export class CpuCombat {
     const u = this.units, at = id * U.WORDS, type = combatTypes[u[at + U.UTYPE]];
     // DRIVE.CPP, Approach_Target: computer crushers overrun nearby infantry;
     // flame tanks retain their weapon approach.
-    if (this.movement.goals[id] < 0 && this.units[at + U.UOWNER] !== 0 && type.crusher && type.primary !== 6 &&
+    if (this.movement.goals[id] < 0 && this.units[at + U.UOWNER] !== this.humanOwner && type.crusher && type.primary !== 6 &&
       target >= 0 && this.units[target * U.WORDS + U.UKIND] && distance(this.units[at], this.units[at + 1], ...this.point(target)) < 0x180) {
       const [x, y] = this.point(target);
       this.movement.goals[id] = Math.floor(y / 256) * this.setup.grid.width + Math.floor(x / 256);
@@ -293,6 +324,53 @@ export class CpuCombat {
     s[c + C.CLOCAL_WAIT] = first < 0 ? PATH_DELAY : 0;
     return true;
   }
+  /** Remaster UNIT.CPP / INFANTRY.CPP Enter_Idle_Mode under USE_RA_AI, at the default maximum IQ. */
+  private idleMission(id:number){
+    const at=id*U.WORDS;
+    return this.setup.multiplayer&&this.units[at+U.UOWNER]!==this.humanOwner&&this.units[at+U.UDOMAIN]===0&&combatTypes[this.units[at+U.UTYPE]].primary>=0?C.GUARD_AREA:C.GUARD;
+  }
+  private resetObstructionRoute(id:number){
+    const u=this.units,s=this.state,at=id*U.WORDS,c=id*C.CWORDS;
+    this.movement.pathGoals[id]=-1;
+    s[c+C.CLOCAL_ROUTE]=s[c+C.CLOCAL_WAIT]=s[c+C.CROUTE_LENGTH]=0;
+    s[c+C.CLOCAL_DEST]=s[c+C.CAPPROACH_GOAL]=-1;s[c+C.CSCAN]=0;
+    u[at+U.UWAIT]=0;u[at+U.URETRIES]=10;u[at+U.UROUTE]=-1;
+  }
+  private targetGone(target:number){
+    if(target<0)return target===-1;
+    const u=this.units,at=target*U.WORDS;
+    return u[at+U.UHEALTH]<=0||u[at+U.UATTACHED]!==0||u[at+U.UCLOAK]===2||
+      Math.trunc(u[at+U.UCLOAK_EVENT]/8)===this.frame+1&&(u[at+U.UCLOAK_EVENT]&1)!==0;
+  }
+  /** DRIVE.CPP Start_Of_Move / INFANTRY.CPP AI; FOOT.CPP Override_Mission and Restore_Mission. */
+  private obstruction(id:number){
+    const u=this.units,s=this.state,at=id*U.WORDS,c=id*C.CWORDS,other=u[at+U.UOBSTRUCTION]-1;
+    const type=combatTypes[u[at+U.UTYPE]];
+    if(other>=0&&type.primary>=0&&u[other*U.WORDS+U.UOWNER]!==u[at+U.UOWNER]){
+      const wall=WALLS[MOVEMENT[u[other*U.WORDS+U.UTYPE]].name];
+      const warhead=warheads[bullets[weapons[type.primary].bullet].warhead];
+      if(!wall||u[at+U.UOWNER]!==this.humanOwner&&(warhead.wall||wall.wood&&warhead.wood)){
+        if(u[other*U.WORDS+U.UHEALTH]<=0){
+          if(s[c+C.CMISSION]===C.MOVE&&this.movement.goals[id]<0)this.movement.goals[id]=u[at+U.UOBSTRUCTION_GOAL];
+        }else if(!this.targetGone(other)&&other!==s[c+C.CTARGET]){
+          s[c+C.CSUSPENDED_MISSION]=s[c+C.CMISSION]+1;
+          s[c+C.CSUSPENDED_TARGET]=s[c+C.CTARGET];
+          s[c+C.CSUSPENDED_GOAL]=s[c+C.CLOCAL_ROUTE]&&s[c+C.CLOCAL_DEST]>=0?s[c+C.CLOCAL_DEST]:u[at+U.UOBSTRUCTION_GOAL];
+          s[c+C.CSUSPENDED_ABILITY]=u[at+U.UABILITY_MODE];u[at+U.UABILITY_MODE]=0;
+          s[c+C.CMISSION]=C.ATTACK;s[c+C.CTARGET]=other;this.movement.goals[id]=-1;
+          this.resetObstructionRoute(id);
+        }
+      }
+    }
+    const suspended=s[c+C.CSUSPENDED_TARGET];
+    if(s[c+C.CSUSPENDED_MISSION]&&suspended>=0&&this.targetGone(suspended)){s[c+C.CSUSPENDED_MISSION]=0;s[c+C.CSUSPENDED_TARGET]=-1;}
+    const target=s[c+C.CTARGET];
+    if(s[c+C.CSUSPENDED_MISSION]&&(this.targetGone(target)||target>=0&&u[target*U.WORDS+U.UOWNER]===u[at+U.UOWNER])){
+      s[c+C.CMISSION]=s[c+C.CSUSPENDED_MISSION]-1;s[c+C.CTARGET]=s[c+C.CSUSPENDED_TARGET];
+      this.movement.goals[id]=s[c+C.CSUSPENDED_GOAL];u[at+U.UABILITY_MODE]=s[c+C.CSUSPENDED_ABILITY];
+      s[c+C.CSUSPENDED_MISSION]=0;this.resetObstructionRoute(id);
+    }
+  }
   /** Ported from TECHNO.CPP/TURRET.CPP/TARCOM.CPP AI, and FOOT.CPP Mission_Guard. */
   private prepare() {
     const u = this.units, s = this.state;
@@ -308,6 +386,7 @@ export class CpuCombat {
       const at = id * U.WORDS, c = id * C.CWORDS, type = combatTypes[u[at + U.UTYPE]], moving = MOVEMENT[u[at + U.UTYPE]];
       if ((u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0))
         continue;
+      this.obstruction(id);
       if (s[c + C.CARM])
         s[c + C.CARM]--;
       if (s[c + C.CLOCAL_WAIT])
@@ -333,7 +412,7 @@ export class CpuCombat {
         u[at + U.USPEED] = prone ? 127 : 255;
       // INFANTRY.CPP AI calls Scatter(true): Coord(1), not forced=true.
       // Scatter excludes human units under SPECIAL.H's default IsScatter=false.
-      if (type.fraidy && u[at + U.UOWNER] !== 0 && s[c + C.CFEAR] > 10 && !s[c + C.CACTION] &&
+      if (type.fraidy && u[at + U.UOWNER] !== this.humanOwner && s[c + C.CFEAR] > 10 && !s[c + C.CACTION] &&
         u[at + U.UDEST] < 0 && this.movement.goals[id] < 0) {
         const dx=u[at]-1, dy=u[at+1];
         // FACING8.ASM Desired_Facing8 from (1,0); on-map coordinates are positive.
@@ -375,8 +454,7 @@ export class CpuCombat {
       s[c + C.CTURRET] = rotateFacing(s[c + C.CTURRET], s[c + C.CTURN], moving.rotation + 1);
       s[c + C.CROTATING] = s[c + C.CTURRET] !== s[c + C.CTURN] ? 1 : 0;
       let target = s[c + C.CTARGET];
-      if (target >= 0 && (u[target * U.WORDS + U.UHEALTH] <= 0 || u[target * U.WORDS + U.UATTACHED] !== 0))
-        target = -1;
+      if (this.targetGone(target)) target = -1;
       // FOOT.CPP Mission_Attack / Enter_Idle_Mode; do not inherit pursuit when
       // the explicit target ceases to exist.
       if (target === -1 && s[c + C.CMISSION] === C.ATTACK) {
@@ -386,20 +464,33 @@ export class CpuCombat {
           this.movement.goals[id]=s[c+C.CLOCAL_DEST];
           this.movement.pathGoals[id]=-1;
         }
-        s[c + C.CMISSION] = this.movement.goals[id]>=0 ? C.MOVE : C.GUARD;
+        s[c + C.CMISSION] = this.movement.goals[id]>=0 ? C.MOVE : this.idleMission(id);
       }
       if (s[c + C.CMISSION] === C.MOVE && this.movement.goals[id] < 0)
-        s[c + C.CMISSION] = C.GUARD;
+        s[c + C.CMISSION] = this.idleMission(id);
       if (s[c + C.CSCAN])
         s[c + C.CSCAN]--;
+      // FOOT.CPP Mission_Guard_Area keeps an archive position and scans from there.
+      if(s[c+C.CMISSION]===C.GUARD_AREA&&s[c+C.CSCAN]===0){
+        if(!s[c+C.CGUARD_CELL])s[c+C.CGUARD_CELL]=u[at+U.UCELL]+1;
+        const home=s[c+C.CGUARD_CELL]-1,d=distance(u[at],u[at+1],...this.movement.point(home));
+        const leash=Math.max(weapons[type.primary]?.range??0,weapons[type.secondary]?.range??0)+256;
+        if(this.movement.goals[id]<0&&(d>leash||target===-1&&d>512)){
+          target=-1;this.movement.goals[id]=home;this.movement.pathGoals[id]=-1;
+        }
+      }
       // TECHNO.CPP Target_Something_Nearby(THREAT_RANGE).
       if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] === C.GUARD && target !== -1 &&
         !this.inRange(id, target) && !this.inRange(id, target, 1))
         target = -1;
       if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] !== C.MOVE) {
-        if (target === -1)
-          target = this.findTarget(id);
-        s[c + C.CSCAN] = s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
+        const searching=target===-1;
+        if (searching) target = this.findTarget(id);
+        s[c + C.CSCAN] = s[c+C.CMISSION]===C.GUARD_AREA&&searching&&target!==-1?1:s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
+      }
+      if(type.name==='E6'&&target>=0&&s[c+C.CMISSION]===C.HUNT){
+        u[at+U.UABILITY_TARGET]=target+1;u[at+U.UABILITY_MODE]=1;u[at+U.UABILITY_ENTRY]=u[at+U.UABILITY_ORIGIN]=0;
+        s[c+C.CMISSION]=C.MOVE;target=-1;
       }
       s[c + C.CTARGET] = target;
       if (target !== -1) {
@@ -474,7 +565,7 @@ export class CpuCombat {
     // TARCOM.CPP, AI tries the secondary after any primary Can_Fire failure.
     const canFire = (which: number) => {
       const weapon = which ? type.secondary : type.primary;
-      if (weapon < 0 || s[c + C.CARM] || !this.inRange(id, target, which))
+      if (weapon < 0 || s[c + C.CARM] || u[at+U.UCLOAK]!==0 || !this.inRange(id, target, which))
         return false;
       const bullet = bullets[weapons[weapon].bullet];
       if(domain===2)return !!s[c+C.CACTIVE]&&(!type.turret||(dir===u[at+U.UDESIRED]&&Math.abs(((desired-dir+128)&255)-128)<=8))
@@ -577,7 +668,8 @@ export class CpuCombat {
       p[b + C.BTRAIL_TICK] = -1;
       if (!p[b + C.BACTIVE])
         continue;
-      const type = bullets[p[b + C.BTYPE]], target = p[b + C.BTARGET];
+      const type = bullets[p[b + C.BTYPE]];
+      let target=p[b+C.BTARGET];
       // BULLET.CPP AI emits smoke at the old position on alternate updates.
       if (type.smoke && (this.frame - p[b + C.BBORN]) % 2 === 1) {
         p[b + C.BTRAIL_X] = p[b];
@@ -694,11 +786,32 @@ export class CpuCombat {
           totals[id] += d;
         }
       }
-    for (let id = 0; id < totals.length; id++)
-      if (totals[id]) {
-        const b = causes[id];
-        this.injure(id, totals[id], bullets[p[b + C.BTYPE]].warhead, p[b + C.BSOURCE], deaths);
+    for (const [index, blast] of this.explosions.entries()) {
+      if (blast.frame !== this.frame) throw new Error('Explosion must resolve on its recorded tick');
+      for (const id of this.victims(blast.x, blast.y, blast.source)) {
+        const d = this.damage(id, blast.damage, blast.warhead, blast.x, blast.y, blast.source);
+        if (d && causes[id] < 0) causes[id] = p.length + index;
+        totals[id] += d;
       }
+      const wallId=this.buildingAt(Math.trunc(blast.y/256)*this.setup.grid.width+Math.trunc(blast.x/256));
+      if(wallId>=0){const wall=WALLS[MOVEMENT[u[wallId*U.WORDS+U.UTYPE]].name],wh=warheads[blast.warhead];
+        if(wall&&(wh.wall||wall.wood&&wh.wood)&&(blast.damage>=wall.points||randomWord(this.setup.seed,this.frame,p.length/C.BWORDS+index,195)%(wall.points+1)<blast.damage)){
+          totals[wallId]++;if(causes[wallId]<0)causes[wallId]=p.length+index;
+        }
+      }
+    }
+    for (let id = 0; id < totals.length; id++){
+      const at=id*U.WORDS;
+      if(u[at+U.UBOMB_TICK]===this.frame&&u[at+U.UHEALTH]>0){
+        u[at+U.UBOMB_TICK]=0;const source=u[at+U.UBOMB_SOURCE]-1;
+        this.injure(id,this.damage(id,5000,3,u[at],u[at+1],source),3,source,deaths);
+      }
+      if (totals[id]&&u[at+U.UHEALTH]>0) {
+        const b = causes[id], blast = b >= p.length ? this.explosions[b-p.length] : undefined;
+        this.injure(id, totals[id], blast?.warhead ?? bullets[p[b + C.BTYPE]].warhead, blast?.source ?? p[b + C.BSOURCE], deaths);
+      }
+    }
+    this.explosions.length = 0;
     // UNIT.CPP/INFANTRY.CPP, Take_Damage: secondary explosions finish in the same tick.
     for (let i = 0; i < deaths.length; i++) {
       const id = deaths[i], at = id * U.WORDS, c = id * C.CWORDS, type = combatTypes[u[at + U.UTYPE]];
@@ -725,7 +838,8 @@ export class CpuCombat {
   private injure(id: number, amount: number, warhead: number, source: number, deaths: number[]) {
     const u = this.units, s = this.state, at = id * U.WORDS, c = id * C.CWORDS;
     const wall=WALLS[MOVEMENT[u[at+U.UTYPE]].name];if(wall){s[c+C.CWALL]+=amount;if(s[c+C.CWALL]<wall.levels)return;amount=u[at+U.UHEALTH];}
-    if(u[at+U.UDOMAIN]===2)s[c+C.CWARHEAD]=warhead;
+    if(u[at+U.UDOMAIN]===2){s[c+C.CWARHEAD]=warhead;if(amount>0){s[c+C.CHIT_FRAME]=this.frame;s[c+C.CHIT_SOURCE]=source+1;}}
+    if(amount>0&&u[at+U.UCLOAK]===2){u[at+U.UCLOAK]=1;u[at+U.UCLOAK_STAGE]=19;}
     u[at + U.UHEALTH] = Math.max(0, u[at + U.UHEALTH] - amount);
     if (u[at + U.UHEALTH] === 0) {
       s[c + C.CDEATH] = this.frame;
@@ -750,7 +864,7 @@ export class CpuCombat {
       if(u[at+U.UDOMAIN]===2){
         if(source>=0&&MOVEMENT[u[at+U.UTYPE]].name!=='SAM'&&u[source*U.WORDS+U.UOWNER]!==u[at+U.UOWNER]
           &&combatTypes[u[at+U.UTYPE]].primary>=0&&(s[c+C.CTARGET]===-1||!this.inRange(id,s[c+C.CTARGET]))){
-          if(u[at+U.UOWNER]!==0&&u[source*U.WORDS+U.UDOMAIN]!==1){s[c+C.CTARGET]=source;s[c+C.CMISSION]=C.ATTACK;}
+          if(u[at+U.UOWNER]!==this.humanOwner&&u[source*U.WORDS+U.UDOMAIN]!==1){s[c+C.CTARGET]=source;s[c+C.CMISSION]=C.ATTACK;}
           else if(u[at+U.UFACE]===u[at+U.UDESIRED])u[at+U.UDESIRED]=randomWord(this.setup.seed,this.frame,id,196)%256;
         }
         return;
@@ -758,10 +872,10 @@ export class CpuCombat {
       // FOOT.CPP, Take_Damage: human guards retaliate only in range; computer guards may pursue.
       if (source >= 0 && u[source * U.WORDS + U.UOWNER] !== u[at + U.UOWNER] &&
         combatTypes[u[at + U.UTYPE]].primary >= 0 && (s[c + C.CMISSION] === C.GUARD || s[c + C.CMISSION] === C.ATTACK) &&
-        (s[c + C.CTARGET] === -1 || u[at + U.UOWNER] !== 0 && !this.inRange(id, s[c + C.CTARGET]))) {
-        if (u[at + U.UOWNER] !== 0 || this.inRange(id, source)) {
+        (s[c + C.CTARGET] === -1 || u[at + U.UOWNER] !== this.humanOwner && !this.inRange(id, s[c + C.CTARGET]))) {
+        if (u[at + U.UOWNER] !== this.humanOwner || this.inRange(id, source)) {
           s[c + C.CTARGET] = source;
-          if (u[at + U.UOWNER] !== 0)
+          if (u[at + U.UOWNER] !== this.humanOwner)
             s[c + C.CMISSION] = C.HUNT;
         }
       }
@@ -812,7 +926,7 @@ export class CpuCombat {
     u[start + U.UCELL] = cell;
     u[start + U.USLOT] = slot;
     u[start + U.UHEALTH] = 5 + randomWord(this.setup.seed, this.frame, dead, 61) % (Math.floor(MOVEMENT[u[start + U.UTYPE]].strength / 2) - 4);
-    this.state[c + C.CMISSION] = u[start + U.UOWNER] === 0 ? C.GUARD : C.HUNT;
+    this.state[c + C.CMISSION] = u[start + U.UOWNER] === this.humanOwner ? C.GUARD : C.HUNT;
     this.movement.occupancy[cell * 5 + slot] = id + 1;
   }
   private scatterSurvivor(id: number) {
@@ -853,33 +967,51 @@ export class CpuCombat {
         this.movement.goals[id] = this.movement.pathGoals[id] = -1;
         u[at + U.UDEST] = u[at + U.UMIDDLE] = u[at + U.UTRACK] = u[at + U.UJUMP] = -1;
         u[at + U.UDESIRED] = u[at + U.UFACE];
+        uncloakUnit(u,vehicle,this.frame);
       }
     }
   }
-  step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
-    this.updateBuildingMuzzles();
-    this.prepare();
-    this.updateBuildingMuzzles();
-    this.movement.step();
+  /** Post-movement phase, shared by normal ticks and recorded cell-crossing checks. */
+  resolveStep() {
     this.afterMove();
+    finishSpecialInfantry(this);cloakContacts(this,(id,target)=>this.inRange(id,target));
     for (let id = 0; id < this.setup.units.length; id++)
       this.fire(id);
     this.fly();
     this.resolve();
     this.recordKills();
     this.sight.step(this.units);
+  }
+  step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
+    prepareSpecialInfantry(this);advanceCloak(this);
+    this.updateBuildingMuzzles();
+    this.prepare();
+    this.updateBuildingMuzzles();
+    this.movement.step();
+    this.resolveStep();
     for (const command of commands) {
       if (command.frame !== this.frame)
         throw new Error('Commands must be submitted on their recorded tick');
       for (const id of command.ids) {
         const at = id * U.WORDS, c = id * C.CWORDS;
-        if (this.units[at + U.UHEALTH] <= 0 || this.units[at + U.UOWNER] !== 0)
+        if (this.units[at + U.UHEALTH] <= 0)
           continue;
-        const attack = command.kind === 'attack' || command.kind === 'attack-ground';
-        const type=combatTypes[this.units[at+U.UTYPE]];
+        const type=combatTypes[this.units[at+U.UTYPE]],target=command.target??-1;
+        let special=command.kind==='capture'?1:command.kind==='sabotage'?2:0;
+        if(command.kind==='attack'&&target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===2){
+          const name=MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name;
+          if(type.name==='E6'&&CAPTURABLE_BUILDINGS.has(name)&&this.units[target*U.WORDS+U.UOWNER]!==this.units[at+U.UOWNER])special=1;
+          if(type.name==='RMBO')special=2;
+        }
+        if(special===1&&(type.name!=='E6'||target<0||this.units[target*U.WORDS+U.UOWNER]===this.units[at+U.UOWNER]))continue;
+        const attack=!special&&(command.kind==='attack'||command.kind==='attack-ground');
         if(attack && (type.name==='SAM' || this.units[at+U.UDOMAIN]===1 && type.primary<0))continue;
         this.state[c + C.CTARGET] = attack ? command.kind === 'attack' ? command.target! : -command.target! - 2 : -1;
-        this.state[c + C.CMISSION] = attack ? C.ATTACK : command.kind === 'move' ? C.MOVE : C.GUARD;
+        this.units[at+U.UABILITY_MODE]=special;this.units[at+U.UABILITY_TARGET]=special?command.target!+1:0;
+        if(special===2)this.state[c+C.CSABOTAGE]=this.frame;
+        this.units[at+U.UABILITY_ENTRY]=0;this.units[at+U.UABILITY_ORIGIN]=0;
+        this.state[c + C.CMISSION] = attack ? C.ATTACK : command.kind === 'move'||special ? C.MOVE : C.GUARD;
+        this.state[c+C.CSUSPENDED_MISSION]=0;this.units[at+U.UOBSTRUCTION]=0;
         this.state[c + C.CSCAN] = 0;
         this.state[c + C.CAPPROACH_GOAL] = -1;
         this.state[c + C.CLOCAL_ROUTE] = 0;

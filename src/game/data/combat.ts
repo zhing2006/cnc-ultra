@@ -18,9 +18,9 @@ export const combatTypes = MOVEMENT.map(movement => {
       risk:weapon?Math.trunc(weapon.damage*(weapon.range>>4)/weapon.rof):0,fraidy:false};
   }
   const [name, primary, secondary, armor, turret, twoShooter, lockTurret, crew, transport, crusher, ammo, explosion, launch, proneLaunch, actions, reward, immune] = COMBAT_TYPES.find(t => t[0] === movement.name)!;
-  // UDATA.CPP/IDATA.CPP constructors: Risk, IsFraidyCat and IsLegalTarget.
-  const civilian = movement.infantry && !/^E[1-6]$|^RMBO$/.test(name);
-  const risk = civilian ? 0 : ['TRIC','TREX','RAPT','STEG'].includes(name) ? 50 : 80;
+  // TECHNO.CPP overwrites the constructors' risk hints using the primary weapon.
+  const civilian = movement.infantry && !/^E[1-6]$|^RMBO$/.test(name),weapon=weapons[primary];
+  const risk = weapon?Math.trunc(weapon.damage*(weapon.range>>4)/weapon.rof):0;
   return { name, primary, secondary, armor, turret, twoShooter, lockTurret, crew, transport,
     crusher, ammo, explosion, launch, proneLaunch, actions: actions as readonly number[], reward, immune,
     risk, fraidy: !!civilian || name === 'E5', targetable: !['LST','BOAT','DELPHI'].includes(name) };

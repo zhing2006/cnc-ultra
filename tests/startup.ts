@@ -58,7 +58,9 @@ export async function checkSelectionReady(session: Session) {
       assert.equal(await page.locator('canvas').getAttribute('data-status'), 'starting');
       await page.screenshot({path:'test-results/loading.png'});
     } finally { release(); }
-    await page.locator('canvas[data-status="running"]').waitFor({state:'attached'});
+    // Cold shader compilation shares the GPU with the parallel suite. Keep its deadline
+    // separate from input readiness assertions, as in the building-scene check.
+    await page.locator('canvas[data-status="running"]').waitFor({state:'attached',timeout:60000});
     await page.unroute('**/data/conquer.mix');
     await page.evaluate(async () => {
       const { GpuSelection } = await import('../src/game/simulation/selection.ts');

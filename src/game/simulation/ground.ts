@@ -41,7 +41,8 @@ export function groundLayout(scene: GameScene, initial: Int32Array, stride = UNI
     return [`infantry:${u.cell}:${u.type}:${initial[id*stride]}:${initial[id*stride+1]+0x30}`,id];
   }));
   const aircraft=new Map((scene.scenario.aircraft??[]).map((u,i)=>[`aircraft:${u.cell}:${u.type}`,scene.scenario.units.length+scene.scenario.infantry.length+i]));
-  const slots = scene.objects.reduce((max, object) => Math.max(max, object.count), 1);
+  const cloakSlots=stride!==UNIT_WORDS&&(scene.objects.some(o=>o.key.startsWith('live:'))||scene.scenario.units.some(u=>u.type==='STNK'))?3:1;
+  const slots = scene.objects.reduce((max, object) => Math.max(max, object.count), cloakSlots);
   const first = scene.objects[0]?.first ?? scene.sprites.length;
   const keys = new Int32Array([...scene.objects.flatMap(o => [o.sortX, o.sortY]), ...(flash ? [0,-0x3fffffff] : [])]);
   const bindings = new Int32Array([...scene.objects.flatMap(o => {
@@ -122,6 +123,7 @@ export function groundSprites(scene: GameScene, layout: ReturnType<typeof ground
 export class GpuGround {
   readonly order: GpuOrder;
   readonly keys: StorageBufferAttribute;
+  readonly bindings:StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[];
   private readonly keyPass;
   private readonly spritePass;
@@ -133,6 +135,7 @@ export class GpuGround {
     const count = layout.keys.length / 2;
     this.keys = new StorageBufferAttribute(layout.keys.slice(), 1);
     const bindings = new StorageBufferAttribute(layout.bindings, 1), source = new StorageBufferAttribute(layout.packed, 4);
+    this.bindings=bindings;
     this.attributes = [this.keys, bindings, source];
     this.order = new GpuOrder(renderer, this.keys, Uint32Array.from({length: count}, (_,i) =>
       layout.flashId < 0 ? i : i === 0 ? layout.flashId : i - 1));

@@ -1,12 +1,12 @@
-import { AIRCRAFT } from './data/aircraft.ts';
-import { BUILDINGS } from './data/buildings.ts';
-import { INFANTRY } from './data/infantry.ts';
-import { TERRAIN } from './data/terrain.ts';
-import { UNITS } from './data/units.ts';
-import { CLOAK_STAGES, type CloakStage } from './cloak.ts';
-import type { MixSet } from './formats/mix.ts';
-import { ORIGINAL_MAP_SIZE, TEMPLATE_NONE, type PlacedUnit, type Scenario } from './formats/scenario.ts';
-import { buildScene } from './scene.ts';
+import { AIRCRAFT } from '../game/data/aircraft.ts';
+import { BUILDINGS } from '../game/data/buildings.ts';
+import { INFANTRY } from '../game/data/infantry.ts';
+import { TERRAIN } from '../game/data/terrain.ts';
+import { UNITS } from '../game/data/units.ts';
+import { CLOAK_STAGES, type CloakStage } from '../game/cloak.ts';
+import type { MixSet } from '../game/formats/mix.ts';
+import { ORIGINAL_MAP_SIZE, TEMPLATE_NONE, type PlacedUnit, type Scenario } from '../game/formats/scenario.ts';
+import { buildScene } from '../game/scene.ts';
 
 export interface PreviewSettings {
   group: 'units' | 'buildings' | 'terrain' | 'cloak';

@@ -3,23 +3,16 @@
   import { createRenderer, DeviceLostError, type Renderer } from './engine/renderer.ts';
   import { MissingDataError } from './game/data-files.ts';
   import { startGame, type Game } from './game/game.ts';
-  import Preview from './Preview.svelte';
+  import Preview from './demo/Preview.svelte';
+  import DebugPanel from './demo/DebugPanel.svelte';
+  import { demoConfig, startDemo, type DemoGame, type DemoConfig } from './demo/game.ts';
   import Loading from './Loading.svelte';
 
   const preview = new URLSearchParams(location.search).get('preview') === 'assets';
-  const simulation = new URLSearchParams(location.search).get('demo') === 'simulation';
-  const combat = new URLSearchParams(location.search).get('demo') === 'combat';
-  const units = new URLSearchParams(location.search).get('demo') === 'units';
-  const buildings=new URLSearchParams(location.search).get('demo')==='buildings';
-  const economy=new URLSearchParams(location.search).get('demo')==='economy';
-  const faction=new URLSearchParams(location.search).get('faction')==='nod'?2:1;
-  let waves=$state(false);
-  let density=$state(false);
-  const productionSpeeds=[1,10,100] as const;
-  let productionSpeed=$state<1|10|100>(1);
-  let controlsOpen=$state(!buildings&&!economy);
-  let vision = $state(false);
-  let flow = $state(false), paused = $state(false), frame = $state(0), digest = $state('');
+  let demo = $state.raw(demoConfig(location.search));
+  let outcome = $state<number | undefined>(undefined);
+  let demoGame = $state.raw<DemoGame | null>(null);
+  let frame = $state(0), digest = $state(''), actualSpeed = $state(0);
 
   type Status = 'starting' | 'running' | 'unsupported' | 'nodata' | 'failed' | 'lost';
 
@@ -33,6 +26,7 @@
   function stopGame() {
     game?.dispose();
     game = null;
+    demoGame = null;
   }
 
   function lost(message: string) {
@@ -46,7 +40,7 @@
     status = 'starting';
     try {
       await showProgress('Checking graphics support');
-      const created = await createRenderer(canvas, { onDeviceLost: lost });
+      const created = renderer ?? await createRenderer(canvas, { onDeviceLost: lost });
       if (unmounted) {
         created?.dispose();
         return;
@@ -56,19 +50,20 @@
         status = 'unsupported';
         return;
       }
-      const started = await startGame(created, canvas, { simulation, units, combat, buildings, economy, faction,
+      const callbacks = {
         onProgress: showProgress,
-        onStats: (value, checksum) => { frame = value; digest = checksum; } });
+        onStats: (value: number, checksum: string) => { frame = value; digest = checksum; },
+        onSpeed: (actual: number) => { actualSpeed = actual; },
+        onOutcome: (winner: number) => { outcome = winner; },
+      };
+      const startedDemo = demo ? await startDemo(created, canvas, demo, callbacks) : null;
+      const started = startedDemo ?? await startGame(created, canvas, callbacks);
       if (unmounted || renderer !== created) {
         started.dispose();
         return;
       }
       game = started;
-      game.setFlow(flow);
-      game.setVision(vision);
-      game.setPaused(paused);
-      game.setWaves(waves);
-      game.setProductionSpeed(productionSpeed);
+      demoGame = startedDemo;
       status = 'running';
     } catch (error) {
       if (error instanceof DeviceLostError) {
@@ -81,6 +76,11 @@
         status = 'failed';
       }
     }
+  }
+
+  async function restartDemo(config: DemoConfig) {
+    stopGame(); demo = config; frame = 0; digest = ''; actualSpeed = 0; outcome = undefined;
+    await start();
   }
 
   async function showProgress(message: string) {
@@ -111,37 +111,8 @@
   {#if status === 'starting'}<Loading message={loadingMessage} />{/if}
 {/if}
 
-{#if (simulation || units || combat || buildings || economy) && !preview && status === 'running'}
-  <aside class="simulation-controls" aria-label="Simulation demo">
-    <details bind:open={controlsOpen}>
-    <summary>{buildings?'Buildings · MCV sandbox':economy?'Economy · MCV opening':combat ? 'Ground combat · GDI vs Nod' : units ? 'Units and controls · Vehicles, infantry and aircraft' : 'GPU simulation · 320 tanks'}</summary>
-    {#if buildings || economy}<div>Select the MCV and press D to deploy. Use the sidebar to build. Right-click a cameo to hold, then again to cancel.</div>{/if}
-    {#if units || combat || buildings || economy}
-      <div>Click to capture the pointer. Left-click or drag to select, then left-click ground to move. {#if combat}Left-click enemies to attack; Ctrl+click forces an attack. Nod positions are to the east.{/if} Right-click clears the selection. Esc releases the pointer.</div>
-    {:else}
-      <div>Click the map to capture the pointer, then click open ground to move all tanks. Esc releases the pointer.</div>
-    {/if}
-    <div class="controls">
-      <button type="button" aria-pressed={flow} onclick={() => { flow = !flow; game?.setFlow(flow); }}>Flow field</button>
-      {#if units || combat}<button type="button" aria-pressed={vision} onclick={() => { vision = !vision; game?.setVision(vision); }}>Sight</button>{/if}
-      <button type="button" aria-pressed={paused} onclick={() => { paused = !paused; game?.setPaused(paused); }}>{paused ? 'Resume' : 'Pause'}</button>
-      {#if buildings}<button type="button" aria-pressed={waves} onclick={()=>{waves=!waves;game?.setWaves(waves);}}>{waves?'Stop reinforcements':'Start reinforcements'}</button>{/if}
-      {#if buildings||economy}<button type="button" aria-pressed={density} onclick={()=>{density=!density;game?.setDensity(density);}}>Ore density</button>{/if}
-      <a href={buildings?'?demo=buildings':economy?`?demo=economy&faction=${faction===2?'nod':'gdi'}`:combat ? '?demo=combat' : units ? '?demo=units' : '?demo=simulation'}>Reset</a>
-      <a href="?">Original map</a>
-    </div>
-    {#if buildings||economy}
-      <div class="controls" aria-label="Production speed">
-        <span>Production speed</span>
-        {#each productionSpeeds as speed}
-          <button type="button" aria-pressed={productionSpeed===speed} onclick={()=>{productionSpeed=speed;game?.setProductionSpeed(speed);}}>×{speed}</button>
-        {/each}
-      </div>
-    {/if}
-    <div>Tick <span data-tick={frame}>{frame}</span> · 15 ticks/s · pauses in the background</div>
-    {#if digest}<code title="Asynchronous simulation checksum">{digest}</code>{/if}
-    </details>
-  </aside>
+{#if demo && demoGame && !preview && status === 'running'}
+  <DebugPanel config={demo} game={demoGame} {frame} {digest} {actualSpeed} {outcome} onRestart={restartDemo} />
 {/if}
 
 {#if status === 'unsupported'}
@@ -160,24 +131,6 @@
 {/if}
 
 <style>
-  .simulation-controls {
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    max-width: 420px;
-    padding: 12px 16px;
-    background: #101b25ed;
-    border: 1px solid #527184;
-    border-radius: 6px;
-    font-size: 12px;
-    line-height: 1.7;
-  }
-  .controls { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
-  summary { cursor: pointer; font-weight: 600; }
-  .controls button { cursor: pointer; padding: 4px 8px; }
-  .controls button[aria-pressed='true'] { background: #82ddd8; }
-  .controls a { color: #a8e2ff; }
-  code { color: #9cbdc9; font-size: 10px; }
   canvas {
     display: block;
     width: 100%;

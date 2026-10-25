@@ -16,6 +16,7 @@ import * as C from './combat-state.ts';
 export class CombatAudio {
   private readonly context = new AudioContext();
   private readonly buffers = new Map<number, AudioBuffer>();
+  private readonly soundIds = new Map<string, number>();
   private readonly playing = new Set<{
     sound: number;
     gain: number;
@@ -29,10 +30,13 @@ export class CombatAudio {
   private busy = false;
   private disposed = false;
   private lastFrame = -1;
+  private muted = false;
+  private playbackEpoch = 0;
   onShake?: () => void;
   constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, mix: MixSet) {
-    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS,'CRUMBLE','OBELPOWR'])].filter(Boolean);
+    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS,'CRUMBLE','OBELPOWR','NUKEMISL','TRANS1','BOMBIT1'])].filter(Boolean);
     names.forEach((name, i) => {
+      this.soundIds.set(name,i);
       const bytes = mix.get(`${name}.AUD`);
       if (!bytes)
         return;
@@ -97,6 +101,8 @@ export class CombatAudio {
     })().compute(shots);
     const deaths = Fn(() => {
       const id = int(instanceIndex), at = id.mul(U.WORDS), state = id.mul(C.CWORDS), type = u.element(at.add(U.UTYPE));
+      If(u.element(at.add(U.UCLOAK_EVENT)).div(8).equal(clock.element(0)).and(u.element(at.add(U.UCLOAK_EVENT)).bitAnd(2).notEqual(0)),()=>{choose(int(names.indexOf('TRANS1')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
+      If(clock.element(0).greaterThan(0).and(c.element(state.add(C.CSABOTAGE)).equal(clock.element(0))),()=>{choose(int(names.indexOf('BOMBIT1')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
       If(type.equal(movementType('OBLI')).and(c.element(state.add(C.CCHARGE)).equal(1)),()=>{choose(int(names.indexOf('OBELPOWR')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
       If(c.element(state.add(C.CCELEBRATED)).equal(clock.element(0))
         .and(type.equal(int(MOVEMENT.findIndex(t=>t.name==='RMBO')))), () => {
@@ -150,15 +156,24 @@ export class CombatAudio {
     if (this.context.state === 'suspended')
       void this.context.resume();
   }
+  setMuted(muted: boolean) {
+    if (this.muted === muted) return;
+    this.muted = muted;
+    this.playbackEpoch++;
+    if (muted) {
+      for (const p of this.playing) p.source.stop();
+      this.playing.clear();
+    }
+  }
   update(x: number, y: number, width: number, height: number) {
-    if (this.busy || this.disposed)
+    if (this.busy || this.disposed || this.muted)
       return;
     this.busy = true;
     this.view.value.set(x, y, width, height);
-    const view = { x, y, width, height };
+    const view = { x, y, width, height }, epoch = this.playbackEpoch;
     this.renderer.compute(this.passes);
     void this.renderer.getArrayBufferAsync(this.events, this.readback).then(() => {
-      if (this.disposed)
+      if (this.disposed || this.muted || epoch !== this.playbackEpoch)
         return;
       const events = new Int32Array(this.readback.buffer!);
       if (events[events.length - 1] <= this.lastFrame)
@@ -166,30 +181,7 @@ export class CombatAudio {
       for (let i = 0; i < events.length - 2; i += 3) {
         if (events[i] <= this.lastFrame)
           continue;
-        const sound = i / 3, buffer = this.buffers.get(sound);
-        if (!buffer)
-          continue;
-        const gain = soundGain(events[i + 1], events[i + 2], view);
-        const same = [...this.playing].filter(p => p.sound === sound);
-        const candidates = same.length >= 3 ? same : this.playing.size >= 16 ? [...this.playing] : [];
-        if (candidates.length) {
-          const quiet = candidates.reduce((a, b) => a.gain <= b.gain ? a : b);
-          if (quiet.gain > gain)
-            continue;
-          quiet.source.stop();
-          this.playing.delete(quiet);
-        }
-        const source = this.context.createBufferSource(), volume = this.context.createGain(), pan = this.context.createStereoPanner();
-        source.buffer = buffer;
-        volume.gain.value = gain * 0.65;
-        pan.pan.value = gain === 1 ? 0 : Math.max(-1, Math.min(1, (events[i + 1] - x - width / 2) / 4096));
-        source.connect(volume);
-        volume.connect(pan);
-        pan.connect(this.context.destination);
-        const playing = { sound, gain, source };
-        this.playing.add(playing);
-        source.onended = () => { this.playing.delete(playing); source.disconnect(); volume.disconnect(); pan.disconnect(); };
-        source.start();
+        this.play(i / 3,events[i+1],events[i+2],view);
       }
       if (events[events.length - 2])
         this.onShake?.();
@@ -200,6 +192,21 @@ export class CombatAudio {
       if (this.disposed)
         this.readback.dispose();
     });
+  }
+  playExternal(name:string,x:number,y:number,view:{x:number;y:number;width:number;height:number}) {
+    const id=this.soundIds.get(name);if(id!==undefined)this.play(id,x,y,view);
+  }
+  private play(sound:number,x:number,y:number,view:{x:number;y:number;width:number;height:number}) {
+    if(this.muted||this.disposed)return;
+    const buffer=this.buffers.get(sound);if(!buffer)return;
+    const gain=soundGain(x,y,view),same=[...this.playing].filter(p=>p.sound===sound);
+    const candidates=same.length>=3?same:this.playing.size>=16?[...this.playing]:[];
+    if(candidates.length){const quiet=candidates.reduce((a,b)=>a.gain<=b.gain?a:b);if(quiet.gain>gain)return;quiet.source.stop();this.playing.delete(quiet);}
+    const source=this.context.createBufferSource(),volume=this.context.createGain(),pan=this.context.createStereoPanner();
+    source.buffer=buffer;volume.gain.value=gain*0.65;pan.pan.value=gain===1?0:Math.max(-1,Math.min(1,(x-view.x-view.width/2)/4096));
+    source.connect(volume);volume.connect(pan);pan.connect(this.context.destination);
+    const playing={sound,gain,source};this.playing.add(playing);
+    source.onended=()=>{this.playing.delete(playing);source.disconnect();volume.disconnect();pan.disconnect();};source.start();
   }
   dispose() {
     this.disposed = true;

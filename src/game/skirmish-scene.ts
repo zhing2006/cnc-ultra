@@ -1,34 +1,38 @@
-import type { MixSet } from '../formats/mix.ts';
-import { readScenario } from '../formats/scenario.ts';
-import { buildScene } from '../scene.ts';
-import { initialCellImages } from '../map-visuals.ts';
-import { BUILDINGS } from '../data/buildings.ts';
-import { PRODUCTION_TYPES } from '../data/production.ts';
-import { MOVEMENT, movementType } from '../data/movement.ts';
-import { animations, bullets } from '../data/combat.ts';
-import { movementMap } from './map.ts';
-import { placementOffsets } from './building-rules.ts';
-import { initialUnits, WORDS, UX, UY, type UnitPlacement } from './units-state.ts';
-import { gridEdges } from '../../engine/simulation/state.ts';
-import type { CombatSetup } from './combat-state.ts';
-import type { TiberiumSetup } from './tiberium-cpu.ts';
+import { multiplayerStarts } from './multiplayer-starts.ts';
+import type { MixSet } from './formats/mix.ts';
+import { readScenario } from './formats/scenario.ts';
+import { buildScene } from './scene.ts';
+import { initialCellImages } from './map-visuals.ts';
+import { BUILDINGS } from './data/buildings.ts';
+import { PRODUCTION_TYPES } from './data/production.ts';
+import { MOVEMENT, movementType } from './data/movement.ts';
+import { animations, bullets } from './data/combat.ts';
+import { movementMap } from './simulation/map.ts';
+import { placementOffsets } from './simulation/building-rules.ts';
+import { initialUnits, WORDS, UX, UY, type UnitPlacement } from './simulation/units-state.ts';
+import { gridEdges } from '../engine/simulation/state.ts';
+import type { CombatSetup } from './simulation/combat-state.ts';
+import type { TiberiumSetup } from './simulation/tiberium-cpu.ts';
+import type { EconomySetup, InitialBuilding } from './simulation/economy-setup.ts';
 
-export interface InitialBuilding { id:number;type:string;cell:number;owner:number;faction:number }
-
-/** One MCV on SCM01EA; the building sandbox adds cash and an optional reinforcement switch. */
-export function economyScene(mix:MixSet,buildingDemo=true,capacity=512) {
+export interface SkirmishOptions { seed:number; players?:number; starts?:readonly number[]; credits:number; capacity?:number }
+/** Runtime-decoded original map with MCV openings. The caller chooses participants and seed. */
+export function skirmishScene(mix:MixSet,options:SkirmishOptions) {
+  const capacity=options.capacity??512;
   const scenario=readScenario(new TextDecoder('latin1').decode(mix.require('SCM01EA.INI')),mix.require('SCM01EA.BIN'));
   scenario.units=[];scenario.infantry=[];scenario.buildings=[];scenario.aircraft=[];
-  const home=scenario.waypoints.get(0)??scenario.waypoints.values().next().value!;
+  const map=movementMap(mix,scenario),{width,height}=map.grid,cells=width*height;
+  const starts=options.starts??multiplayerStarts(scenario.waypoints,options.players??2,width,options.seed);
+  const home=scenario.waypoints.get(starts[0])??scenario.waypoints.values().next().value!;
   scenario.waypoints.set(26,home);
-  const images=initialCellImages(scenario),map=movementMap(mix,scenario),{width,height}=map.grid,cells=width*height;
+  const images=initialCellImages(scenario);
   const clearScenario={...scenario,overlays:scenario.overlays.filter(overlay=>!/^TI\d+$/.test(overlay.type))};
   const basePassable=map.passable.slice(),baseLand=movementMap(mix,clearScenario).land;
   const playable=new Int32Array(cells),buildable=new Int32Array(cells);
   for(let y=scenario.y;y<scenario.y+scenario.height;y++)for(let x=scenario.x;x<scenario.x+scenario.width;x++){
     const cell=y*width+x;playable[cell]=1;buildable[cell]=Number(basePassable[cell]!==0&&(baseLand[cell]===0||baseLand[cell]===1||baseLand[cell]===5));
   }
-  const tiberium:TiberiumSetup={width,height,seed:0x1995,amount:new Int32Array(cells).fill(-1),
+  const tiberium:TiberiumSetup={width,height,seed:options.seed,amount:new Int32Array(cells).fill(-1),
     variants:new Int32Array(cells),clear:Int32Array.from(buildable,(value,cell)=>Number(!!value&&(baseLand[cell]===0||baseLand[cell]===5))),blossom:new Int32Array(cells),playable};
   for(const overlay of images.overlays)if(/^TI\d+$/.test(overlay.type)){tiberium.amount[overlay.cell]=overlay.frame;tiberium.variants[overlay.cell]=Number(overlay.type.slice(2))-1;}
   for(const tree of scenario.terrain)if(tree.type==='SPLIT2'||tree.type==='SPLIT3')tiberium.blossom[tree.cell+width]=1;
@@ -37,26 +41,27 @@ export function economyScene(mix:MixSet,buildingDemo=true,capacity=512) {
   const buildings:InitialBuilding[]=[],used=new Uint8Array(cells);
   let next=0;
   const add=(name:string,cell:number,owner=0)=>{const id=next++;seeds[id]={cell,type:movementType(name),owner,facing:0};return id;};
-  const candidates=Array.from(playable.keys()).filter(c=>buildable[c]&&tiberium.amount[c]<0).sort((a,b)=>{
-    const score=(c:number)=>(c%width-home%width)**2+(Math.trunc(c/width)-Math.trunc(home/width))**2;
-    return score(a)-score(b)||a-b;
-  });
-  const find=(name?:string)=>{
+  const find=(home:number,name?:string)=>{
+    const candidates=Array.from(playable.keys()).filter(c=>buildable[c]&&tiberium.amount[c]<0).sort((a,b)=>{
+      const score=(c:number)=>(c%width-home%width)**2+(Math.trunc(c/width)-Math.trunc(home/width))**2;
+      return score(a)-score(b)||a-b;
+    });
     const offsets=name?placementOffsets(name):[[0,0]];
     const cell=candidates.find(c=>offsets.every(([dx,dy])=>{
       const x=c%width+dx,y=Math.trunc(c/width)+dy,p=y*width+x;
       return x>=scenario.x&&x<scenario.x+scenario.width&&y>=scenario.y&&y<scenario.y+scenario.height&&buildable[p]&&tiberium.amount[p]<0&&!used[p];
     }));
-    if(cell===undefined)throw new Error(`No room for ${name??'unit'} in the building demonstration`);
+    if(cell===undefined)throw new Error(`No room for starting ${name??'unit'}`);
     for(const [dx,dy] of offsets){const p=cell+dy*width+dx;used[p]=1;if(name)for(const d of [-width-1,-width,1-width,-1,1,width-1,width,width+1])if(p+d>=0&&p+d<cells)used[p+d]=1;}
     return cell;
   };
-  const mcv=add('MCV',find('FACT')+width+1);
+  const mcvs=starts.map((waypoint,owner)=>add('MCV',find(scenario.waypoints.get(waypoint)??home,'FACT')+width+1,owner));
+  const mcv=mcvs[0];
   // Reserve an aircraft slot so its rendering and selection kernels exist before the first production.
   seeds[capacity-1]={cell:0,type:movementType('C17'),health:0,owner:1};
   const passable=basePassable.slice();
   for(const b of buildings)for(const [dx,dy] of BUILDINGS.get(b.type)!.occupy)passable[b.cell+dy*width+dx]=0;
-  const setup:CombatSetup={grid:gridEdges(width,height,passable,true),bounds:{x:scenario.x,y:scenario.y,width:scenario.width,height:scenario.height},land:map.land.slice(),passable,units:seeds,seed:0x1995,dynamicTypes:true};
+  const setup:CombatSetup={grid:gridEdges(width,height,passable,true),bounds:{x:scenario.x,y:scenario.y,width:scenario.width,height:scenario.height},land:map.land.slice(),passable,units:seeds,seed:options.seed,dynamicTypes:true,multiplayer:true};
   const extra=new Set<string>([...MOVEMENT.map(t=>t.name),...bullets.filter(b=>!b.invisible).map(b=>b.name),...animations.map(a=>a.name),
     ...PRODUCTION_TYPES.filter(t=>t.category==='building').map(t=>`${t.name}MAKE`),'WEAP2','RROTOR','LROTOR','BIB1','BIB2','BIB3','SQUISH','SELECT']);
   for(let i=1;i<=12;i++)extra.add(`TI${i}`);
@@ -79,7 +84,7 @@ export function economyScene(mix:MixSet,buildingDemo=true,capacity=512) {
   for(const item of ordered){item.object.first=scene.sprites.length;scene.sprites.push(...item.sprites);scene.objects.push(item.object);}
   scene.home=buildings.length?Math.max(scenario.y,Math.min(...buildings.map(b=>Math.trunc(b.cell/width)))-2)*width+
     Math.max(scenario.x,Math.min(...buildings.map(b=>b.cell%width))-2):seeds[mcv].cell-width-1;
-  return {scene,setup,passable,basePassable,baseLand,buildable,playable,tiberium,buildings,mcv,
-    oreStart:first,bibStart:first+cells,decalStart:first+cells*2,buildingDemo};
+  return {scene,setup,passable,basePassable,baseLand,buildable,playable,tiberium,buildings,mcv,mcvs,
+    houses:starts.length>1?[{faction:1,credits:options.credits},{faction:2,credits:options.credits}] as const:undefined,
+    oreStart:first,bibStart:first+cells,decalStart:first+cells*2,credits:options.credits} satisfies EconomySetup & {mcv:number;mcvs:number[]};
 }
-export type EconomyScene=ReturnType<typeof economyScene>;

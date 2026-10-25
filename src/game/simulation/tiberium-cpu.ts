@@ -93,12 +93,16 @@ export function harvestBail(amount: number, load: number) {
 }
 
 /** COMBAT.CPP Explosion_Damage and CELL.CPP Reduce_Tiberium. */
-export function damageTiberium(amount:Int32Array,projectiles:Int32Array,units:Int32Array,width:number,frame:number){
+export function damageTiberium(amount:Int32Array,projectiles:Int32Array,units:Int32Array,width:number,frame:number,explosions:readonly C.ExplosionCommand[]=[]){
   for(let at=0;at<projectiles.length;at+=C.BWORDS){
     if(projectiles[at+C.BEXPLODED]!==frame)continue;
     const target=projectiles[at+C.BTARGET];
     if(target>=0&&units[target*U.WORDS+U.UDOMAIN]===1&&units[target*U.WORDS+U.UALTITUDE]>=16)continue;
     const cell=Math.trunc(projectiles[at+C.BY]/256)*width+Math.trunc(projectiles[at+C.BX]/256),levels=Math.trunc(projectiles[at+C.BDAMAGE]/10);
+    if(cell>=0&&cell<amount.length&&amount[cell]>=0&&levels>0)amount[cell]=amount[cell]>levels?amount[cell]-levels:-1;
+  }
+  for(const blast of explosions)if(blast.frame===frame){
+    const cell=Math.trunc(blast.y/256)*width+Math.trunc(blast.x/256),levels=Math.trunc(blast.damage/10)+(blast.crater?6:0);
     if(cell>=0&&cell<amount.length&&amount[cell]>=0&&levels>0)amount[cell]=amount[cell]>levels?amount[cell]-levels:-1;
   }
 }

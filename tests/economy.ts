@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { withApp, withInput, pollCheck, type Session } from './browser.ts';
-import type { EconomyRuntime } from '../src/game/simulation/economy-runtime.ts';
+import type { DemoEconomyRuntime as EconomyRuntime } from '../src/demo/economy-runtime.ts';
 import { observeStartup,type StartupProbe } from './startup.ts';
 import { writeFileSync } from 'node:fs';
 
@@ -12,7 +12,6 @@ export async function checkEconomy(session:Session) {
     assert.equal(await measured('Occupied and reserved helipads',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareAircraftProduction())),true);
     assert.equal(await measured('Repeated factory exits',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareFactoryExits())),true);
     assert.equal(await measured('Repair radio ordering',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareServiceContacts())),true);
-    assert.equal(await measured('Busy refinery queue',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareRefineryQueue())),true);
     assert.equal(await measured('Simultaneous ore impacts',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareTiberiumBlasts())),true);
     assert.equal(await measured('Structural damage',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareStructuralDamage())),true);
     assert.equal(await measured('Creation and blocked exits',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareLifecycle())),true);
@@ -80,7 +79,7 @@ export async function checkEconomyControls(session:Session){
     // Startup includes driver compilation; keep its deadline separate from gameplay waits.
     await measured('Buildings demo startup',()=>page.locator('canvas[data-status="running"]').waitFor({state:'attached',timeout:60000}));
     await page.evaluate(async()=>{
-      const {EconomyRuntime}=await import('../src/game/simulation/economy-runtime.ts');
+      const {DemoEconomyRuntime:EconomyRuntime}=await import('../src/demo/economy-runtime.ts');
       const begin=EconomyRuntime.prototype.beginTick;
       EconomyRuntime.prototype.beginTick=function(){(window as unknown as {buildingTest:EconomyRuntime}).buildingTest=this;return begin.call(this);};
     });

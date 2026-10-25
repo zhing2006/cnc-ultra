@@ -32,13 +32,28 @@ export function airFireLocation(battle:CpuCombat,id:number,target:number,playabl
 /** Aircraft mission scheduling surrounds the shared flight physics and combat tick. */
 export class CpuAirOperations {
   constructor(readonly battle:CpuCombat,readonly aircraft:CpuAircraft,readonly playable:ArrayLike<number>){}
-  before(){
+  before(cash:readonly number[]=[0,0]){
     const {battle,aircraft}=this,u=battle.units,c=battle.state,a=aircraft.state,goals=battle.movement.goals;
     for(let id=0;id<goals.length;id++)if(u[id*U.WORDS+U.UTYPE]===movementType('HPAD'))u[id*U.WORDS+U.UDOOR]=0;
     for(let id=0;id<goals.length;id++){
       const at=id*U.WORDS,p=id*AIR_WORDS,s=id*C.CWORDS,type=combatTypes[u[at+U.UTYPE]];
       if(u[at+U.UDOMAIN]!==1||u[at+U.UHEALTH]<=0||type.name==='C17')continue;
       if(a[p+AGENERATION]!==u[at+U.UGENERATION]){a.set(initialAircraft({...battle.setup,units:[{type:u[at+U.UTYPE],cell:u[at+U.UCELL],facing:u[at+U.UFACE]}]}),p);a[p+AGENERATION]=u[at+U.UGENERATION];}
+      // AIRCRAFT.CPP Mission_Hunt / Mission_Guard: rotary-wing sorties and computer repair.
+      if(c[s+C.CMISSION]===C.HUNT&&c[s+C.CTARGET]>=0&&c[s+C.CAMMO])c[s+C.CMISSION]=C.ATTACK;
+      if(u[at+U.UOWNER]!==battle.humanOwner&&c[s+C.CMISSION]===C.GUARD&&u[at+U.UALTITUDE]!==24){
+        let repair=-1,best=0x7fffffff;const contact=a[p+ACONTACT];
+        if((cash[u[at+U.UOWNER]]??0)>=100&&u[at+U.UHEALTH]*2<=MOVEMENT[u[at+U.UTYPE]].strength&&(contact<0||u[contact*U.WORDS+U.UTYPE]!==movementType('FIX'))){
+          for(let other=0;other<goals.length;other++){
+            const b=other*U.WORDS;if(u[b+U.UTYPE]!==movementType('FIX')||u[b+U.UOWNER]!==u[at+U.UOWNER]||u[b+U.UHEALTH]<=0||!c[other*C.CWORDS+C.CACTIVE])continue;
+            let busy=false;for(let j=0;j<goals.length;j++)if(j!==id&&u[j*U.WORDS+U.UHEALTH]>0&&(a[j*AIR_WORDS+ACONTACT]===other||u[j*U.WORDS+U.UDOMAIN]===0&&u[j*U.WORDS+U.UENTER]===other+1))busy=true;
+            const d=distance(u[at],u[at+1],u[b],u[b+1]);if(!busy&&d<best){repair=other;best=d;}
+          }
+        }
+        if(repair>=0){u[at+U.UENTER]=repair+1;c[s+C.CTARGET]=-1;}
+        else if(c[s+C.CTARGET]>=0&&c[s+C.CAMMO])c[s+C.CMISSION]=C.ATTACK;
+        if(contact>=0&&u[contact*U.WORDS+U.UTYPE]===movementType('FIX')&&a[p+AMISSION]===3&&u[at+U.UHEALTH]>=MOVEMENT[u[at+U.UTYPE]].strength){a[p+ACONTACT]=-1;a[p+AMISSION]=2;goals[id]=a[p+AGOAL]=-1;}
+      }
       c[s+C.CACTIVE]=0;
       const enter=u[at+U.UENTER]-1;
       if(enter>=0&&u[enter*U.WORDS+U.UHEALTH]>0&&u[enter*U.WORDS+U.UOWNER]===u[at+U.UOWNER]&&c[enter*C.CWORDS+C.CACTIVE]&&['HPAD','FIX'].includes(MOVEMENT[u[enter*U.WORDS+U.UTYPE]].name)){
@@ -107,13 +122,14 @@ export class CpuAirOperations {
           if(--a[p+ASERVICE]<=0){c[s+C.CAMMO]++;a[p+ASERVICE]=45-Math.min(15,(15*c[contact*C.CWORDS+C.CPOWER]+128)>>8);}
         }
       }
-      if(!a[p+AMISSION]&&u[at+U.UOWNER]===0&&c[s+C.CMISSION]===C.GUARD)c[s+C.CTARGET]=-1;
+      if(!a[p+AMISSION]&&u[at+U.UOWNER]===battle.humanOwner&&c[s+C.CMISSION]===C.GUARD)c[s+C.CTARGET]=-1;
     }
   }
   after(){
-    const c=this.battle.state,a=this.aircraft.state;
+    const c=this.battle.state,a=this.aircraft.state,u=this.battle.units;
     for(let id=0;id<this.battle.setup.units.length;id++){
-      const p=id*AIR_WORDS,s=id*C.CWORDS;
+      const p=id*AIR_WORDS,s=id*C.CWORDS,at=id*U.WORDS,contact=a[p+ACONTACT];
+      if(contact>=0&&u[contact*U.WORDS+U.UCAPTURE_TICK]===this.battle.frame&&u[at+U.UALTITUDE]===0&&distance(u[at],u[at+1],...this.aircraft.point(id,u[at+U.UCELL]))<64)u[at+U.UOWNER]=u[contact*U.WORDS+U.UOWNER];
       if(a[p+AMISSION]!==1||!c[s+C.CACTIVE])continue;
       if(c[s+C.CLAST_FIRE]===this.battle.frame){
         if(a[p+ASTATUS]===4){a[p+ASTATUS]=5;a[p+ATIMER]=1;}

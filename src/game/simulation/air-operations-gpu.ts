@@ -1,6 +1,6 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { StorageBufferAttribute,type ComputeNode,type Node } from 'three/webgpu';
-import { Fn,If,Break,Continue,int,uint,storage,ivec2,instanceIndex,select,atomicMin,atomicAdd } from 'three/tsl';
+import { StorageBufferAttribute,Vector2,type ComputeNode,type Node } from 'three/webgpu';
+import { Fn,If,Break,Continue,int,uint,storage,ivec2,instanceIndex,select,atomicMin,atomicAdd,uniform } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { intMin,randomNode } from '../../engine/simulation/integer-nodes.ts';
 import { GpuTaskMask } from '../../engine/simulation/task-mask.ts';
@@ -25,6 +25,7 @@ export class GpuAirOperations {
   readonly afterPass:ComputeNode;
   /** Tables and planning scratch share one binding to stay within eight storage buffers. */
   private readonly constants:StorageBufferAttribute;
+  private readonly cash=uniform(new Vector2(0,0),'ivec2');
   constructor(readonly battle:GpuCombat,readonly aircraft:GpuAircraft,playable:ArrayLike<number>){
     const count=battle.setup.units.length,width=battle.setup.grid.width,height=battle.setup.grid.height;
     const index=battle.movement.actorIndex;this.requests=new GpuTaskMask(battle.renderer,count);
@@ -33,6 +34,7 @@ export class GpuAirOperations {
     const values=[...combatTypes.flatMap(t=>[t.primary<0?0:weapons[t.primary].range,t.ammo]),...Array.from({length:256},(_,d)=>movePoint(0,0,d,128)).flat(),...Array.from(playable)];
     const rings=Math.max(...MOVEMENT.map((type,id)=>type.domain===1&&combatTypes[id].primary>=0?Math.max(0,Math.ceil((weapons[combatTypes[id].primary].range-768)/256)):0));
     const ownerSlots=Math.max(2,...battle.setup.units.map(unit=>(unit.owner??0)+1));
+    const strengthBase=values.length;values.push(...MOVEMENT.map(t=>t.strength));
     const stride=3+rings*32,control=values.length,planBase=control+1+ownerSlots;
     const packed=new Int32Array(planBase+count*stride);packed.set(values);
     this.constants=new StorageBufferAttribute(packed,1);
@@ -111,6 +113,28 @@ export class GpuAirOperations {
       });
       return best;
     },{name:'airNearestAvailablePad',type:'int',inputs:[{name:'id',type:'int'}]});
+    const decide=Fn(()=>{
+      const id=int(instanceIndex),contact=air(id,ACONTACT);
+      If(unit(id,U.UDOMAIN).equal(1).and(unit(id,U.UHEALTH).greaterThan(0)).and(unit(id,U.UTYPE).notEqual(movementType('C17'))),()=>{
+        If(combat(id,C.CMISSION).equal(C.HUNT).and(combat(id,C.CTARGET).greaterThanEqual(0)).and(combat(id,C.CAMMO).notEqual(0)),()=>{combat(id,C.CMISSION).assign(C.ATTACK);});
+        If(unit(id,U.UOWNER).notEqual(battle.humanOwner).and(combat(id,C.CMISSION).equal(C.GUARD)).and(unit(id,U.UALTITUDE).notEqual(24)),()=>{
+          const repair=int(-1).toVar(),best=int(0x7fffffff).toVar(),atRepair=int(0).toVar();
+          If(contact.greaterThanEqual(0),()=>{atRepair.assign(int(unit(contact,U.UTYPE).equal(movementType('FIX'))));});
+          If(select(unit(id,U.UOWNER).equal(int(0)),this.cash.x,this.cash.y).greaterThanEqual(int(100)).and(unit(id,U.UHEALTH).mul(2).lessThanEqual(data.element(unit(id,U.UTYPE).add(strengthBase)))).and(atRepair.equal(0)),()=>{
+            const other=int(relations.element(movementType('FIX'))).toVar();
+            Loop(()=>{If(other.lessThan(0),()=>{Break();});
+              If(unit(other,U.UOWNER).equal(unit(id,U.UOWNER)).and(combat(other,C.CACTIVE).notEqual(0)),()=>{
+                const d=unitDistance(position(id),position(other));
+                If(busy(id,other).equal(0).and(d.lessThan(best).or(d.equal(best).and(other.lessThan(repair)))),()=>{repair.assign(other);best.assign(d);});
+              });other.assign(int(relations.element(other.add(index.typeNext))));
+            });
+          });
+          If(repair.greaterThanEqual(0),()=>{unit(id,U.UENTER).assign(repair.add(1));combat(id,C.CTARGET).assign(-1);})
+            .ElseIf(combat(id,C.CTARGET).greaterThanEqual(0).and(combat(id,C.CAMMO).notEqual(0)),()=>{combat(id,C.CMISSION).assign(C.ATTACK);});
+          If(atRepair.notEqual(0).and(air(id,AMISSION).equal(3)).and(unit(id,U.UHEALTH).greaterThanEqual(data.element(unit(id,U.UTYPE).add(strengthBase)))),()=>{air(id,ACONTACT).assign(-1);air(id,AMISSION).assign(2);goals.element(id).assign(-1);air(id,AGOAL).assign(-1);});
+        });
+      });
+    })().compute(count);
     const atomicData=storage(this.constants,'int',packed.length).toAtomic();
     const freePads=Fn(()=>{
       const id=int(instanceIndex);
@@ -224,7 +248,7 @@ export class GpuAirOperations {
             air(id,ASERVICE).subAssign(1);If(air(id,ASERVICE).lessThanEqual(0),()=>{combat(id,C.CAMMO).addAssign(1);air(id,ASERVICE).assign(int(45).sub(intMin(int(15),combat(contact,C.CPOWER).mul(15).add(128).shiftRight(8))));});
           });
         });
-        If(air(id,AMISSION).equal(0).and(unit(id,U.UOWNER).equal(0)).and(combat(id,C.CMISSION).equal(C.GUARD)),()=>{combat(id,C.CTARGET).assign(-1);});
+        If(air(id,AMISSION).equal(0).and(unit(id,U.UOWNER).equal(battle.humanOwner)).and(combat(id,C.CMISSION).equal(C.GUARD)),()=>{combat(id,C.CTARGET).assign(-1);});
     };
     const ordinary=Fn(()=>{
       const id=int(instanceIndex),type=unit(id,U.UTYPE),mission=air(id,AMISSION),target=combat(id,C.CTARGET);
@@ -254,9 +278,16 @@ export class GpuAirOperations {
       });
       const goal=goals.element(id);If(goal.greaterThanEqual(0),()=>{relations.element(goal.add(index.goalMin)).assign(uint(id));});
     });})().compute(1);
-    this.beforePass=[...index.kernels,initialize,contacts,ordinary,freePads,candidates,this.requests.clear,collect,coordinate];
+    this.beforePass=[...index.kernels,initialize,contacts,decide,ordinary,freePads,candidates,this.requests.clear,collect,coordinate];
     this.afterPass=Fn(()=>{
-      const id=int(instanceIndex);
+      const id=int(instanceIndex),contact=air(id,ACONTACT);
+      If(contact.greaterThanEqual(0),()=>{
+        If(unit(contact,U.UCAPTURE_TICK).equal(clock.element(0)).and(unit(id,U.UALTITUDE).equal(0)),()=>{
+          const origin=unit(contact,U.UORIGIN),dock=ivec2(origin.mod(width).mul(256).add(256),origin.div(width).mul(256).add(192)).toVar();
+          If(unit(contact,U.UTYPE).equal(movementType('FIX')),()=>{dock.assign(position(contact));});
+          If(unitDistance(position(id),dock).lessThan(64),()=>{unit(id,U.UOWNER).assign(unit(contact,U.UOWNER));});
+        });
+      });
       If(air(id,AMISSION).equal(1).and(combat(id,C.CACTIVE).notEqual(0)),()=>{
         If(combat(id,C.CLAST_FIRE).equal(clock.element(0)),()=>{
           If(air(id,ASTATUS).equal(4),()=>{air(id,ASTATUS).assign(5);air(id,ATIMER).assign(1);})
@@ -266,7 +297,7 @@ export class GpuAirOperations {
       });
     })().compute(count);
   }
-  before(){this.battle.renderer.compute(this.beforePass);}
+  before(cash:readonly number[]=[0,0]){this.cash.value.set(cash[0]??0,cash[1]??0);this.battle.renderer.compute(this.beforePass);}
   after(){this.battle.renderer.compute(this.afterPass);}
   dispose(){for(const pass of this.beforePass)if(!this.battle.movement.actorIndex.kernels.includes(pass)&&pass!==this.requests.clear)pass.dispose();this.requests.dispose();this.afterPass.dispose();releaseStorage(this.battle.renderer,[this.constants]);}
 }

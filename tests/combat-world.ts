@@ -63,6 +63,8 @@ export async function compareCombatWorld(renderer: WebGPURenderer, everyTick = f
   }
   const celebration=place({grid:gridEdges(8,8,new Uint8Array(64).fill(1),true),land:new Uint8Array(64),seed:setup.seed,
     units:[{cell:18,type:movementType('RMBO'),facing:64},{cell:20,type:movementType('C1'),owner:1,health:1}]},37,33);
+  // INFANTRY.CPP Mission_Guard: human commandos require an explicit attack order.
+  commands.push({frame:1,kind:'attack',target:celebration.first+1,ids:[celebration.first]});
   const cpu = new CpuCombat(setup), gpu = new GpuCombat(renderer, setup);
   try {
     for (let id = 0; id < 256; id++) {
