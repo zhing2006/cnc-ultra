@@ -12,6 +12,7 @@ import { unitDirection, unitDistance } from '../simulation/units-nodes.ts';
 import type { GpuCombat } from '../simulation/combat-gpu.ts';
 import * as U from '../simulation/units-state.ts';
 import * as C from '../simulation/combat-state.ts';
+import { alliedOwners } from '../simulation/alliances.ts';
 type I = Node<'int'>;
 type LocalArray = { element(index: I): I };
 const exchange = wgslFn('fn defenseExchange(p: ptr<storage, atomic<u32>, read_write>, value: u32) -> u32 { return atomicExchange(p, value); }');
@@ -133,7 +134,7 @@ export class GpuPlacementFlush {
           If(unit(target, U.UOWNER).notEqual(owner), () => { atomicAdd(indexed.element(target.add(n)), uint(type(id, 0))); });
           busy.assign(int(type(target, 2).greaterThanEqual(int(0))));
         });
-        If(busy.equal(int(0)).and(type(id, 0).greaterThan(int(0))).and(unit(id, U.UTYPE).notEqual(int(movementType('HARV')))), () => {
+        If(busy.equal(int(0)).and(type(id, 0).greaterThan(int(0))).and(unit(id, U.UTYPE).notEqual(int(movementType('HARV')))).and(state(id,C.CMISSION).notEqual(C.STICKY)).and(state(id,C.CMISSION).notEqual(C.SLEEP)), () => {
           const key = keyOf(id), word = key.div(32), cell = anchor(id), region = int(outside).toVar();
           atomicOr(indexed.element(owner.mul(words).add(readyBase).add(word)), uint(1).shiftLeft(uint(key.mod(32))));
           atomicOr(indexed.element(owner.mul(groups).add(summaryBase).add(word.div(32))), uint(1).shiftLeft(uint(word.mod(32))));
@@ -164,8 +165,9 @@ export class GpuPlacementFlush {
         });
       });
       If(enemy.greaterThanEqual(int(0)), () => {
-        If(unit(enemy, U.UOWNER).notEqual(this.owner).and(unit(enemy, U.UHEALTH).greaterThan(int(0))).and(unit(enemy, U.UDOMAIN).equal(int(0)))
+        If(alliedOwners(battle.setup,this.owner,unit(enemy,U.UOWNER)).not().and(unit(enemy, U.UHEALTH).greaterThan(int(0))).and(unit(enemy, U.UDOMAIN).equal(int(0)))
           .and(unit(enemy, U.UTYPE).notEqual(int(movementType('BOAT')))).and(unit(enemy, U.UTYPE).notEqual(int(movementType('LST')))).and(load(enemy).lessThanEqual(clock.element(0))), () => {
+          if(battle.setup.multiplayer===false)state(enemy,C.CPANIC_FRAME).assign(clock.element(0).add(1));
           const desired = type(enemy, 0).mul(2).sub(load(enemy.add(n))).toVar();
           store(int(work), int(1)); store(int(work + 1), enemy); store(int(work + 2), desired);
           If(desired.greaterThan(int(0)), () => {

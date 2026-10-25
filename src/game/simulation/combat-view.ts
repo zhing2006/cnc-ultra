@@ -32,6 +32,7 @@ export function combatExtraSprites(setup: C.CombatSetup, scene: GameScene) {
   return setup.units.length * (C.SHOTS_PER_UNIT + 3) + trailLayout(setup, scene).count;
 }
 export class CombatView {
+  get saveBuffers() { return this.attributes; }
   readonly count: number;
   readonly smudges:StorageBufferAttribute;
   readonly effects:StorageBufferAttribute;

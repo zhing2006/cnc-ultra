@@ -7,6 +7,7 @@
   import DebugPanel from './demo/DebugPanel.svelte';
   import { demoConfig, startDemo, type DemoGame, type DemoConfig } from './demo/game.ts';
   import Loading from './Loading.svelte';
+  import DebugMenu from './game/DebugMenu.svelte';
 
   const preview = new URLSearchParams(location.search).get('preview') === 'assets';
   let demo = $state.raw(demoConfig(location.search));
@@ -20,7 +21,7 @@
   let status: Status = $state('starting');
   let loadingMessage = $state('Checking graphics support');
   let renderer: Renderer | null = null;
-  let game: Game | null = null;
+  let game = $state.raw<Game | null>(null);
   let unmounted = false;
 
   function stopGame() {
@@ -114,6 +115,7 @@
 {#if demo && demoGame && !preview && status === 'running'}
   <DebugPanel config={demo} game={demoGame} {frame} {digest} {actualSpeed} {outcome} onRestart={restartDemo} />
 {/if}
+<DebugMenu game={status === 'running' ? game : undefined} />
 
 {#if status === 'unsupported'}
   <p class="notice">This browser does not support WebGPU. Open the page in a recent Chrome or Edge.</p>

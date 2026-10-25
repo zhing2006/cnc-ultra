@@ -48,9 +48,9 @@ export class MixFile {
  * MixFileClass::Retrieve, which searches every loaded MIX file.
  */
 export class MixSet {
-  private readonly files: MixFile[];
+  private readonly files: readonly Pick<MixFile,'get'>[];
 
-  constructor(files: MixFile[]) {
+  constructor(files: readonly Pick<MixFile,'get'>[]) {
     this.files = files;
   }
 

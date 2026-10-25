@@ -46,9 +46,35 @@ bash refs/fetch.sh
 
 脚本从每张光盘上取出根目录里的 MIX、VQA 和 VQP 文件，再加上 `INSTALL/CCLOCAL.MIX`，文件名全部改成小写。Acrobat Reader、DirectX、Planet Westwood 和桌面主题这几个目录里不是游戏数据，所以没有解出来。两张光盘之间只有 `general.mix` 和 `movies.mix` 不同，其余文件逐字节相同。
 
-`speech.mix`、`tempicnh.mix` 和 `transit.mix` 装在光盘的 `INSTALL/SETUP.Z` 里。这是 InstallShield 3 的安装包，bsdtar 读不了，所以这三个文件取自 OpenRA 的素材包。OpenRA 也提供这个素材包，用来代替从光盘安装，见 `source/openra/mods/cnc-content/installer/downloads.yaml`。素材包里的这三个文件和 `SETUP.Z` 里的是否逐字节相同，未核对。素材包里的其他 MIX 和 GDI 光盘上的相同，只有 `cclocal.mix` 是另一个版本。素材包里还多一个 `updatec.mix`，光盘上没有这个文件。
+`fetch` 脚本另外解开了 OpenRA 的素材包，供格式核对使用，见 `source/openra/mods/cnc-content/installer/downloads.yaml`。完整游戏入口使用下面的 `prepare-data` 脚本准备数据；它直接读取原版光盘，包括 `INSTALL/SETUP.Z` 里的 `update.mix`、`updatec.mix`、`speech.mix`、`transit.mix` 和其他安装文件。`SETUP.Z` 是 InstallShield 3 的安装包，bsdtar 不能解开，脚本会调用固定版本 OpenRA 的 Blast 解码器。解码器只在准备数据时运行，不会打包进网页。
 
 `assets/dev/` 里入库的 `conquer.mix`、`temperat.mix`、`general.mix` 和 `cclocal.mix` 复制自 `cnc-gold/gdi/`，供开发和测试使用。
+
+## 准备完整战役数据
+
+先运行 `fetch`，然后在 Windows 上运行：
+
+```powershell
+pwsh refs/prepare-data.ps1
+```
+
+macOS 和 Linux 上运行：
+
+```sh
+bash refs/prepare-data.sh
+```
+
+除了 Node.js 和 bsdtar，还需要 .NET 9 SDK。第一次运行时，如果固定版本的 OpenRA 解码器还没有编译，脚本会先编译它。脚本在提取之前校验两张 ISO 的完整 SHA-256，随后把原始 MIX、VQA 和 VQP 文件放进项目根目录的 `data/`，不转换图像或音频格式。这个目录已经被 Git 忽略。
+
+公共文件放在 `data/`，两张光盘各自的 `general.mix` 和 `movies.mix` 放在 `data/gdi/`、`data/nod/`。脚本还会生成 `data/index.json`，记录文件名与长度。开发服务器优先使用 `assets/dev/` 中已有的文件，其余从 `data/` 读取，并按实际文件生成清单。
+
+部署时，把 `data/` 复制到构建结果 `dist/` 下，与 `index.html` 同级。Vite 不会把游戏数据打进 JavaScript，也不会自动复制它们。托管服务器需要支持 HTTP Range 请求，返回 `206` 和正确的 `Content-Range`，否则大影片不能按段读取。保留相对目录结构后，入口也可以部署在子路径下。页面与数据应使用同源地址，并保留项目要求的 COOP、COEP 响应头。
+
+## 影片和界面动画的参考摘要
+
+`node tests/reference/export-vqa.ts` 调用固定版本 OpenRA 的 `VqaVideo`，生成 GDI 开场、简报、首关行动及胜负影片的逐帧 BGRA 摘要和 PCM 摘要。`node tests/reference/export-wsa.ts` 用同一版本的 LCW、XOR 解码器生成阵营选择和计分动画的摘要。WSA 导出器按文件头分配中间缓冲区，因为 OpenRA 的 `WsaVideo` 在 `CHOOSE.WSA` 第二帧使用的缓冲区太小。
+
+摘要保存在 `tests/reference/`，原始影片和解码后的媒体都不入库。
 
 ## 参考图
 

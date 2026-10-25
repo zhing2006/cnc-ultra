@@ -4,6 +4,24 @@ const IMA_STEPS = [7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,5
 const IMA_INDEX = [-1,-1,-1,-1,2,4,6,8];
 const WS_DELTA = [[-2,-1,0,1],[-9,-8,-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6,8]];
 
+/** The same IMA state continues across a VQA movie's SND2 chunks. */
+export class ImaStream {
+  private sample = 0;
+  private index = 0;
+  decode(bytes: Uint8Array): Uint8Array {
+    const output = new Uint8Array(bytes.length * 4), view = new DataView(output.buffer);
+    let at = 0;
+    for (const packed of bytes) for (let half = 0; half < 2; half++) {
+      const code = (packed >> (half * 4)) & 15, step = IMA_STEPS[this.index];
+      const delta = ((step * (code & 7)) >> 2) + (step >> 3);
+      this.sample = Math.max(-32768, Math.min(32767, this.sample + (code & 8 ? -delta : delta)));
+      this.index = Math.max(0, Math.min(88, this.index + IMA_INDEX[code & 7]));
+      view.setInt16(at, this.sample, true); at += 2;
+    }
+    return output;
+  }
+}
+
 export function decodeAud(bytes: Uint8Array): AudSound {
   const input = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const rate = input.getUint16(0, true), end = 12 + input.getUint32(2, true);

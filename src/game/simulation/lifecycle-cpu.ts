@@ -1,7 +1,7 @@
 import type { CpuCombat } from './combat-cpu.ts';
 import { placementOffsets } from './building-rules.ts';
-import { MOVEMENT } from '../data/movement.ts';
-import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
+import { GROUND_SPEED, MOVEMENT } from '../data/movement.ts';
+import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER,DIRECT_ENTRY,ORDER } from './lifecycle-state.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 import { FACTORY_POINT,FACTORY_EXITS } from './services-cpu.ts';
@@ -11,12 +11,29 @@ import { AIR_WORDS,ACONTACT,AGENERATION } from './aircraft-cpu.ts';
 /** CPU reference for recorded construction commands, including stable-ID exit contention. */
 export function applyLifecycle(battle:CpuCombat,commands:Int32Array,placementClear:ArrayLike<number>=battle.setup.passable??battle.setup.grid.edges,aircraft?:Int32Array){
   const {units:u,state:s,movement:m}=battle,width=battle.setup.grid.width;
+  let entryOrigin=-1,entryCell=-1;
   for(let id=0;id<battle.setup.units.length;id++){
     const p=id*CHANGE_WORDS,mask=commands[p],at=id*U.WORDS,c=id*C.CWORDS;
     if(mask&REMOVE){u[at+U.UHEALTH]=0;m.goals[id]=-1;s[c+C.CDEATH]=-1;}
     if(mask&CREATE){
       const type=MOVEMENT[commands[p+1]],domain=type.domain??0,ignore=commands[p+9];let cell=commands[p+3];
       let free=true,slot=-1;
+      // REINF.CPP Do_Reinforcements tries N..NW outside the radar after a blocked entry.
+      if(mask&DIRECT_ENTRY){
+        if(entryOrigin!==cell){entryOrigin=cell;entryCell=cell;}cell=entryCell;
+        const bounds=battle.setup.bounds!;
+        const clear=(x:number,y:number)=>{
+          if(x<0||y<0||x>=width||y>=battle.setup.grid.height||x>=bounds.x&&x<bounds.x+bounds.width&&y>=bounds.y&&y<bounds.y+bounds.height)return false;
+          const target=y*width+x;if(!GROUND_SPEED[battle.setup.land[target]][type.locomotion])return false;
+          const occupied=m.occupancy.subarray(target*5,target*5+5);
+          return type.infantry?occupied.some(owner=>owner===0):occupied.every(owner=>owner===0);
+        };
+        if(!clear(cell%width,Math.trunc(cell/width))){
+          const offset=[[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]].find(([x,y])=>clear(cell%width+x,Math.trunc(cell/width)+y));
+          if(offset)cell+=offset[1]*width+offset[0];else free=false;
+        }
+        entryCell=cell;
+      }
       if(commands[p+12]<0){
         const parent=(-commands[p+12]-1)*U.WORDS,name=MOVEMENT[u[parent+U.UTYPE]].name;
         if(name==='PYLE'||name==='HAND')free=FACTORY_EXITS[name].some(([x,y])=>{
@@ -43,12 +60,13 @@ export function applyLifecycle(battle:CpuCombat,commands:Int32Array,placementCle
       if(free){
         const generation=u[at+U.UGENERATION]+1;
         const one={...battle.setup,units:[{type:commands[p+1],cell,owner:commands[p+2],health:commands[p+4],facing:commands[p+5],altitude:commands[p+6],slot:type.infantry&&slot>=0?slot:0,attached:commands[p+11],enter:commands[p+12]}]};
-        u.set(U.initialUnits(one),at);s.set(C.initialCombat(one),c);u[at+U.UGENERATION]=generation;
+        u.set(U.initialUnits(one),at);s.set(C.initialCombat(one),c);u[at+U.UGENERATION]=generation;u[at+U.UFLAGS]=(mask>>>13)&3;
         if(domain===1&&commands[p+12]>0){const parent=(commands[p+12]-1)*U.WORDS,origin=u[parent+U.UORIGIN];if(MOVEMENT[u[parent+U.UTYPE]].name==='HPAD'){u[at]=origin%width*256+256;u[at+1]=Math.trunc(origin/width)*256+192;u[at+U.UCELL]=origin+1;}}
         if(commands[p+12]<0){const parent=(-commands[p+12]-1)*U.WORDS,origin=u[parent+U.UORIGIN],point=FACTORY_POINT[MOVEMENT[u[parent+U.UTYPE]].name];if(point){u[at]=origin%width*256+point[0];u[at+1]=Math.trunc(origin/width)*256+point[1];u[at+U.UCELL]=origin+Math.trunc(point[1]/256)*width+Math.trunc(point[0]/256);}}
-        s[c+C.CSEEN]=1;s[c+C.CMISSION]=commands[p+8];s[c+C.CARM]=mask&STATUS?0:commands[p+10];
+        s[c+C.CSEEN]=battle.setup.campaignLevel===undefined||commands[p+2]===0?1:0;s[c+C.CMISSION]=commands[p+8];s[c+C.CARM]=mask&STATUS?0:commands[p+10];
         m.goals[id]=m.pathGoals[id]=-1;
         if(mask&INITIAL_ORDER){m.goals[id]=commands[p+13];s[c+C.CTARGET]=commands[p+14];}
+        if(mask&DIRECT_ENTRY){m.pathGoals[id]=U.DIRECT_STEP;m.goals[id]+=cell-commands[p+3];}
         if(domain===1&&commands[p+12]>0){
           const parent=(commands[p+12]-1)*U.WORDS,origin=u[parent+U.UORIGIN];
           if(MOVEMENT[u[parent+U.UTYPE]].name==='HPAD'&&battle.setup.units.some((_,other)=>other!==id&&u[other*U.WORDS+U.UDOMAIN]===1&&u[other*U.WORDS+U.UHEALTH]>0&&
@@ -73,6 +91,10 @@ export function applyLifecycle(battle:CpuCombat,commands:Int32Array,placementCle
     if(mask&AMMO)s[c+C.CAMMO]=commands[p+7];
     if(mask&DESTINATION){m.goals[id]=commands[p+7];m.pathGoals[id]=-1;s[c+C.CMISSION]=C.MOVE;}
     if(mask&TARGET){s[c+C.CTARGET]=commands[p+7];s[c+C.CMISSION]=C.ATTACK;s[c+C.CSCAN]=0;}
+    if(mask&ORDER){
+      s[c+C.CMISSION]=commands[p+8];s[c+C.CTARGET]=commands[p+14];s[c+C.CFIRE]=-1;s[c+C.CSCAN]=0;s[c+C.CSUSPENDED_MISSION]=0;
+      m.goals[id]=commands[p+13];m.pathGoals[id]=-1;
+    }
   }
   m.occupy();
 }

@@ -2,7 +2,7 @@ import { expect,it } from 'vitest';
 import { gridEdges } from '../../engine/simulation/state.ts';
 import { movementType } from '../data/movement.ts';
 import { CpuCombat } from './combat-cpu.ts';
-import { CpuAirOperations } from './air-operations-cpu.ts';
+import { CpuAirOperations,airFireLocation } from './air-operations-cpu.ts';
 import { CpuAircraft,AMISSION,ACONTACT,AGENERATION } from './aircraft-cpu.ts';
 import * as C from './combat-state.ts';
 import * as U from './units-state.ts';
@@ -21,4 +21,11 @@ it('converts a rotary-wing hunt order with a target into an attack sortie',()=>{
 it('sends a damaged computer aircraft to an available repair facility',()=>{
   const {battle,aircraft,operations}=ready();battle.units[U.UHEALTH]=60;operations.before([1000,1000]);
   expect(aircraft.state[ACONTACT]).toBe(2);
+});
+it('limits campaign firing locations to explored cells',()=>{
+  const {battle}=ready(),playable=new Int32Array(320).fill(1);
+  battle.setup.multiplayer=false;battle.sight.shadow.fill(-2);
+  expect(airFireLocation(battle,0,3,playable)).toBe(-1);
+  battle.sight.shadow.fill(-1);
+  expect(airFireLocation(battle,0,3,playable)).toBeGreaterThanOrEqual(0);
 });

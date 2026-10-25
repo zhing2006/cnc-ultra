@@ -6,16 +6,18 @@ import { placementOffsets } from '../simulation/building-rules.ts';
 import type { CpuCombat } from '../simulation/combat-cpu.ts';
 import * as U from '../simulation/units-state.ts';
 import * as C from '../simulation/combat-state.ts';
+import { areAllied } from '../simulation/alliances.ts';
 
 /** TECHNO.CPP Base_Is_Attacked / FOOT.CPP Rescue_Mission. CPU oracle may scan all actors. */
 export function respondToBaseAttack(battle:CpuCombat,owner:number,enemy:number,cooldown:Int32Array){
   const m=battle.movement,u=battle.units,c=battle.state,at=enemy*U.WORDS,type=MOVEMENT[u[at+U.UTYPE]];
-  if(enemy<0||u[at+U.UOWNER]===owner||u[at+U.UHEALTH]<=0||u[at+U.UDOMAIN]!==0||type.name==='BOAT'||type.name==='LST'||cooldown[enemy]>battle.frame)return;
+  if(enemy<0||areAllied(battle.setup,owner,u[at+U.UOWNER])||u[at+U.UHEALTH]<=0||u[at+U.UDOMAIN]!==0||type.name==='BOAT'||type.name==='LST'||cooldown[enemy]>battle.frame)return;
+  if(battle.setup.multiplayer===false)c[enemy*C.CWORDS+C.CPANIC_FRAME]=battle.frame+1;
   let desired=combatTypes[u[at+U.UTYPE]].risk*2,total=0;
   const defenders:{id:number;score:number}[]=[];
   for(const infantry of [1,0])for(let id=0;id<battle.setup.units.length&&desired>0;id++){
     const p=id*U.WORDS,s=id*C.CWORDS,t=combatTypes[u[p+U.UTYPE]],moving=MOVEMENT[u[p+U.UTYPE]];
-    if(u[p+U.UOWNER]!==owner||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||u[p+U.UDOMAIN]!==0||u[p+U.UKIND]!==infantry)continue;
+    if(u[p+U.UOWNER]!==owner||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||u[p+U.UDOMAIN]!==0||u[p+U.UKIND]!==infantry||[C.STICKY,C.SLEEP].includes(c[s+C.CMISSION]))continue;
     const target=c[s+C.CTARGET];
     if(target===enemy){desired-=t.risk;continue;}
     if(target>=0&&combatTypes[u[target*U.WORDS+U.UTYPE]].primary>=0||!t.risk||moving.name==='HARV')continue;

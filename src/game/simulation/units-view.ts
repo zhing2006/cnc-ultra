@@ -12,7 +12,7 @@ import { HBASE,HWORDS,HLOAD } from './harvest-cpu.ts';
 import { TBASE,TWORDS,TORDER } from './transport-cpu.ts';
 import { CWORDS,CAMMO } from './combat-state.ts';
 import { BUILDING_WORDS } from './economy-runtime.ts';
-import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
+import { canCaptureBuilding } from '../data/abilities.ts';
 import type { MixSet } from '../formats/mix.ts';
 import type { GameScene } from '../scene.ts';
 import { unitDistance } from './units-nodes.ts';
@@ -63,7 +63,7 @@ export class UnitsView {
     const palette = texture(scene.setup.palette, 256, 1, true);
     const pips=status?decodeShp(mixFiles.require('HPIPS.SHP')):undefined;
     const pipTexture=pips?texture(Uint8Array.from(pips.frames.flatMap(frame=>Array.from(frame))),pips.width,pips.height*pips.frames.length):undefined;
-    const suffix = scene.scenario.theater === 'TEMPERATE' ? 'T' : 'D';
+    const suffix = scene.scenario.theater[0].toUpperCase();
     const shroudData = mixFiles.require(`${suffix}SHADOW.MRF`);
     const translucent = texture(shroudData, 256, shroudData.length / 256);
     const allRegions = [...scene.animation!.mouse, ...scene.animation!.shroud];
@@ -159,7 +159,7 @@ export class UnitsView {
     const next = storage(simulation.flow.next, 'int', simulation.flow.next.count).toReadOnly();
     const valid = (p: Node<'ivec2'>) => p.x.greaterThanEqual(0).and(p.y.greaterThanEqual(0)).and(p.x.lessThan(width)).and(p.y.lessThan(height));
     const sample = (pos: Node<'ivec2'>) => int(textureLoad(atlas, pos).r.mul(255).round());
-    const capturable=uniformArray<'int'>(MOVEMENT.map(t=>Number(CAPTURABLE_BUILDINGS.has(t.name))),'int');
+    const capturable=uniformArray<'int'>(MOVEMENT.map(t=>Number(canCaptureBuilding(t.name,simulation.setup.campaignLevel))),'int');
     this.hover = Fn(() => {
       hovered.element(0).assign(-1);
       hovered.element(1).assign(result.element(1));
@@ -174,6 +174,7 @@ export class UnitsView {
           // Ported from DISPLAY.CPP, Mouse_Left_Up: shroud conceals forbidden ground.
           hovered.element(3).assign(select(shadow.element(id).equal(int(-2)).or(this.shift.notEqual(int(0)))
             .or(canEnter(result.element(0), id)), int(10), int(11)));
+          if(simulation.setup.campaignLevel!==undefined)If(shadow.element(id).equal(-2).and(u.element(result.element(0).mul(WORDS).add(UDOMAIN)).equal(1)).and(this.ctrl.equal(0)),()=>{hovered.element(3).assign(11);});
         });
         If(shadow.element(cell.y.mul(width).add(cell.x)).notEqual(-2), () => {
           for (let dy = -1; dy <= 1; dy++)
@@ -212,6 +213,8 @@ export class UnitsView {
           }).ElseIf(u.element(target.add(UDOMAIN)).equal(2),()=>{
             If(u.element(source.add(UTYPE)).equal(movementType('E6')).and(capturable.element(type).notEqual(0)),()=>{hovered.element(4).assign(119);});
             If(u.element(source.add(UTYPE)).equal(movementType('RMBO')),()=>{hovered.element(4).assign(122);});
+          }).ElseIf(type.equal(movementType('TRAN')).and(u.element(source.add(UTYPE)).equal(movementType('E6'))).and(u.element(target.add(UALTITUDE)).equal(0)),()=>{
+            if(status)If(hovered.element(chosen.mul(2).add(statusBase)).equal(0),()=>{hovered.element(4).assign(119);});
           });
         });
         const goal = goals.element(result.element(0));
@@ -257,7 +260,8 @@ export class UnitsView {
           out.assign(mix(out, vec4(0.7, 0.25, 1, 1), 0.2));
         });
         If(this.flow.notEqual(0).and(hovered.element(2).greaterThanEqual(0)), () => {
-          const target = next.element(hovered.element(2).mul(cells).add(id));
+          const rawTarget=next.element(hovered.element(2).mul(cells).add(id));
+          const target=select(rawTarget.greaterThanEqual(cells),rawTarget.sub(cells),rawTarget);
           const local = pixel.sub(vec2(cell).mul(24)).sub(12);
           If(target.greaterThanEqual(0), () => {
             const dir = vec2(target.mod(width).sub(cell.x), target.div(width).sub(cell.y)).normalize();

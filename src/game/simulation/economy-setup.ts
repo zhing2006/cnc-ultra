@@ -16,7 +16,10 @@ export interface EconomySetup {
   tiberium: TiberiumSetup;
   buildings: InitialBuilding[];
   credits: number;
-  houses?: readonly [{ faction: number; credits: number }, { faction: number; credits: number }];
+  houses?: readonly { faction: number; credits: number }[];
+  houseNames?: readonly string[];
+  /** Campaign Nod vehicles use blue; its buildings use red. Multiplayer colors remain per player. */
+  remaps?: readonly { unit: number; building: number }[];
   oreStart: number;
   bibStart: number;
   decalStart: number;

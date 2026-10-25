@@ -2,7 +2,7 @@ import type { Grid } from '../../engine/simulation/state.ts';
 import { MOVEMENT } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { INFANTRY_SPOTS } from './map.ts';
-export const WORDS = 52;
+export const WORDS = 53;
 export const UX = 0;
 export const UY = 1;
 export const UCELL = 2;
@@ -58,6 +58,7 @@ export const UCLOAK_EVENT=48;
 export const UOBSTRUCTION=49, UOBSTRUCTION_GOAL=50;
 /** Automatic Scatter NavCom, cell + 1. It changes the route without replacing a harvesting mission. */
 export const USCATTER_GOAL=51;
+export const UFLAGS=52, TECHNICIAN=1, LOANER=2, PLAYER_ORDER=4;
 /** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
 export const DIRECT_STEP = -2;
 export interface UnitPlacement {
@@ -70,8 +71,16 @@ export interface UnitPlacement {
   altitude?: number;
   attached?:number;
   enter?:number;
+  flags?:number;
 }
 export interface UnitsSetup {
+  campaignRouting?: boolean;
+  campaignLevel?: number;
+  goodOwner?: number;
+  houseEdges?: readonly number[];
+  /** Includes dormant campaign houses that may receive reinforcements later. */
+  houseCount?: number;
+  allies?: readonly number[];
   grid: Grid;
   /** Original map bounds, excluding the surrounding reinforcement cells. */
   bounds?:{x:number;y:number;width:number;height:number};
@@ -117,6 +126,7 @@ export function initialUnits(setup: UnitsSetup) {
     result[at + UORIGIN] = placed.cell;
     result[at + UGENERATION] = result[at+UHEALTH]>0?1:0;
     result[at+UATTACHED]=placed.attached??0;result[at+UENTER]=placed.enter??0;
+    result[at+UFLAGS]=placed.flags??0;
     if(type.name==='STNK')result[at+UCLOAK_STAGE]=1;
     if(type.domain===2){
       const building=BUILDINGS.get(type.name)!;

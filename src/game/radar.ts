@@ -62,7 +62,8 @@ export class Radar {
         const ink=atlas.pixels[(sprite.region.y+y*8-sprite.y)*atlas.width+sprite.region.x+x*8-sprite.x];if(ink)terrainPixels[y*terrainWidth+x]=bright[ink];
       }
     }
-    const ground=texture(tiles.atlas.pixels,tiles.atlas.width,tiles.atlas.height),terrain=texture(terrainPixels,terrainWidth,terrainHeight),sprites=texture(atlas.pixels,atlas.width,atlas.height),green=texture(data.require('TGREEN.MRF'),256,1);
+    const greenName=`${scene.scenario.theater[0].toUpperCase()}GREEN.MRF`;
+    const ground=texture(tiles.atlas.pixels,tiles.atlas.width,tiles.atlas.height),terrain=texture(terrainPixels,terrainWidth,terrainHeight),sprites=texture(atlas.pixels,atlas.width,atlas.height),green=texture(data.require(greenName),256,1);
     const regions=uniformArray<'ivec4'>(Array.from({length:12},(_,i)=>scene.animation!.frames.get(`TI${i+1}`)!).flat().map(r=>new Vector4(r.x,r.y,r.width,r.height)),'ivec4');
     this.owners=new StorageBufferAttribute(new Int32Array(cells).fill(-1),1);this.aircraft=new StorageBufferAttribute(new Uint32Array(cells).fill(0xffffffff),1);
     const owner=storage(this.owners,'int',cells).toReadOnly(),air=storage(this.aircraft,'uint',cells).toAtomic();

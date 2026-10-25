@@ -80,9 +80,9 @@ export class GpuAircraft {
           state(id,AGENERATION).assign(unit(id,U.UGENERATION));state(id,AGOAL).assign(-1);state(id,ACONTACT).assign(-1);state(id,ATARGET).assign(-1);state(id,AFIRED).assign(-1);
           state(id,AFACING).assign(unit(id,U.UFACE));state(id,ADESIRED).assign(unit(id,U.UFACE));
         });
-        If(unit(id,U.UTYPE).notEqual(movementType('C17')),()=>{
+        If(unit(id,U.UTYPE).notEqual(movementType('C17')).and(unit(id,U.UTYPE).notEqual(movementType('A10'))),()=>{
         const goal=goals.element(id).toVar(),type=unit(id,U.UTYPE).mul(2).toVar(),altitude=unit(id,U.UALTITUDE).toVar();
-        If(goal.lessThan(0).and(state(id,AGOAL).greaterThanEqual(0)).and(state(id,AHOVER).equal(0)).and(altitude.greaterThan(0)),()=>{
+        If(state(id,ARETREAT).equal(0).and(goal.lessThan(0)).and(state(id,AGOAL).greaterThanEqual(0)).and(state(id,AHOVER).equal(0)).and(altitude.greaterThan(0)),()=>{
           goal.assign(landingZone(id,unit(id,U.UCELL)));goals.element(id).assign(goal);state(id,ACONTACT).assign(-1);state(id,ATAKEOFF).assign(0);state(id,ALANDING).assign(0);
         });
         If(goal.notEqual(state(id,AGOAL)),()=>{state(id,AGOAL).assign(goal);state(id,ASTAGE).assign(0);state(id,ADELAY).assign(0);});
@@ -92,7 +92,7 @@ export class GpuAircraft {
           If(altitude.greaterThanEqual(24),()=>{state(id,ASPEED).assign(255);state(id,ADESIRED).assign(state(id,ARETREAT).sub(1));unit(id,U.UDESIRED).assign(state(id,ARETREAT).sub(1));})
             .ElseIf(altitude.greaterThanEqual(20),()=>{state(id,ASPEED).assign(64);}).ElseIf(altitude.greaterThanEqual(16),()=>{state(id,ASPEED).assign(32);});
         });
-        If(goal.greaterThanEqual(0).and(state(id,ADELAY).equal(0)),()=>{
+        If(state(id,ARETREAT).equal(0).and(goal.greaterThanEqual(0)).and(state(id,ADELAY).equal(0)),()=>{
           state(id,ADELAY).assign(1);
           If(state(id,ASTAGE).equal(0),()=>{
             If(clear(id,goal),()=>{state(id,ASTAGE).assign(1);}).Else(()=>{goal.assign(landingZone(id,goal));goals.element(id).assign(goal);state(id,AGOAL).assign(goal);});

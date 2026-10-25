@@ -1,7 +1,7 @@
 import type { UnitsSetup } from './units-state.ts';
 import { combatTypes } from '../data/combat.ts';
 export const ROUTE_STEPS = 32;
-export const CWORDS = 85;
+export const CWORDS = 87;
 export const CTARGET = 0, CMISSION = 1, CARM = 2, CSECOND = 3, CTURRET = 4, CTURN = 5;
 export const CSCAN = 6, CFIRE = 7, CFEAR = 8, CPRONE = 9, CDEATH = 10, CWARHEAD = 11;
 export const CLAST_FIRE = 12, CCURSOR = 13, CAMMO = 14, CRELOAD = 15, CKILLER = 16;
@@ -15,14 +15,19 @@ export const CSTOKED = 64, CCOMMENT = 65, CCELEBRATED = 66, CTAUNT = 67;
 export const CPOWER=68,CACTIVE=69,CSAM=70,CSTIMER=71,CCHARGE=72,CRECOIL=73;
 export const CMUZZLEX=74,CMUZZLEY=75;
 export const CWALL=76;
-/** Last damaging hit on a structure, for the house's Base_Is_Attacked response. */
+/** Last damaging hit, for campaign triggers and the house's Base_Is_Attacked response. */
 export const CHIT_FRAME=77, CHIT_SOURCE=78;
 export const CSABOTAGE=79;
 /** MISSION.CPP / TECHNO.CPP / FOOT.CPP Override_Mission; mission + 1, zero means none. */
 export const CSUSPENDED_MISSION=80, CSUSPENDED_TARGET=81, CSUSPENDED_GOAL=82, CSUSPENDED_ABILITY=83;
 /** FOOT.CPP ArchiveTarget, encoded as cell + 1. */
 export const CGUARD_CELL=84;
+/** INFANTRY.CPP Random_Animate: tick * 4 plus the ambient voice (1..3). */
+export const CIDLE_VOICE=85;
+/** TECHNO.CPP Base_Is_Attacked requests suspension of low-priority campaign teams. */
+export const CPANIC_FRAME=86;
 export const GUARD = 0, MOVE = 1, ATTACK = 2, HUNT = 3, GUARD_AREA = 4;
+export const SLEEP = 5, STICKY = 6, AMBUSH = 7, HARVEST = 8;
 export const BWORDS = 28, SHOTS_PER_UNIT = 8;
 export const MAX_SPECIAL_BLASTS = 128, SPECIAL_BLAST_WORDS = 7;
 export interface ExplosionCommand { frame:number; x:number; y:number; damage:number; warhead:number; source:number; scorch?:boolean; crater?:boolean }
@@ -45,6 +50,8 @@ export function initialProjectiles(units: number) {
 export interface CombatSetup extends UnitsSetup {
   dynamicTypes?: boolean;
   multiplayer?: boolean;
+  /** Original scenario missions, using this simulation's mission constants. */
+  missions?: readonly number[];
   /** Parent vehicle index for each reserved survivor; -1 for initially present units. */
   crewParents?: readonly number[];
 }
@@ -59,6 +66,7 @@ export function initialCombat(setup: CombatSetup) {
   setup.units.forEach((unit, id) => {
     const at = id * CWORDS, type = combatTypes[unit.type];
     state[at + CTARGET] = -1;
+    state[at + CMISSION] = setup.missions?.[id] ?? GUARD;
     state[at + CAPPROACH_GOAL] = -1;
     state[at + CLOCAL_DEST] = -1;
     state[at + CTURRET] = state[at + CTURN] = unit.facing ?? 0;

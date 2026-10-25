@@ -13,13 +13,14 @@ import { unitDirection,unitDistance } from './units-nodes.ts';
 import type { GpuCombat } from './combat-gpu.ts';
 import type { GpuAircraft } from './aircraft-gpu.ts';
 import { AIR_WORDS,ASTAGE,ADELAY,ASPEED,AFACING,ADESIRED,AGOAL,ATAKEOFF,ALANDING,AGENERATION,AHOVER,ACONTACT,
-  AMISSION,ASTATUS,ATIMER,ATARGET,ASERVICE,AFIRED } from './aircraft-cpu.ts';
+  AMISSION,ASTATUS,ATIMER,ATARGET,ASERVICE,AFIRED,ARETREAT } from './aircraft-cpu.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 type I=Node<'int'>;
 
 /** AIRCRAFT.CPP Mission_Attack/Enter_Idle_Mode/Good_Fire_Location; BUILDING.CPP Mission_Repair. */
 export class GpuAirOperations {
+  get saveBuffers() { return [this.constants, this.requests.buffer]; }
   readonly beforePass:ComputeNode[];
   private readonly requests:GpuTaskMask;
   readonly afterPass:ComputeNode;
@@ -41,8 +42,11 @@ export class GpuAirOperations {
     const data=storage(this.constants,'int',packed.length),trig=combatTypes.length*2,map=trig+512;
     const plan=(id:I,field:number|I)=>data.element(id.mul(stride).add(planBase).add(field));
     const u=storage(battle.units,'int',battle.units.count),c=storage(battle.state,'int',battle.state.count),a=storage(aircraft.state,'int',aircraft.state.count);
+    const visible=storage(battle.sight.shadow,'int',battle.sight.shadow.count).toReadOnly();
     const goals=storage(battle.movement.goals,'int',count),clock=storage(battle.movement.control,'int',2).toReadOnly();
     const unit=(id:I,field:number)=>u.element(id.mul(U.WORDS).add(field)),combat=(id:I,field:number)=>c.element(id.mul(C.CWORDS).add(field));
+    const dormant=(id:I)=>int(battle.setup.campaignLevel??0).equal(7).and(unit(id,U.UOWNER).equal(battle.setup.goodOwner??-1)).and(unit(id,U.UOWNER).notEqual(battle.humanOwner))
+      .and(combat(id,C.CMISSION).equal(C.GUARD)).and(unit(id,U.UALTITUDE).notEqual(24));
     const air=(id:I,field:number)=>a.element(id.mul(AIR_WORDS).add(field));
     const position=(id:I)=>ivec2(unit(id,U.UX),unit(id,U.UY));
     const point=(cell:I)=>ivec2(cell.mod(width).mul(256).add(128),cell.div(width).mul(256).add(128));
@@ -77,7 +81,7 @@ export class GpuAirOperations {
       If(unit(id,U.UTYPE).equal(movementType('HPAD')),()=>{unit(id,U.UDOOR).assign(0);});
       Loop(1,()=>{
         const type=unit(id,U.UTYPE).toVar();
-        If(unit(id,U.UDOMAIN).notEqual(1).or(unit(id,U.UHEALTH).lessThanEqual(0)).or(type.equal(movementType('C17'))),()=>{Continue();});
+        If(unit(id,U.UDOMAIN).notEqual(1).or(unit(id,U.UHEALTH).lessThanEqual(0)).or(type.equal(movementType('C17'))).or(type.equal(movementType('A10'))),()=>{air(id,AOP).assign(0);Continue();});
         If(air(id,AGENERATION).notEqual(unit(id,U.UGENERATION)),()=>{
           Loop(AIR_WORDS,({i})=>{a.element(id.mul(AIR_WORDS).add(i)).assign(0);});
           air(id,AGENERATION).assign(unit(id,U.UGENERATION));air(id,AGOAL).assign(-1);air(id,ACONTACT).assign(-1);air(id,ATARGET).assign(-1);air(id,AFIRED).assign(-1);
@@ -115,7 +119,7 @@ export class GpuAirOperations {
     },{name:'airNearestAvailablePad',type:'int',inputs:[{name:'id',type:'int'}]});
     const decide=Fn(()=>{
       const id=int(instanceIndex),contact=air(id,ACONTACT);
-      If(unit(id,U.UDOMAIN).equal(1).and(unit(id,U.UHEALTH).greaterThan(0)).and(unit(id,U.UTYPE).notEqual(movementType('C17'))),()=>{
+      If(unit(id,U.UDOMAIN).equal(1).and(unit(id,U.UHEALTH).greaterThan(0)).and(unit(id,U.UTYPE).notEqual(movementType('C17'))).and(unit(id,U.UTYPE).notEqual(movementType('A10'))).and(dormant(id).not()).and(air(id,ARETREAT).equal(0)),()=>{
         If(combat(id,C.CMISSION).equal(C.HUNT).and(combat(id,C.CTARGET).greaterThanEqual(0)).and(combat(id,C.CAMMO).notEqual(0)),()=>{combat(id,C.CMISSION).assign(C.ATTACK);});
         If(unit(id,U.UOWNER).notEqual(battle.humanOwner).and(combat(id,C.CMISSION).equal(C.GUARD)).and(unit(id,U.UALTITUDE).notEqual(24)),()=>{
           const repair=int(-1).toVar(),best=int(0x7fffffff).toVar(),atRepair=int(0).toVar();
@@ -171,7 +175,8 @@ export class GpuAirOperations {
               If(r.greaterThan(384),()=>{
                 const pos=move(origin,direction.mul(16),r).toVar(),cell=pos.y.div(256).mul(width).add(pos.x.div(256));
                 If(pos.x.greaterThanEqual(0).and(pos.y.greaterThanEqual(0)).and(pos.x.lessThan(width*256)).and(pos.y.lessThan(height*256)),()=>{
-                  If(data.element(cell.add(map)).notEqual(0).and(relations.element(cell.add(index.airCount)).equal(0)),()=>{
+                  const explored=battle.setup.multiplayer===false?visible.element(cell).notEqual(-2):int(1).equal(1);
+                  If(explored.and(data.element(cell.add(map)).notEqual(0)).and(relations.element(cell.add(index.airCount)).equal(0)),()=>{
                     plan(id,entry.add(3)).assign(cell);plan(id,entry.add(4)).assign(unitDistance(position(id),pos));
                   });
                 });
@@ -253,7 +258,8 @@ export class GpuAirOperations {
     const ordinary=Fn(()=>{
       const id=int(instanceIndex),type=unit(id,U.UTYPE),mission=air(id,AMISSION),target=combat(id,C.CTARGET);
       Loop(1,()=>{
-        If(unit(id,U.UDOMAIN).notEqual(1).or(unit(id,U.UHEALTH).lessThanEqual(0)).or(type.equal(movementType('C17'))),()=>{Continue();});
+        If(unit(id,U.UDOMAIN).notEqual(1).or(unit(id,U.UHEALTH).lessThanEqual(0)).or(type.equal(movementType('C17'))).or(type.equal(movementType('A10'))),()=>{Continue();});
+        If(dormant(id).or(air(id,ARETREAT).notEqual(0)),()=>{combat(id,C.CACTIVE).assign(0);Continue();});
         const invalid=int(target.lessThan(0)).toVar();If(target.greaterThanEqual(0),()=>{If(unit(target,U.UHEALTH).lessThanEqual(0),()=>{invalid.assign(1);});});
         const contact=air(id,ACONTACT),returning=int(contact.lessThan(0)).toVar();
         If(contact.greaterThanEqual(0),()=>{If(unit(contact,U.UHEALTH).lessThanEqual(0).or(combat(contact,C.CACTIVE).equal(0)),()=>{returning.assign(1);});});

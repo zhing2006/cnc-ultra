@@ -26,6 +26,10 @@ export class HouseEconomy {
     this.credits -= amount - stored;
   }
   refund(amount: number) { this.credits += amount; }
+  setDebugMoney(amount: number) {
+    const difference = amount - this.money;
+    if (difference < 0) this.spend(-difference); else this.refund(difference);
+  }
   adjustCapacity(change: number, destroyed: boolean) {
     this.capacity = Math.max(0, this.capacity + change);
     const excess = Math.max(0, this.tiberium - this.capacity);
@@ -96,7 +100,7 @@ export class FactoryProduction {
   balance: number;
   suspended = true;
   readonly purchasePrice: number;
-  constructor(readonly type: ProductionType, readonly house: HouseEconomy, separateAircraft = false) {
+  constructor(readonly type: ProductionType, readonly house: HouseEconomy, separateAircraft = false, readonly duration = buildTime(type)) {
     this.balance = this.purchasePrice = purchaseCost(type, separateAircraft);
   }
   get complete() { return this.stage === FACTORY_STAGES; }
@@ -106,7 +110,7 @@ export class FactoryProduction {
   start() {
     if (!this.suspended || this.complete || this.house.money < this.costPerStep) return false;
     const fraction = Math.max(16, Math.min(256, this.house.powerFraction));
-    this.rate = Math.max(1, Math.min(255, Math.trunc(Math.trunc(buildTime(this.type) * 256 / fraction) / FACTORY_STAGES)));
+    this.rate = Math.max(1, Math.min(255, Math.trunc(Math.trunc(this.duration * 256 / fraction) / FACTORY_STAGES)));
     this.timer = this.rate;
     this.suspended = false;
     return true;
@@ -139,12 +143,14 @@ export class FactoryProduction {
 export class ProductionQueues {
   readonly items = new Map<ProductionCategory, FactoryProduction>();
   private readonly unlocked=new Set<string>();
+  /** Scenario rules can replace multiplayer technology checks without changing queue mechanics. */
+  canProduce?: (type: ProductionType, factoryFaction: number) => boolean;
   constructor(readonly house: HouseEconomy, readonly buildings: FactoryBuilding[]) {}
   available(type: ProductionType) {
     const factories=this.buildings.filter(b=>b.active&&PRODUCTION.get(b.type)?.factory===type.category&&(b.faction&type.factions));
     // SIDEBAR.CPP StripClass::Recalc checks the factory, not prerequisites already unlocked.
     if(!factories.length){this.unlocked.delete(type.name);return false;}
-    if(factories.some(b=>canBuild(type,b.faction,this.buildings)))this.unlocked.add(type.name);
+    if(factories.some(b=>this.canProduce ? this.canProduce(type,b.faction) : canBuild(type,b.faction,this.buildings)))this.unlocked.add(type.name);
     return this.unlocked.has(type.name);
   }
   /** SIDEBAR.CPP StripClass::Add appends discoveries; Recalc removes only unavailable factories. */
@@ -168,11 +174,24 @@ export class ProductionQueues {
     this.items.get(category)?.abandon();
     this.items.delete(category);
   }
-  step() {
+  step(speed = 1) {
     for (const [category, item] of this.items) {
       const count = this.buildings.filter(b => b.active && PRODUCTION.get(b.type)?.factory === category).length;
       if (!count||!this.available(item.type)) this.cancel(category);
-      else item.step(count);
+      else item.step(count * speed);
+    }
+  }
+  saveState() {
+    return { unlocked: [...this.unlocked], items: [...this.items].map(([category, item]) => ({ category, name: item.type.name,
+      stage: item.stage, rate: item.rate, timer: item.timer, balance: item.balance, suspended: item.suspended, purchasePrice: item.purchasePrice })) };
+  }
+  loadState(state: ReturnType<ProductionQueues['saveState']>) {
+    this.unlocked.clear(); for (const name of state.unlocked) this.unlocked.add(name);
+    this.items.clear();
+    for (const saved of state.items) {
+      const { category, name, ...values } = saved;
+      const item = new FactoryProduction(PRODUCTION.get(name)!, this.house);
+      Object.assign(item, values); this.items.set(category, item);
     }
   }
 }

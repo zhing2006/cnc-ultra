@@ -47,15 +47,24 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
   const page = await session.browser.newPage();
   page.setDefaultTimeout(5_000);
   const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  let failPage!:(error:Error)=>void;
+  const pageFailed=new Promise<never>((_,reject)=>{failPage=reject;});
+  // An animation-loop error can stop a fixture before its completion promise
+  // settles. Report it immediately instead of waiting forever for another tick.
+  void pageFailed.catch(()=>{});
+  const record=(message:string)=>{
+    errors.push(message);
+    if(!(options.expectedErrors??[]).some(pattern=>pattern.test(message)))failPage(new Error(message));
+  };
+  page.on('pageerror', (error) => record(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error' || (message.type() === 'warning' && message.text().startsWith('THREE.TSL:')))
-      errors.push(`${message.text()} (${message.location().url})`);
+      record(`${message.text()} (${message.location().url})`);
   });
   try {
     if (options.init) await page.addInitScript(options.init);
-    await page.goto(`${session.baseUrl}${options.path ?? '/'}`);
-    await check(page);
+    await page.goto(`${session.baseUrl}${options.path ?? '/?render=map'}`);
+    await Promise.race([check(page),pageFailed]);
   } catch(error) {
     console.error('Browser failure state:', await page.evaluate(() => ({
       url: location.href, hidden: document.hidden,

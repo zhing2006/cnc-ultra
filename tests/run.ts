@@ -24,6 +24,9 @@ import { checkMatchCrew } from './match-crew.ts';
 import { checkMatchRegressions } from './match-regressions.ts';
 import { checkHarvest } from './harvest.ts';
 import { checkComputeBatch } from './compute-batch.ts';
+import { checkCampaignAssets, checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignTheaters,checkCampaignRouting } from './campaign.ts';
+import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
+import { checkDebug } from './debug.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -76,6 +79,22 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Campaign threat avoidance and deterministic continuation',checkCampaignRouting],
+    ['Worker decoding and bounded campaign music buffers',checkCampaignAudio],
+    ['Original campaign base rebuilding and reserve production', checkCampaignAI],
+    ['Campaign crate continuation and civilian evacuation', checkCampaignRescue],
+    ['Original airborne reinforcement team arrival and unloading', checkCampaignReinforcements],
+    ['Campaign airstrikes, events and reinforcement columns', checkCampaignRules],
+    ['Original campaign country selection and branching', checkCampaignMap],
+    ['Debug damage modifiers match CPU and preserve enemy damage', checkDebug],
+    ['Original campaign opening, menu and first mission', checkCampaignEntry],
+    ['Campaign entry with development archives only',checkCampaignDevelopmentEntry],
+    ['Winter and desert campaign interfaces',checkCampaignTheaters],
+    ['Campaign archive byte ranges', checkCampaignAssets],
+    ['Local save files preserve simulation continuation', checkCampaignState],
+    ['Campaign naval movement and first-mission continuation', checkCampaignSimulation],
+    ['Original score presentation and hall of fame', checkCampaignScore],
+    ['GDI first mission production, reinforcements and victory', checkCampaignVictory],
     ['Batched compute preserves uploads and readback order', checkComputeBatch],
     ['Independent house sight and fixed-tick fast-forward', checkMatchFoundations],
     ['Fixed-tick effects and deferred sprite projection', checkMatchRendering],

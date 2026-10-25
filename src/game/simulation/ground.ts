@@ -129,12 +129,14 @@ export class GpuGround {
   private readonly spritePass;
   private readonly changes?: GpuReinsert;
   private readonly flashSpritePass?: ComputeNode;
+  private readonly source: StorageBufferAttribute;
   constructor(private readonly renderer: WebGPURenderer, private readonly simulation: Pick<GpuSimulation,'units'|'frame'>,
-    private readonly pipeline: PalettePipeline, readonly layout: ReturnType<typeof groundLayout>, scene?: GameScene,
+    private readonly pipeline: PalettePipeline, readonly layout: ReturnType<typeof groundLayout>, private readonly scene?: GameScene,
     flashSource?: {state:StorageBufferAttribute;offset:number;clock:StorageBufferAttribute}) {
     const count = layout.keys.length / 2;
     this.keys = new StorageBufferAttribute(layout.keys.slice(), 1);
     const bindings = new StorageBufferAttribute(layout.bindings, 1), source = new StorageBufferAttribute(layout.packed, 4);
+    this.source=source;
     this.bindings=bindings;
     this.attributes = [this.keys, bindings, source];
     this.order = new GpuOrder(renderer, this.keys, Uint32Array.from({length: count}, (_,i) =>
@@ -279,6 +281,12 @@ export class GpuGround {
   /** One bubble pass using the positions before this tick's simulation update. */
   sort() { this.changes?.clear();this.renderer.compute(this.keyPass);this.changes?.step();this.order.step(); }
   transitionLayers(){if(this.changes){this.changes.clear();this.renderer.compute(this.keyPass);this.changes.step();}}
+  /** CELL.CPP Goodie_Check removes a collected crate from the static ground layer. */
+  setStaticSpriteVisible(index:number,visible:boolean){
+    const sprite=this.scene!.sprites[index],values=this.source.array as Float32Array;
+    values[index*12+2]=visible?sprite.region.width:0;values[index*12+3]=visible?sprite.region.height:0;
+    this.source.addUpdateRange(index*12+2,2);this.source.needsUpdate=true;
+  }
   /** Write the new positions with the order established before the simulation update. */
   updateSprites(rebuildIndex=true) {
     this.renderer.compute(this.spritePass); if(this.flashSpritePass)this.renderer.compute(this.flashSpritePass); if(rebuildIndex)this.pipeline.updateGpuSprites(this.layout.count); this.pipeline.setFrame(this.simulation.frame);

@@ -41,6 +41,7 @@ export function stepBattle(s:BattleSystems,afterFlight?:()=>void){
     s.ore?.damage(battle.frame);
     afterFlight?.();
     if(buildingEffects){
+      for(const animation of economy?.animations.splice(0)??[])buildingEffects.spawn(animation);
       battle.movement.beginOccupancyEdits();buildingEffects.step();battle.movement.endOccupancyEdits();
     }
   });

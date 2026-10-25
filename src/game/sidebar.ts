@@ -1,6 +1,6 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { DataTexture, NearestFilter, RedFormat, RGBAFormat, UnsignedByteType, Vector2, type Node } from 'three/webgpu';
-import { Fn, If, int, ivec2, vec2, textureLoad, uniform } from 'three/tsl';
+import { Fn, If, int, ivec2, textureLoad, uniform } from 'three/tsl';
 import { decodeShp, type Shape } from './formats/shp.ts';
 import { decodeFont } from './formats/font.ts';
 import { intMax, intMin } from '../engine/simulation/integer-nodes.ts';
@@ -19,8 +19,14 @@ export class Sidebar {
   readonly viewport=uniform(new Vector2());
   readonly pointer=uniform(new Vector2(-100,-100));
   readonly draw:(pixel:Node<'vec2'>,color:Node<'vec4'>)=>Node<'vec4'>;
-  readonly width=160;
+  private readonly active=uniform(1,'int');
+  get width(){return this.active.value?160:0;}
+  onResize?:()=>void;
+  toggle(){this.active.value=1-this.active.value;this.dirty=true;this.onResize?.();}
+  contains(x:number,y:number){return y<16||!!this.width&&x>=this.viewport.value.x-160;}
   private readonly pixels=new Uint8Array(160*400);
+  private readonly tabPixels=new Uint8Array(480*16);
+  private readonly tabs:DataTexture;
   private readonly texture:DataTexture;
   private readonly palette:DataTexture;
   private readonly cursor:DataTexture;
@@ -30,6 +36,7 @@ export class Sidebar {
   private readonly scrollOffset=[0,0];
   private readonly scrollDirection=[0,0];
   private readonly font;
+  private readonly tabFont;
   private readonly clockMap:Uint8Array;
   private readonly cameos=new Map<string,Shape>();
   private powerHeight=0;
@@ -51,6 +58,7 @@ export class Sidebar {
   private radarDeactivating=false;
   private readonly radarEnabled=uniform(0,'int');
   onRadarCell?:(cell:number)=>void;
+  onOptions?:()=>void;
   constructor(readonly economy:EconomyRuntime,readonly data:MixSet,readonly radar?:Radar){
     for(const name of ['HSIDE1.SHP','HSIDE2.SHP','HSTRIP.SHP','HCLOCK.SHP','HREPAIR.SHP','HSELL.SHP','HMAP.SHP','HTABS.SHP','HSTRIPUP.SHP','HSTRIPDN.SHP','HPWRBAR.SHP','HPOWER.SHP','HPIPS.SHP','HRADAR.GDI','HRADAR.NOD']){
       const bytes=data.get(name);if(bytes)this.shapes.set(name,decodeShp(bytes));
@@ -60,32 +68,44 @@ export class Sidebar {
       const bytes=data.get(`${type.name}ICNH.TEM`)??data.get(`${type.name}ICON.SHP`);
       if(bytes)this.cameos.set(type.name,decodeShp(bytes));
     }
-    for(const name of ['ION','ATOM']){const bytes=data.get(`${name}ICNH.SHP`)??data.get(`${name}ICON.SHP`);if(bytes)this.cameos.set(name,decodeShp(bytes));}
+    for(const name of ['ION','ATOM','A10']){const bytes=data.get(`${name}ICNH.SHP`)??data.get(`${name}ICON.SHP`);if(bytes)this.cameos.set(name,decodeShp(bytes));}
     this.font=decodeFont(data.require('6POINT.FNT'));
-    this.clockMap=data.require('TCLOCK.MRF');
+    this.tabFont=decodeFont(data.get('12GRNGRD.FNT')??data.require('6POINT.FNT'));
+    this.clockMap=data.require(`${economy.scene.scene.scenario.theater[0].toUpperCase()}CLOCK.MRF`);
     const texture=(data:Uint8Array,width:number,height:number,rgba=false)=>{
       const t=new DataTexture(data,width,height,rgba?RGBAFormat:RedFormat,UnsignedByteType);t.minFilter=t.magFilter=NearestFilter;t.generateMipmaps=false;t.needsUpdate=true;return t;
     };
     this.texture=texture(this.pixels,160,400);
+    this.tabs=texture(this.tabPixels,480,16);
     this.palette=texture(economy.scene.scene.setup.palette,256,1,true);
     const {region,hotX,hotY}=economy.scene.scene.cursors.normal,atlas=economy.scene.scene.setup.spriteAtlas;
     const cursor=new Uint8Array(region.width*region.height);
     for(let y=0;y<region.height;y++)cursor.set(atlas.pixels.subarray((region.y+y)*atlas.width+region.x,(region.y+y)*atlas.width+region.x+region.width),y*region.width);
     this.cursor=texture(cursor,region.width,region.height);
     this.draw=(pixel,color)=>Fn(()=>{
-      const point=ivec2(pixel.sub(this.origin).sub(vec2(this.viewport.x.sub(160),0))),result=color.toVar();
-      If(point.x.greaterThanEqual(0).and(point.x.lessThan(160)),()=>{
+      const screen=ivec2(pixel.sub(this.origin)),point=screen.sub(ivec2(int(this.viewport.x).sub(160),0)),result=color.toVar();
+      const top=screen.y.greaterThanEqual(0).and(screen.y.lessThan(16));
+      If(top,()=>{
+        const tx=int(-1).toVar();
+        If(screen.x.lessThan(160),()=>{tx.assign(screen.x);})
+          .ElseIf(point.x.greaterThanEqual(0),()=>{tx.assign(point.x.add(160));})
+          .ElseIf(screen.x.greaterThanEqual(320).and(screen.x.lessThan(480)),()=>{tx.assign(screen.x);});
+        const ink=int(0).toVar();If(tx.greaterThanEqual(0),()=>{ink.assign(int(textureLoad(this.tabs,ivec2(tx,screen.y)).r.mul(255).round()));});
+        result.assign(textureLoad(this.palette,ivec2(ink,0)));
+      }).ElseIf(this.active.notEqual(0).and(point.x.greaterThanEqual(0)).and(point.x.lessThan(160)),()=>{
         const row=intMax(int(0),intMin(int(399),point.y));
         const ink=int(textureLoad(this.texture,ivec2(point.x,row)).r.mul(255).round()).toVar();
         If(point.y.greaterThanEqual(400),()=>{ink.assign(0);});
         if(radar)If(this.radarEnabled.notEqual(0).and(point.x.greaterThanEqual(16)).and(point.x.lessThan(144)).and(point.y.greaterThanEqual(21)).and(point.y.lessThan(149)),()=>{
           ink.assign(int(textureLoad(radar.target.texture,point.sub(ivec2(16,21))).r.mul(255).round()));
         });
-        const cursorPoint=point.sub(ivec2(this.pointer)).add(ivec2(hotX,hotY));
-        If(cursorPoint.x.greaterThanEqual(0).and(cursorPoint.y.greaterThanEqual(0)).and(cursorPoint.x.lessThan(region.width)).and(cursorPoint.y.lessThan(region.height)),()=>{
-          const value=int(textureLoad(this.cursor,cursorPoint).r.mul(255).round());If(value.notEqual(0),()=>{ink.assign(value);});
-        });
         result.assign(textureLoad(this.palette,ivec2(ink,0)));
+      });
+      If(top.or(this.active.notEqual(0).and(point.x.greaterThanEqual(0)).and(point.x.lessThan(160))),()=>{
+        const cursorPoint=screen.sub(ivec2(this.pointer)).add(ivec2(hotX,hotY));
+        If(cursorPoint.x.greaterThanEqual(0).and(cursorPoint.y.greaterThanEqual(0)).and(cursorPoint.x.lessThan(region.width)).and(cursorPoint.y.lessThan(region.height)),()=>{
+          const value=int(textureLoad(this.cursor,cursorPoint).r.mul(255).round());If(value.notEqual(0),()=>{result.assign(textureLoad(this.palette,ivec2(value,0)));});
+        });
       });
       return result;
     })();
@@ -100,18 +120,17 @@ export class Sidebar {
     }
   }
   private shape(name:string,frame:number,x:number,y:number){this.blit(this.shapes.get(name),frame,x,y);}
-  private text(value:string,x:number,y:number,color=15){
-    for(const ch of value){const glyph=this.font.glyphs[ch.charCodeAt(0)];if(!glyph)continue;
-      for(let yy=0;yy<glyph.height;yy++)for(let xx=0;xx<glyph.width;xx++)if(glyph.pixels[yy*glyph.width+xx]&&x+xx>=0&&x+xx<160&&y+yy>=0&&y+yy<400)this.pixels[(y+yy)*160+x+xx]=color;
-      x+=glyph.width+1;
-    }
-  }
   columns():SidebarEntry[][]{
     const all=this.economy.available,right:SidebarEntry[]=all.filter(t=>t.category!=='building');
-    for(const kind of ['ion','nuke'] as const)if(this.economy.supers?.charges[this.economy.owner][kind].present)right.push({name:kind==='ion'?'ION':'ATOM',category:'aircraft',special:kind});
+    for(const kind of ['ion','nuke','airstrike'] as const)if(this.economy.supers?.charges[this.economy.owner][kind].present)right.push({name:kind==='ion'?'ION':kind==='nuke'?'ATOM':'A10',category:'aircraft',special:kind});
     return [all.filter(t=>t.category==='building'),right];
   }
   hit(x:number,y:number,button:number){
+    if(y>=0&&y<16){
+      if(button===0){if(x<160)this.onOptions?.();else if(x>=this.viewport.value.x-160)this.toggle();}
+      return true;
+    }
+    if(!this.width)return false;
     x-=this.viewport.value.x-160;if(x<0)return false;
     if(this.radarActive&&x>=16&&x<144&&y>=21&&y<149&&button===0){const cell=this.radar?.cellAt(x-16,y-21);if(cell!==undefined)this.onRadarCell?.(cell);return true;}
     if(y>=160&&y<176&&button===0){if(x<54)this.economy.toggle('repair');else if(x<108)this.economy.toggle('sell');else this.radar?.toggle();this.dirty=true;return true;}
@@ -177,6 +196,23 @@ export class Sidebar {
   drawPixels(){
     if(!this.dirty)return;
     this.dirty=false;
+    this.tabPixels.fill(0);
+    const tab=this.shapes.get('HTABS.SHP');
+    if(tab)for(let section=0;section<3;section++)for(let y=0;y<Math.min(16,tab.height);y++)for(let x=0;x<Math.min(160,tab.width);x++)this.tabPixels[y*480+section*160+x]=tab.frames[0][y*tab.width+x];
+    // Ported from TAB.CPP Draw_It and DIALOG.CPP Simple_Text_Print, palette 11.
+    const green=[0,1,4,166,41,3];
+    for(const [section,label] of [[0,'Options'],[1,'Sidebar'],[2,String(this.economy.house.money)]] as const){
+      const font=section===2?this.font:this.tabFont;
+      const width=Array.from(label).reduce((sum,c)=>sum+(font.glyphs[c.charCodeAt(0)]?.width??0),0);
+      let left=section*160+Math.trunc((160-width)/2);
+      for(const c of label){const glyph=font.glyphs[c.charCodeAt(0)];if(!glyph)continue;
+        for(let y=0;y<Math.min(16,glyph.height);y++)for(let x=0;x<glyph.width;x++){
+          const ink=glyph.pixels[y*glyph.width+x];if(ink)this.tabPixels[y*480+left+x]=section===2?15:(green[ink]??0);
+        }
+        left+=glyph.width;
+      }
+    }
+    this.tabs.needsUpdate=true;
     this.pixels.fill(0);
     this.shape('HTABS.SHP',0,0,0);
     this.shape(`HRADAR.${this.economy.faction===2?'NOD':'GDI'}`,this.radarFrame,0,15);
@@ -188,7 +224,6 @@ export class Sidebar {
     this.blit(bar,2+color,0,180,false,bottom);this.blit(bar,3+color,0,280,false,bottom);this.shape('HPOWER.SHP',0,0,400-drain);
     this.shape('HREPAIR.SHP',Number(this.economy.mode==='repair'),4,160);
     this.shape('HSELL.SHP',Number(this.economy.mode==='sell'),57,160);this.shape('HMAP.SHP',0,110,160);
-    this.text(String(this.economy.house.money),45,3);
     const columns=this.strips;
     for(let col=0;col<2;col++){
       const x=col?88:18;
@@ -211,5 +246,5 @@ export class Sidebar {
     }
     this.texture.needsUpdate=true;
   }
-  dispose(){this.texture.dispose();this.palette.dispose();this.cursor.dispose();}
+  dispose(){this.texture.dispose();this.tabs.dispose();this.palette.dispose();this.cursor.dispose();}
 }

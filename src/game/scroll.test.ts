@@ -31,6 +31,10 @@ function moves(view: Scroller, inputs: ScrollInput[]) {
 }
 
 describe('scrolling as ScrollClass::AI does', () => {
+  test('uses the selected original scroll-rate setting', () => {
+    const view = scroller(); view.rate = 6;
+    expect(moves(view, Array(5).fill(atRightEdge))).toEqual([15, 31, 31, 31, 31]);
+  });
   // Rates 8, 7, 6 and 5 of the rate table move 0x10, 0x20, 0x40 and 0x80 leptons, and the default
   // scroll rate of 4 holds the speed at rate 5. Moving east scales each distance by the cosine table's
   // 0x7F and shifts right by 7 (COORD.CPP, Move_Point), which drops a lepton or so.

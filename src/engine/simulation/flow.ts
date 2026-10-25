@@ -13,6 +13,18 @@ const MAX_FIELDS = 64, BUFFER_BUDGET = 16 * 1024 * 1024;
 export const flowCapacity = (cells: number, users: number) => Math.max(1, Math.min(users, MAX_FIELDS, Math.floor(BUFFER_BUDGET / (cells * 4))));
 export const flowRounds = (cells: number) => cells <= 4096 ? cells : 64;
 
+/** Additional cache keys may describe different traversal constraints for one destination. */
+export interface CpuFlowPolicy {
+  keys: number;
+  target(key: number): number;
+  allows(cell: number, key: number): boolean;
+}
+export interface GpuFlowPolicy {
+  keys: number;
+  target(key: Node<'int'>): Node<'int'>;
+  allows(cell: Node<'int'>, key: Node<'int'>): Node<'bool'>;
+}
+
 /** Bounded target cache. Only pool exhaustion can evict a completed, still-referenced field. */
 export class CpuFlowFields {
   readonly capacity: number;
@@ -23,36 +35,37 @@ export class CpuFlowFields {
   readonly next: Int32Array;
   readonly schedule = new Int32Array(1);
   private readonly frontier: Set<number>[];
-  constructor(readonly grid: Grid, users: number) {
+  constructor(readonly grid: Grid, users: number, readonly policy?: CpuFlowPolicy) {
     const cells = grid.edges.length;
+    if(policy&&cells>4096)throw new Error('Constrained fields require a grid of at most 4096 cells');
     this.capacity = flowCapacity(cells, users);
     this.fields = new Int32Array(this.capacity * FIELD_WORDS);
     for (let slot = 0; slot < this.capacity; slot++) this.fields[slot * FIELD_WORDS] = -1;
-    this.lookup = new Int32Array(cells).fill(-1);
+    this.lookup = new Int32Array(policy?.keys??cells).fill(-1);
     this.distance = new Int32Array(cells * this.capacity).fill(UNREACHABLE);
     this.scratch = this.distance.slice();
     this.next = new Int32Array(this.distance.length).fill(-1);
     this.frontier = Array.from({ length: this.capacity }, () => new Set());
   }
   step(goals: Int32Array) {
-    const cells = this.grid.edges.length, requested = new Set(Array.from(goals).filter(goal => goal >= 0));
+    const cells = this.grid.edges.length, keys=this.lookup.length, requested = new Set(Array.from(goals).filter(goal => goal >= 0));
     for (let slot = 0; slot < this.capacity; slot++) {
       const at = slot * FIELD_WORDS, target = this.fields[at];
       if (target >= 0 && !requested.has(target)) { this.lookup[target] = -1; this.fields.set([-1, 0, 0], at); }
     }
     const pending = [...requested].filter(target => this.lookup[target] < 0)
-      .sort((a, b) => (a - this.schedule[0] + cells) % cells - (b - this.schedule[0] + cells) % cells);
+      .sort((a, b) => (a - this.schedule[0] + keys) % keys - (b - this.schedule[0] + keys) % keys);
     let cursor = 0;
     for (let pass = 0; pass < 2; pass++) for (let slot = 0; slot < this.capacity && cursor < pending.length; slot++) {
       const at = slot * FIELD_WORDS, old = this.fields[at];
       if (pass === 0 ? old >= 0 : old < 0 || !this.fields[at + FIELD_READY]) continue;
       if (old >= 0) this.lookup[old] = -1;
       const target = pending[cursor++]; this.lookup[target] = slot;
-      this.fields.set([target, 0, 1], at); this.schedule[0] = (target + 1) % cells;
+      this.fields.set([target, 0, 1], at); this.schedule[0] = (target + 1) % keys;
     }
     for (let slot = 0; slot < this.capacity; slot++) {
-      const at = slot * FIELD_WORDS, target = this.fields[at], base = slot * cells;
-      if (target < 0 || this.fields[at + FIELD_READY]) continue;
+      const at = slot * FIELD_WORDS, key = this.fields[at], target=this.policy?.target(key)??key, base = slot * cells;
+      if (key < 0 || this.fields[at + FIELD_READY]) continue;
       if (this.fields[at + FIELD_RESET]) {
         this.distance.fill(UNREACHABLE, base, base + cells); this.scratch.fill(UNREACHABLE, base, base + cells);
         this.distance[base + target] = this.scratch[base + target] = 0;
@@ -63,6 +76,7 @@ export class CpuFlowFields {
       } else for (let round = 0; round < flowRounds(cells); round++) {
         const changed = new Set<number>();
         for (const cell of this.frontier[slot]) for (let dir = 0; dir < 8; dir++) {
+          if(this.policy&&!this.policy.allows(cell,key))continue;
           const [dx, dy] = DIRECTIONS[dir], x = cell % this.grid.width + dx, y = Math.floor(cell / this.grid.width) + dy;
           if (x < 0 || y < 0 || x >= this.grid.width || y >= this.grid.height) continue;
           const other = y * this.grid.width + x;
@@ -79,9 +93,11 @@ export class CpuFlowFields {
         let chosen = -1;
         for (let dir = 0; dir < 8; dir++) if (chosen < 0 && (this.grid.edges[cell] & (1 << dir))) {
           const [dx, dy] = DIRECTIONS[dir], other = cell + dy * this.grid.width + dx;
-          if (this.distance[base + other] + (dir & 1 ? 362 : 256) === this.distance[base + cell]) chosen = other;
+          if ((!this.policy||this.policy.allows(other,key))&&this.distance[base + other] + (dir & 1 ? 362 : 256) === this.distance[base + cell]) chosen = other;
         }
-        this.next[base + cell] = chosen;
+        // A constrained source may leave a forbidden cell, but other actors
+        // must not use it as an opportunistic sidestep. Preserve that bit here.
+        this.next[base + cell] = chosen>=0&&this.policy&&!this.policy.allows(cell,key)?chosen+cells:chosen;
       }
     }
   }
@@ -96,6 +112,7 @@ const uniformLoad = wgslFn('fn flowUniformLoad(value: ptr<workgroup, u32>) -> u3
 type WorkgroupUint = { element(index: Node<'uint'>): Node<'uint'> };
 
 export class GpuFlowFields {
+  get saveBuffers() { return this.attributes; }
   private readonly edges: StorageBufferAttribute;
   private readonly invalidatePass: ComputeNode;
   readonly capacity: number;
@@ -107,28 +124,29 @@ export class GpuFlowFields {
   private readonly attributes: StorageBufferAttribute[] = [];
   readonly kernels: ComputeNode[];
   readonly prepareKernels: ComputeNode[] = [];
-  constructor(private readonly renderer: WebGPURenderer, readonly grid: Grid, goals: StorageBufferAttribute) {
-    const cells = grid.edges.length, users = goals.count, words = Math.ceil(cells / 32);
+  constructor(private readonly renderer: WebGPURenderer, readonly grid: Grid, goals: StorageBufferAttribute, policy?:GpuFlowPolicy) {
+    const cells = grid.edges.length, keys=policy?.keys??cells, users = goals.count, words = Math.ceil(cells / 32), keyWords=Math.ceil(keys/32);
+    if(policy&&cells>4096)throw new Error('Constrained fields require a grid of at most 4096 cells');
     const capacity = this.capacity = flowCapacity(cells, users);
     const keep = (data: Int32Array | Uint32Array) => {
       const attribute = new StorageBufferAttribute(data, 1); this.attributes.push(attribute); return attribute;
     };
     const initial = new Int32Array(capacity * FIELD_WORDS);
     for (let slot = 0; slot < capacity; slot++) initial[slot * FIELD_WORDS] = -1;
-    this.fields = keep(initial); this.lookup = keep(new Int32Array(cells).fill(-1));
+    this.fields = keep(initial); this.lookup = keep(new Int32Array(keys).fill(-1));
     this.distance = keep(new Int32Array(cells * capacity).fill(UNREACHABLE));
     this.next = keep(new Int32Array(cells * capacity).fill(-1)); this.schedule = keep(new Int32Array(1));
-    const meta = storage(this.fields, 'int', capacity * FIELD_WORDS).setName('flow_meta'), index = storage(this.lookup, 'int', cells).setName('flow_index');
+    const meta = storage(this.fields, 'int', capacity * FIELD_WORDS).setName('flow_meta'), index = storage(this.lookup, 'int', keys).setName('flow_index');
     const dist = storage(this.distance, 'int', cells * capacity).setName('flow_dist'), next = storage(this.next, 'int', cells * capacity).setName('flow_next');
     const schedule = storage(this.schedule, 'int', 1).setName('flow_schedule');
     const scratchAttribute = keep(new Uint32Array(cells * capacity).fill(UNREACHABLE));
     const scratch = storage(scratchAttribute, 'uint', cells * capacity).setName('flow_scratch').toAtomic();
-    const requested = storage(keep(new Uint32Array(words)), 'uint', words).setName('flow_requested').toAtomic();
+    const requested = storage(keep(new Uint32Array(keyWords)), 'uint', keyWords).setName('flow_requested').toAtomic();
     // A second bitmap skips empty groups of 1024 cells. Traversal remains in
     // ascending cell order, including when the bounded pool must rotate goals.
-    const blockWords = Math.ceil(words / 32);
+    const blockWords = Math.ceil(keyWords / 32);
     const requestedBlocks = storage(keep(new Uint32Array(blockWords)), 'uint', blockWords).setName('flow_requested_blocks').toAtomic();
-    const pending = storage(keep(new Int32Array(cells)), 'int', cells).setName('flow_pending');
+    const pending = storage(keep(new Int32Array(keys)), 'int', keys).setName('flow_pending');
     const goal = storage(goals, 'int', users).setName('flow_goal').toReadOnly();
     const edgeAttribute = keep(Int32Array.from(grid.edges));
     this.edges=edgeAttribute;
@@ -137,7 +155,7 @@ export class GpuFlowFields {
     const clear = Fn(() => {
       atomicStore(requested.element(instanceIndex), uint(0));
       If(instanceIndex.lessThan(uint(blockWords)), () => { atomicStore(requestedBlocks.element(instanceIndex), uint(0)); });
-    })().compute(words);
+    })().compute(keyWords);
     const request = Fn(() => {
       const target = goal.element(instanceIndex);
       If(target.greaterThanEqual(int(0)), () => {
@@ -191,7 +209,7 @@ export class GpuFlowFields {
           const target = pending.element(start.add(taken).mod(size)).toVar(); taken.addAssign(int(1));
           index.element(target).assign(slot); meta.element(at).assign(target);
           meta.element(at.add(int(FIELD_READY))).assign(0); meta.element(at.add(int(FIELD_RESET))).assign(1);
-          schedule.element(0).assign(target.add(int(1)).mod(int(cells)));
+          schedule.element(0).assign(target.add(int(1)).mod(int(keys)));
         });
       });
     })().compute(1);
@@ -220,12 +238,13 @@ export class GpuFlowFields {
         If(lane.equal(int(0)), () => { flag.element(uint(0)).assign(uint(meta.element(at.add(int(FIELD_RESET))))); });
         If(active().notEqual(uint(0)), () => {
           Loop({ start: lane, end: int(cells), update: '+= 128', type: 'int' }, ({ i: cell }) => {
-            const value = select(cell.equal(meta.element(at)), uint(0), uint(UNREACHABLE)).toVar();
+            const target=policy?.target(meta.element(at))??meta.element(at);
+            const value = select(cell.equal(target), uint(0), uint(UNREACHABLE)).toVar();
             atomicStore(scratch.element(base.add(cell)), value); dist.element(base.add(cell)).assign(int(value));
             next.element(base.add(cell)).assign(-1);
           });
           Loop({ start: lane, end: int(words), update: '+= 128', type: 'int' }, ({ i: word }) => {
-            const target = meta.element(at);
+            const target = policy?.target(meta.element(at))??meta.element(at);
             frontier.element(bitsBase.add(word)).assign(select(word.equal(target.div(int(32))), uint(1).shiftLeft(uint(target.mod(int(32)))), uint(0)));
             atomicStore(changed.element(bitsBase.add(word)), uint(0));
           });
@@ -241,11 +260,12 @@ export class GpuFlowFields {
               const cell = word.mul(int(32)).add(int(trailingZeros(bits))).toVar();
               bits.assign(bits.bitAnd(bits.sub(uint(1))));
               const x = cell.mod(int(grid.width)), y = cell.div(int(grid.width));
+              const allowed=policy?policy.allows(cell,meta.element(at)):int(1).equal(1);
               for (let dir = 0; dir < 8; dir++) {
                 const [dx, dy] = DIRECTIONS[dir], xx = x.add(int(dx)), yy = y.add(int(dy));
                 If(xx.greaterThanEqual(int(0)).and(yy.greaterThanEqual(int(0))).and(xx.lessThan(int(grid.width))).and(yy.lessThan(int(grid.height))), () => {
                   const other = cell.add(int(dy * grid.width + dx)).toVar();
-                  If(edge.element(other).bitAnd(int(1 << ((dir + 4) & 7))).notEqual(int(0)), () => {
+                  If(edge.element(other).bitAnd(int(1 << ((dir + 4) & 7))).notEqual(int(0)).and(allowed), () => {
                     const candidate = uint(dist.element(base.add(cell)).add(int(dir & 1 ? 362 : 256))).toVar();
                     const old = atomicMin(scratch.element(base.add(other)), candidate).toVar();
                     If(candidate.lessThan(old), () => {
@@ -291,9 +311,11 @@ export class GpuFlowFields {
             for (let dir = 0; dir < 8; dir++) {
               const [dx, dy] = DIRECTIONS[dir], other = cell.add(int(dy * grid.width + dx));
               If(chosen.lessThan(int(0)).and(edge.element(cell).bitAnd(int(1 << dir)).notEqual(int(0))), () => {
-                If(dist.element(base.add(other)).add(int(dir & 1 ? 362 : 256)).equal(dist.element(base.add(cell))), () => { chosen.assign(other); });
+                const allowed=policy?policy.allows(other,meta.element(at)):int(1).equal(1);
+                If(allowed.and(dist.element(base.add(other)).add(int(dir & 1 ? 362 : 256)).equal(dist.element(base.add(cell)))), () => { chosen.assign(other); });
               });
             }
+            if(policy)If(chosen.greaterThanEqual(0).and(policy.allows(cell,meta.element(at)).not()),()=>{chosen.addAssign(cells);});
             next.element(base.add(cell)).assign(chosen);
           });
         });

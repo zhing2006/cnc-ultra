@@ -9,7 +9,7 @@ export class SimulationClock {
   get due() { return this.accumulated + 1e-8 >= 1000 / this.hz; }
   accumulate(now: number) {
     if (this.previous === undefined) { this.previous = now; return; }
-    this.accumulated += Math.max(0, now - this.previous) * this.speed;
+    this.accumulated = this.speed === Infinity ? Infinity : this.accumulated + Math.max(0, now - this.previous) * this.speed;
     this.previous = now;
     // Bound wall-time debt, not the number of ticks per rendering frame. Every executed
     // tick still advances the simulation by exactly one fixed step at every speed.

@@ -1,6 +1,7 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 // Ported from BDATA.CPP, UDATA.CPP, IDATA.CPP and AADATA.CPP, type constructors.
 // DEFINES.H enables PATCH and disables ADVANCED. BuildingTypeClass doubles base strength.
+import { EXTRA_ACTORS } from './extra-actors.ts';
 export type ProductionCategory = 'building' | 'vehicle' | 'infantry' | 'aircraft';
 export interface ProductionType {
   name: string; category: ProductionCategory; level: number; prerequisites: readonly string[];
@@ -123,3 +124,8 @@ export const PRODUCTION_TYPES: readonly ProductionType[] = [
   {"name":"C17","category":"aircraft","level":99,"prerequisites":[],"factions":3,"buildable":false,"cost":800,"strength":25,"sight":0},
 ];
 export const PRODUCTION = new Map(PRODUCTION_TYPES.map(type => [type.name, type]));
+// BDATA.CPP: civilian structures have health and crews, but no construction factory or upkeep.
+for (const actor of EXTRA_ACTORS) if (actor.domain === 2 && !PRODUCTION.has(actor.name)) PRODUCTION.set(actor.name, {
+  name: actor.name, category: 'building', level: 99, prerequisites: [], factions: 0, buildable: false,
+  cost: actor.cost, strength: actor.strength, sight: actor.sight, factory: null, power: 0, drain: 0, capacity: 0, repairable: false,
+});

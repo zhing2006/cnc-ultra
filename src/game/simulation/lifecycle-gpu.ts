@@ -4,7 +4,7 @@ import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { computeFunction } from '../../engine/simulation/compute-function.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { randomNode } from '../../engine/simulation/integer-nodes.ts';
-import { MOVEMENT,movementType } from '../data/movement.ts';
+import { GROUND_SPEED,MOVEMENT,movementType } from '../data/movement.ts';
 import { combatTypes } from '../data/combat.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import { placementOffsets } from './building-rules.ts';
@@ -14,7 +14,7 @@ import * as C from './combat-state.ts';
 import { FACTORY_POINT,FACTORY_EXITS } from './services-cpu.ts';
 import { AIR_WORDS,ACONTACT,AGENERATION } from './aircraft-cpu.ts';
 
-import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
+import { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER,DIRECT_ENTRY,ORDER,CREATE_TECHNICIAN,CREATE_LOANER } from './lifecycle-state.ts';
 export { CHANGE_WORDS,CREATE,HEALTH,REMOVE,DESTINATION,TARGET,AMMO,FACING,STATUS,NEARBY,INITIAL_ORDER } from './lifecycle-state.ts';
 const AIR_EDGE=512;
 /** Recorded CPU construction commands are applied without copying live GPU state to the CPU. */
@@ -49,7 +49,10 @@ export class GpuLifecycle {
     }
     this.placementOffset=starts.length+values.length;
     const walkOffset=this.placementOffset+battle.setup.grid.edges.length;
-    const packed=Int32Array.from([...starts.map(i=>i+starts.length),...values,...Array.from(battle.setup.passable??battle.setup.grid.edges),...Array.from(battle.setup.passable??battle.setup.grid.edges),...Array.from(battle.setup.passable??battle.setup.grid.edges)]);
+    const edgeTerrain=this.placementOffset+battle.setup.grid.edges.length*3;
+    const locomotion=edgeTerrain+battle.setup.grid.edges.length;
+    const packed=Int32Array.from([...starts.map(i=>i+starts.length),...values,...Array.from(battle.setup.passable??battle.setup.grid.edges),...Array.from(battle.setup.passable??battle.setup.grid.edges),...Array.from(battle.setup.passable??battle.setup.grid.edges),
+      ...Array.from(battle.setup.land,land=>GROUND_SPEED[land].reduce((mask,speed,index)=>mask|(speed?1<<index:0),0)),...MOVEMENT.map(type=>type.locomotion)]);
     this.constants=new StorageBufferAttribute(packed,1);
     battle.movement.mapObservers.add((_edges,passable)=>{(this.constants.array as Int32Array).set(passable,walkOffset);this.constants.needsUpdate=true;});
     const data=storage(this.constants,'int',packed.length).toReadOnly(),cmd=storage(this.commands,'int',this.commands.count).toReadOnly();
@@ -59,6 +62,11 @@ export class GpuLifecycle {
     const pending=storage(battle.movement.pending,'int',count*2);
     const requests=storage(this.commands,'int',this.commands.count);
     const index=battle.movement.actorIndex,locations=storage(index.buffer,'uint',index.buffer.count).toReadOnly();
+    const order=(id:import('three/webgpu').Node<'int'>,p:import('three/webgpu').Node<'int'>,c:import('three/webgpu').Node<'int'>)=>{
+      s.element(c.add(C.CMISSION)).assign(cmd.element(p.add(8)));s.element(c.add(C.CTARGET)).assign(cmd.element(p.add(14)));
+      s.element(c.add(C.CFIRE)).assign(-1);s.element(c.add(C.CSCAN)).assign(0);s.element(c.add(C.CSUSPENDED_MISSION)).assign(0);
+      goals.element(id).assign(cmd.element(p.add(13)));paths.element(id).assign(-1);
+    };
     this.exitCheck=Fn(()=>{
       const id=requests.element(int(instanceIndex).add(this.createOffset+1)),at=id.mul(CHANGE_WORDS);
       If(requests.element(at).bitAnd(CREATE).notEqual(0).and(requests.element(at.add(12)).greaterThan(0)),()=>{
@@ -96,6 +104,7 @@ export class GpuLifecycle {
         If(mask.bitAnd(AMMO).notEqual(0),()=>{s.element(c.add(C.CAMMO)).assign(cmd.element(p.add(7)));});
         If(mask.bitAnd(DESTINATION).notEqual(0),()=>{goals.element(id).assign(cmd.element(p.add(7)));paths.element(id).assign(-1);s.element(c.add(C.CMISSION)).assign(C.MOVE);});
         If(mask.bitAnd(TARGET).notEqual(0),()=>{s.element(c.add(C.CTARGET)).assign(cmd.element(p.add(7)));s.element(c.add(C.CMISSION)).assign(C.ATTACK);s.element(c.add(C.CSCAN)).assign(0);});
+        If(mask.bitAnd(ORDER).notEqual(0),()=>{order(id,p,c);});
       });
     })().compute(1);
     const unoccupied=computeFunction(([target,id]:[import('three/webgpu').Node<'int'>,import('three/webgpu').Node<'int'>])=>{
@@ -105,6 +114,7 @@ export class GpuLifecycle {
       });return result.notEqual(0);
     },{name:'lifecycleCellClear',type:'bool',inputs:[{name:'cell',type:'int'},{name:'actor_id',type:'int'}]});
     this.kernel=Fn(()=>{
+      const entryOrigin=int(-1).toVar(),entryCell=int(-1).toVar();
       Loop({start:0,end:cmd.element(this.createOffset),type:'int'},({i})=>{
         const id=cmd.element(i.add(this.createOffset+1)).toVar();
         // These addresses are also used without CREATE; initialize before that branch.
@@ -113,6 +123,27 @@ export class GpuLifecycle {
         If(mask.bitAnd(CREATE).notEqual(0),()=>{
           const type=cmd.element(p.add(1)).toVar(),row=data.element(type).toVar(),cell=cmd.element(p.add(3)).toVar();
           const free=int(1).toVar(),slot=int(-1).toVar(),domain=data.element(row.add(1)),ignore=cmd.element(p.add(9));
+          if(battle.setup.bounds)If(mask.bitAnd(DIRECT_ENTRY).notEqual(0),()=>{
+            const bounds=battle.setup.bounds!;
+            If(entryOrigin.notEqual(cell),()=>{entryOrigin.assign(cell);entryCell.assign(cell);});cell.assign(entryCell);
+            const clear=(x:import('three/webgpu').Node<'int'>,y:import('three/webgpu').Node<'int'>)=>{
+              const available=int(0).toVar(),target=y.mul(width).add(x);
+              If(x.greaterThanEqual(0).and(y.greaterThanEqual(0)).and(x.lessThan(width)).and(y.lessThan(battle.setup.grid.height))
+                .and(x.lessThan(bounds.x).or(y.lessThan(bounds.y)).or(x.greaterThanEqual(bounds.x+bounds.width)).or(y.greaterThanEqual(bounds.y+bounds.height))),()=>{
+                If(data.element(target.add(edgeTerrain)).bitAnd(int(1).shiftLeft(data.element(type.add(locomotion)))).notEqual(0),()=>{
+                  const spots=int(0).toVar();Loop(5,({i})=>{If(occupancy.element(target.mul(5).add(i)).equal(uint(0)),()=>{spots.addAssign(1);});});
+                  available.assign(int(select(data.element(row).notEqual(0),spots.greaterThan(0),spots.equal(5))));
+                });
+              });return available.notEqual(0);
+            };
+            If(clear(cell.mod(width),cell.div(width)).not(),()=>{
+              const found=int(-1).toVar();
+              for(const [dx,dy] of [[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]]){
+                If(found.lessThan(0),()=>{const x=cell.mod(width).add(dx),y=cell.div(width).add(dy);If(clear(x,y),()=>{found.assign(y.mul(width).add(x));});});
+              }
+              If(found.lessThan(0),()=>{free.assign(0);}).Else(()=>{cell.assign(found);});
+            });entryCell.assign(cell);
+          });
           If(mask.bitAnd(NEARBY).notEqual(0),()=>{
             If(unoccupied(cell,id).not(),()=>{
               const center=u.element(ignore.mul(U.WORDS).add(U.UCELL)),found=int(-1).toVar();
@@ -148,6 +179,7 @@ export class GpuLifecycle {
             for(const field of [U.UDEST,U.UTRACK,U.UJUMP,U.UJUMP_TRACK,U.UROUTE,U.UMIDDLE,U.UOVERRUN_CELL])u.element(at.add(field)).assign(-1);
             for(const field of [C.CTARGET,C.CAPPROACH_GOAL,C.CLOCAL_DEST,C.CFIRE,C.CDEATH,C.CLAST_FIRE,C.CCELEBRATED,C.CKILLER,C.CCREW])s.element(c.add(field)).assign(-1);
             u.element(at.add(U.UGENERATION)).assign(generation);u.element(at.add(U.UTYPE)).assign(type);
+            u.element(at.add(U.UFLAGS)).assign(mask.shiftRight(13).bitAnd(3));
             u.element(at.add(U.UCLOAK_STAGE)).assign(select(type.equal(movementType('STNK')),int(1),int(0)));
             u.element(at.add(U.UX)).assign(cell.mod(width).mul(256).add(data.element(row.add(5))));
             u.element(at.add(U.UY)).assign(cell.div(width).mul(256).add(data.element(row.add(6))));
@@ -166,10 +198,11 @@ export class GpuLifecycle {
             });
             s.element(c.add(C.CTURRET)).assign(cmd.element(p.add(5)));s.element(c.add(C.CTURN)).assign(cmd.element(p.add(5)));
             s.element(c.add(C.CSECOND)).assign(int(data.element(row.add(4)).equal(0)));s.element(c.add(C.CAMMO)).assign(data.element(row.add(3)));
-            s.element(c.add(C.CSEEN)).assign(1);s.element(c.add(C.CMISSION)).assign(cmd.element(p.add(8)));s.element(c.add(C.CARM)).assign(select(mask.bitAnd(STATUS).notEqual(0),int(0),cmd.element(p.add(10))));
+            s.element(c.add(C.CSEEN)).assign(battle.setup.campaignLevel===undefined?int(1):int(cmd.element(p.add(2)).equal(0)));s.element(c.add(C.CMISSION)).assign(cmd.element(p.add(8)));s.element(c.add(C.CARM)).assign(select(mask.bitAnd(STATUS).notEqual(0),int(0),cmd.element(p.add(10))));
             s.element(c.add(C.CPOWER)).assign(256);s.element(c.add(C.CACTIVE)).assign(1);
             goals.element(id).assign(-1);paths.element(id).assign(-1);pending.element(id.mul(2)).assign(-1);
             If(mask.bitAnd(INITIAL_ORDER).notEqual(int(0)),()=>{goals.element(id).assign(cmd.element(p.add(13)));s.element(c.add(C.CTARGET)).assign(cmd.element(p.add(14)));});
+            If(mask.bitAnd(DIRECT_ENTRY).notEqual(0),()=>{paths.element(id).assign(U.DIRECT_STEP);goals.element(id).addAssign(cell.sub(cmd.element(p.add(3))));});
             If(domain.equal(1).and(cmd.element(p.add(12)).greaterThan(0)),()=>{
               const parent=cmd.element(p.add(12)).sub(1).mul(U.WORDS),origin=u.element(parent.add(U.UORIGIN));
               If(u.element(parent.add(U.UTYPE)).equal(movementType('HPAD')),()=>{
@@ -218,17 +251,22 @@ export class GpuLifecycle {
         If(mask.bitAnd(AMMO).notEqual(0),()=>{s.element(c.add(C.CAMMO)).assign(cmd.element(p.add(7)));});
         If(mask.bitAnd(DESTINATION).notEqual(0),()=>{goals.element(id).assign(cmd.element(p.add(7)));paths.element(id).assign(-1);s.element(c.add(C.CMISSION)).assign(C.MOVE);});
         If(mask.bitAnd(TARGET).notEqual(0),()=>{s.element(c.add(C.CTARGET)).assign(cmd.element(p.add(7)));s.element(c.add(C.CMISSION)).assign(C.ATTACK);s.element(c.add(C.CSCAN)).assign(0);});
+        If(mask.bitAnd(ORDER).notEqual(0),()=>{order(id,p,c);});
       });
     })().compute(1);
   }
-  create(id:number,unit:U.UnitPlacement,options:{ignore?:number;arm?:number;mission?:number;nearby?:boolean;destination?:number;target?:number}={}){
+  create(id:number,unit:U.UnitPlacement,options:{ignore?:number;arm?:number;mission?:number;nearby?:boolean;destination?:number;target?:number;direct?:boolean}={}){
     this.changed.add(id);this.statuses[id]=-1;
     const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;
-    const mask=CREATE|(options.nearby?NEARBY:0)|(options.destination!==undefined||options.target!==undefined?INITIAL_ORDER:0);
+    const mask=CREATE|(options.nearby?NEARBY:0)|(options.destination!==undefined||options.target!==undefined?INITIAL_ORDER:0)|(options.direct?DIRECT_ENTRY:0)|((unit.flags??0)&U.TECHNICIAN?CREATE_TECHNICIAN:0)|((unit.flags??0)&U.LOANER?CREATE_LOANER:0);
     data.set([mask,unit.type,unit.owner??0,unit.cell,unit.health??MOVEMENT[unit.type].strength,unit.facing??0,unit.altitude??0,-1,options.mission??C.GUARD,options.ignore??-1,options.arm??0,unit.attached??0,unit.enter??0,options.destination??-1,options.target??-1],at);
   }
   setPlacementClear(clear:ArrayLike<number>){const values=this.constants.array as Int32Array;values.set(clear,this.placementOffset);values.set(clear,this.placementOffset+2*this.battle.setup.grid.edges.length);this.constants.needsUpdate=true;this.battle.movement.actorIndex.setBuildable(clear);}
   edit(id:number,mask:number,value=0){this.changed.add(id);const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;data[at]|=mask;data[at+(mask===HEALTH?4:7)]=value;}
+  order(id:number,mission:number,target=-1,destination=-1){
+    this.changed.add(id);const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;
+    data[at]|=ORDER;data[at+8]=mission;data[at+13]=destination;data[at+14]=target;
+  }
   face(id:number,value:number){this.changed.add(id);const data=this.commands.array as Int32Array,at=id*CHANGE_WORDS;data[at]|=FACING;data[at+5]=value;}
   status(id:number,power:number,active:boolean){
     const value=Math.min(256,power)+(active?65536:0);if(this.statuses[id]===value)return;

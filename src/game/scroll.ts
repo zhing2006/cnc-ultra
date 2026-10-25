@@ -44,6 +44,7 @@ export interface ScrollInput {
  * Positions are leptons from the top-left of the 64 × 64 map, kept as separate x and y.
  */
 export class Scroller {
+  rate = SCROLL_RATE;
   /** Top-left of the view. */
   x = 0;
   y = 0;
@@ -181,8 +182,8 @@ export class Scroller {
       const control = dirFacing(this.direction);
 
       let rate = 8 - this.inertia;
-      if (rate < SCROLL_RATE + 1) {
-        rate = SCROLL_RATE + 1;
+      if (rate < this.rate + 1) {
+        rate = this.rate + 1;
         this.inertia = 8 - rate;
       }
       // Holding the right mouse button slows scrolling down.

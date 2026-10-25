@@ -3,18 +3,17 @@ import { EconomyRuntime } from '../game/simulation/economy-runtime.ts';
 import type { GpuCombat } from '../game/simulation/combat-gpu.ts';
 import { DESTINATION } from '../game/simulation/lifecycle-gpu.ts';
 import type { economyScene } from './economy-scene.ts';
-import { accelerateProduction, type DemoSpeed } from './production.ts';
+import type { DemoSpeed } from './production.ts';
 
 /** Optional cheats and enemy waves belong to the sandbox, never to the match rules. */
 export class DemoEconomyRuntime extends EconomyRuntime {
   waves = false;
-  productionSpeed: DemoSpeed = 1;
+  get productionSpeed() { return this.current.debugBuildSpeed; }
   constructor(battle: GpuCombat, override readonly scene: ReturnType<typeof economyScene>, faction = 1,
     private readonly reinforcements = false) {
     super(battle, scene, faction);
   }
-  setProductionSpeed(speed: DemoSpeed) { this.command(() => { this.productionSpeed = speed; }); }
-  protected override stepProduction() { accelerateProduction(this.queues, this.productionSpeed); }
+  setProductionSpeed(speed: DemoSpeed) { this.command(() => { this.current.debugBuildSpeed = speed; }); }
   override beginTick() {
     if (!super.beginTick()) return false;
     if (this.reinforcements && this.waves && this.frame % 450 === 60) {

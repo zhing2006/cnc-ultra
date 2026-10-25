@@ -10,11 +10,12 @@ import { MOVEMENT,GROUND_SPEED,movementType } from '../data/movement.ts';
 import { movePoint } from '../coord.ts';
 import { unitDirection,unitDistance,unitRotate } from './units-nodes.ts';
 import { AIR_WORDS,AACCUM,AFACING,ADESIRED,ASPEED,AGENERATION,AGOAL,ACONTACT,ATARGET,AFIRED,ARETREAT } from './aircraft-cpu.ts';
-import { TBASE,TWORDS,TMODE,TTIMER,TLAST,TGEN,TORDER,TRESERVED,TCONTACT,TLOCKED,APC_LOAD_FACING,LOAD_DIRECTIONS,UNLOAD_DIRECTIONS,TRANSPORT_DIRECTIONS,AIRSTRIP_EXITS,initialTransport } from './transport-cpu.ts';
+import { TBASE,TWORDS,TMODE,TTIMER,TLAST,TGEN,TORDER,TRESERVED,TCONTACT,TLOCKED,APC_LOAD_FACING,LOAD_DIRECTIONS,UNLOAD_DIRECTIONS,TRANSPORT_DIRECTIONS,AIRSTRIP_EXITS,initialTransport,SCRIPT_UNLOAD } from './transport-cpu.ts';
 import type { GpuCombat } from './combat-gpu.ts';
 import type { GpuAircraft } from './aircraft-gpu.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
+import { CIVILIAN_INFANTRY } from '../data/abilities.ts';
 type I=Node<'int'>;
 const TOLDENTER=8,TADDED=9,TREMOVED=10,TINITIAL=11,TDROP=12,TFACTORY=13,TREFUND=14,TDELIVER=15;
 
@@ -103,7 +104,12 @@ export class GpuTransport {
       const command=pending.element(id.mul(2)).toVar();
       If(command.equal(0).or(command.equal(1)),()=>{unit(id,U.UENTER).assign(0);If(stateAt(id,TMODE).equal(5).or(unit(id,U.UTYPE).equal(movementType('APC'))),()=>{stateAt(id,TMODE).assign(0);});});
       If(command.equal(5),()=>{If(unit(id,U.UKIND).notEqual(0),()=>{stateAt(id,TLAST).assign(-1);});unit(id,U.UENTER).assign(pending.element(id.mul(2).add(1)).add(1));pending.element(id.mul(2)).assign(-1);combat(id,C.CTARGET).assign(-1);combat(id,C.CMISSION).assign(C.MOVE);});
-      If(command.equal(6).and(isCarrier(id)),()=>{stateAt(id,TMODE).assign(1);stateAt(id,TTIMER).assign(0);pending.element(id.mul(2)).assign(-1);If(unit(id,U.UTYPE).equal(movementType('APC')),()=>{goals.element(id).assign(-1);paths.element(id).assign(-1);combat(id,C.CTARGET).assign(-1);combat(id,C.CMISSION).assign(C.GUARD);});If(unit(id,U.UALTITUDE).greaterThan(0),()=>{goals.element(id).assign(unit(id,U.UCELL));});});
+      If(command.equal(6).or(command.equal(SCRIPT_UNLOAD)).and(isCarrier(id)),()=>{
+        stateAt(id,TMODE).assign(1);stateAt(id,TTIMER).assign(0);pending.element(id.mul(2)).assign(-1);
+        If(unit(id,U.UTYPE).equal(movementType('APC')),()=>{goals.element(id).assign(-1);paths.element(id).assign(-1);combat(id,C.CTARGET).assign(-1);combat(id,C.CMISSION).assign(C.GUARD);})
+          .ElseIf(command.equal(SCRIPT_UNLOAD).and(pending.element(id.mul(2).add(1)).greaterThanEqual(0)),()=>{goals.element(id).assign(pending.element(id.mul(2).add(1)));combat(id,C.CMISSION).assign(C.MOVE);})
+          .ElseIf(unit(id,U.UALTITUDE).greaterThan(0),()=>{goals.element(id).assign(unit(id,U.UCELL));});
+      });
     });})().compute(count);
     // INFANTRY.CPP Assign_Destination: approach continues without radio ownership.
     const approach=Fn(()=>{
@@ -134,6 +140,8 @@ export class GpuTransport {
             If(unit(id,U.UDEST).lessThan(0).and(unit(id,U.UCELL).equal(unit(target,U.UCELL))),()=>{
               unit(id,U.UATTACHED).assign(target.add(1));unit(id,U.UENTER).assign(0);goals.element(id).assign(-1);paths.element(id).assign(-1);
               stateAt(id,TORDER).assign(t.element(3).add(id).add(1));stateAt(id,TADDED).assign(1);result.assign(3);stateAt(id,TMODE).assign(0);stateAt(target,TCONTACT).assign(0);If(unit(target,U.UTYPE).equal(movementType('APC')).and(passengers.equal(4)),()=>{apcDoor(target,int(0).equal(1));});
+              let civilian=unit(id,U.UTYPE).equal(-1);for(const name of CIVILIAN_INFANTRY)civilian=civilian.or(unit(id,U.UTYPE).equal(movementType(name)));
+              If(unit(target,U.UTYPE).equal(movementType('TRAN')).and(civilian).and(unit(id,U.UFLAGS).bitAnd(U.TECHNICIAN).equal(0)),()=>{stateAt(target,TMODE).assign(4);});
             });Continue();
           });
           const destination=int(-1).toVar();
@@ -201,7 +209,7 @@ export class GpuTransport {
           goals.element(passenger).assign(adjacent(unit(id,U.UCELL),direction));paths.element(passenger).assign(-1);
           combat(passenger,C.CMISSION).assign(select(unit(passenger,U.UOWNER).equal(0),int(C.MOVE),int(C.HUNT)));stateAt(id,TLAST).assign(passenger);stateAt(id,TTIMER).assign(0);
         }).ElseIf(stateAt(id,TMODE).equal(3).and(unit(id,U.UDOOR).equal(0)),()=>{
-          stateAt(id,TMODE).assign(select(unit(id,U.UOWNER).equal(0),int(0),int(4)));If(stateAt(id,TMODE).equal(4),()=>{goals.element(id).assign(-1);});
+          stateAt(id,TMODE).assign(select(unit(id,U.UOWNER).equal(0).and(unit(id,U.UFLAGS).bitAnd(U.LOANER).equal(0)),int(0),int(4)));If(stateAt(id,TMODE).equal(4),()=>{goals.element(id).assign(-1);});
         });
       });
     });
@@ -249,7 +257,10 @@ export class GpuTransport {
         });
       });
     })().compute(count);
-    const retreat=Fn(()=>{const id=int(instanceIndex);If(unit(id,U.UTYPE).equal(movementType('TRAN')).and(stateAt(id,TMODE).equal(4)),()=>{flight(id,ARETREAT).assign(65);flight(id,AGOAL).assign(-1);});})().compute(count);
+    const retreat=Fn(()=>{const id=int(instanceIndex);If(unit(id,U.UTYPE).equal(movementType('TRAN')).and(stateAt(id,TMODE).equal(4)),()=>{
+      let edge:I=int(64);for(const [owner,direction] of (battle.setup.houseEdges??[]).entries())edge=select(unit(id,U.UOWNER).equal(owner),int(direction),edge);
+      flight(id,ARETREAT).assign(edge.add(1));flight(id,AGOAL).assign(-1);goals.element(id).assign(-1);
+    });})().compute(count);
     const prepareDelivery=Fn(()=>{const id=int(instanceIndex);Loop(1,()=>{
       If(unit(id,U.UHEALTH).lessThanEqual(0).or(unit(id,U.UTYPE).notEqual(movementType('C17'))),()=>{Continue();});
       If(flight(id,AGENERATION).notEqual(unit(id,U.UGENERATION)),()=>{

@@ -52,6 +52,8 @@ import { SuperView } from './simulation/super-view.ts';
 import { CloakView } from './simulation/cloak-view.ts';
 import { stepBattle } from './simulation/tick.ts';
 import { SUPER_SPRITES } from './simulation/super-weapons.ts';
+import { adjustGamePalette, type GamePreferences } from './options.ts';
+import { validDebugState, type DebugState, type DebugSpeed } from './debug.ts';
 
 /** The default scenario: GDI mission 8, map B. */
 const SCENARIO = 'SCG08EB';
@@ -71,6 +73,21 @@ export interface Game {
   setDensity(enabled:boolean):void;
   setSimulationSpeed(speed:1|10|100):void;
   setController(owner:number|null):void;
+  setPreferences(preferences: GamePreferences): void;
+  canDebug(): boolean;
+  isPaused(): boolean;
+  readDebugState(): Promise<DebugState>;
+  applyDebugState(value: DebugState): void;
+  saveState(): Promise<GameState>;
+  loadState(saved: GameState): void;
+}
+
+export interface GameState {
+  frame: number;
+  economy: Awaited<ReturnType<EconomyRuntime['saveState']>>;
+  camera: { x: number; y: number; scale: number; bookmarks: number[] };
+  buffers: Uint8Array[];
+  debug?: { gameSpeed: DebugSpeed };
 }
 
 export interface GameOptions {
@@ -79,6 +96,7 @@ export interface GameOptions {
   onStats?: (frame: number, checksum: string) => void;
   onSpeed?: (actual: number) => void;
   onOutcome?: (winner: number) => void;
+  onOptions?: () => void;
 }
 
 /** Loads the original data and shows scg08eb on the renderer's canvas. */
@@ -122,6 +140,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   const lasers=economy?new LaserView(economy.battle,scene.setup.palette):undefined;
   const radar=economy&&ore?new Radar(economy,ore,data,perspective):undefined;
   const sidebar=economy?new Sidebar(economy,data,radar):undefined;
+  if (sidebar) sidebar.onOptions = options.onOptions;
   const eva=economy?new Eva(data):undefined;
   if(economy&&eva)economy.onEvent=(name,owner)=>{if(hearHouseEvent(name,owner,economy.controlledOwner))eva.speak(name);};
   await selection?.prepare();
@@ -136,7 +155,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   await options.onProgress?.('Preparing graphics and sound');
   const unitView = units && sight && selection && new UnitsView(renderer.three,units,sight,selection,scene,data,!!battle,
     battle?{combat:battle.state,transport:transport?.state,mining:economy?.miningState,buildings:economy?.visuals}:undefined,perspective);
-  const combatAudio = battle && new CombatAudio(renderer.three, battle, data);
+  const combatAudio = battle && new CombatAudio(renderer.three, battle, data, selection?.state);
   const voices = units && new UnitVoices(data);
   await combatAudio?.prepareForPlay();
   const layout = combatSetup ? groundLayout(scene, initialUnits(combatSetup.setup), WORDS, true) : simulationSetup && groundLayout(scene, unitState(simulationSetup.setup));
@@ -153,6 +172,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     ...(unitView && { indexEffect: unitView.indexEffect }) });
   const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, combatSetup ? scene : undefined,
     selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined);
+  if(economy&&ground)economy.onSceneryVisibility=(sprite,visible)=>ground.setStaticSpriteVisible(sprite,visible);
   const combatView = battle && ground && combatSetup && new CombatView(renderer.three, battle, ground, pipeline, scene, combatSetup.decalStart,!!economy);
   const buildingEffects=economy&&combatView?new GpuBuildingEffects(economy.battle,scene.animation!.frames,combatView.smudges):undefined;
   if(buildingEffects&&combatView){buildingEffects.setView(pipeline,scene,combatView.count);await buildingEffects.prepareForPlay();}
@@ -163,6 +183,11 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   buildingView?.update();aircraftView?.update();buildingEffects?.update();superView?.update();cloakView?.update();
   if(ground)pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
   const battleSystems=battle?{battle,economy,ore,transport,services,harvest,aircraft,airOperations,opposingSight,buildingEffects}:undefined;
+  const saveBuffers = [...new Set([
+    ...(battle?.saveBuffers ?? []), ...(opposingSight?.saveBuffers ?? []), ...(ore?.saveBuffers ?? []),
+    ...(economy ? [economy.miningState,economy.transportState,economy.serviceState,economy.visuals,...economy.report.saveBuffers,...economy.extraSimulationBuffers] : []),
+    ...(aircraft ? [aircraft.state] : []), ...(airOperations?.saveBuffers ?? []), ...(selection?.saveBuffers ?? []), ...(combatView?.saveBuffers ?? []), ...(buildingEffects?.saveBuffers ?? []),
+  ])];
   const afterFlight=()=>{if(aircraft)ground?.transitionLayers();};
   const checksum = active && ground && new GpuChecksum(renderer.three,
     [...active.buffers(), ...(aircraft?[aircraft.state]:[]), ...(ore?ore.buffers():[]), ...(economy?[economy.miningState,...economy.extraSimulationBuffers]:[]), ...(transport?[transport.state]:[]), ...(services?[services.state]:[]), ...(units ? [] : [ground.order.order])]);
@@ -173,12 +198,17 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   const readback = new DelayedReadback<Uint32Array>();
   let paused = false, digest = '', spritesDirty = false;
   let simulationSpeed:1|10|100 = 1;
+  let debugPace: DebugSpeed | undefined;
+  let gamePace = 1;
   let sampleTime = 0, sampleFrame = 0;
   let shakeUntil = 0;
+  let nuclearFlash:{phase:'rise'|'peak'|'fall';elapsed:number;last:number}|undefined;
+  let flashIntensity=0;
+  const flashPalette=new Uint8Array(scene.setup.palette.length);
   if (combatAudio) combatAudio.onShake = () => { shakeUntil=performance.now()+100; };
   const syncPlayback = () => {
     const stopped = paused || document.hidden;
-    driver.setPaused(stopped);
+    driver.setPaused(stopped||!!nuclearFlash&&nuclearFlash.phase!=='peak');
     presentation.configure(simulationSpeed, stopped);
     const muted = stopped || simulationSpeed !== 1;
     combatAudio?.setMuted(muted); voices?.setMuted(muted); eva?.setMuted(muted);
@@ -195,8 +225,10 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   if(economy){
     economy.onSound=(name,x,y)=>combatAudio?.playExternal(name,x,y,{x:scroller.x,y:scroller.y,width:pixelToLepton(view.width),height:pixelToLepton(view.height)});
     economy.onShake=()=>{if(simulationSpeed===1&&!paused)shakeUntil=performance.now()+150;};
+    // ANIM.CPP Middle blocks simulation for the 30/15 ticks of nuclear palette fades.
+    economy.onNuclearFlash=phase=>{nuclearFlash={phase,elapsed:0,last:performance.now()};input.enabled=false;syncPlayback();};
   }
-  if(sidebar)sidebar.onRadarCell=cell=>scroller.setPosition((cell%mapWidth)*256-pixelToLepton(view.width-160)/2,Math.trunc(cell/mapWidth)*256-pixelToLepton(view.height)/2);
+  if(sidebar){sidebar.onRadarCell=cell=>scroller.setPosition((cell%mapWidth)*256-pixelToLepton(view.width-sidebar.width)/2,Math.trunc(cell/mapWidth)*256-pixelToLepton(view.height)/2);sidebar.onResize=()=>resize();}
   const palette = new PaletteCycle(scene.setup.palette);
 
   // Ported from CONQUER.CPP, Handle_View: a bookmark keeps the cell under the view's top-left corner,
@@ -226,9 +258,10 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   });
   const unitActions: UnitInput | undefined = unitView && selection ? {
     gesture() { voices?.unlock(); combatAudio?.unlock(); eva?.unlock(); },
+    interfaceClick(position,button) { return controlledOwner!==null && (sidebar?.hit(position.x,position.y,button)??false); },
     down(position,button) {
       if(controlledOwner===null)return;
-      if(sidebar&&position.x>=view.width-160)return;
+      if(sidebar?.contains(position.x,position.y))return;
       if (button === 2) { bandStart = null; act({action:'clear'}); }
       if(button===2)economy?.cancelPlacement();
       if (button === 0) { const origin=viewOrigin();bandStart={x:position.x+origin.x,y:position.y+origin.y}; }
@@ -250,6 +283,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       const modifier=event.ctrlKey?2:event.altKey?3:event.shiftKey?1:0;
       if(/^Digit[0-9]$/.test(event.code)){act({action:'group',group:Number(event.code.slice(-1))-1,modifier});return true;}
       const key=event.key.toLowerCase();
+      if(key==='tab'&&sidebar&&!paused){sidebar.toggle();return true;}
       if(key==='d'&&economy){economy.deploy();return true;}
       const action=key==='n'?'next':key==='s'?'stop':key==='x'?'scatter':key==='h'?'home':key==='home'?'center':null;
       if(action){act({action,modifier});return true;}return false;
@@ -263,7 +297,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   const resize = () => {
     const previous = view;
     view = { width: Math.ceil(bufferWidth / scale), height: Math.ceil(bufferHeight / scale), scale };
-    scroller.setViewSize(view.width-(sidebar?160:0), view.height);
+    scroller.setViewSize(view.width-(sidebar?.width??0), view.height);
     input.resize(previous);
   };
   const input = new GameInput(canvas, () => view, (index, record) => {
@@ -303,7 +337,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     return batchCompute(renderer.three, () => {
       if (!active || !ground) return;
       if (economy && !economy.beginTick()) {
-        if(economy.outcome!==undefined){paused=true;syncPlayback();options.onOutcome?.(economy.outcome);}
+        if(economy.outcome!==undefined){paused=true;input.enabled=false;void document.exitPointerLock();syncPlayback();options.onOutcome?.(economy.outcome);}
         return false;
       }
       // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
@@ -343,7 +377,19 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       jumpTo(scene.home);
     }
 
-    if (palette.update(time - startTime)) pipeline.setPalette(palette.colors);
+    const paletteChanged=palette.update(time-startTime);
+    if(nuclearFlash){
+      const flash=nuclearFlash;
+      if(!document.hidden)flash.elapsed+=Math.max(0,time-flash.last);
+      flash.last=time;
+      if(flash.phase==='rise'&&flash.elapsed>=500){flash.phase='peak';syncPlayback();}
+      if(flash.phase==='fall'&&flash.elapsed>=250){nuclearFlash=undefined;input.enabled=!paused;syncPlayback();}
+    }
+    if(nuclearFlash||flashIntensity){
+      flashIntensity=nuclearFlash?(nuclearFlash.phase==='peak'?1:nuclearFlash.phase==='rise'?Math.min(1,nuclearFlash.elapsed/500):Math.max(0,1-nuclearFlash.elapsed/250)):0;
+      for(let i=0;i<flashPalette.length;i++)flashPalette[i]=i%4===3?255:Math.round(palette.colors[i]+(252-palette.colors[i])*flashIntensity);
+      pipeline.setPalette(flashPalette);
+    }else if(paletteChanged)pipeline.setPalette(palette.colors);
 
     if (active) {
       driver.advance(time);
@@ -362,7 +408,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
         break;
       }
       lastTick += TICK;
-      const shape = scroller.step({ mouse: input.mouse, rightButton: input.rightButton, keys: input.keyDirection() });
+      const shape = paused ? null : scroller.step({ mouse: input.mouse, rightButton: input.rightButton, keys: input.keyDirection() });
       const arrows = shape?.blocked ? scene.cursors.blocked : scene.cursors.scroll;
       cursor = shape ? arrows[shape.facing] : scene.cursors.normal;
     }
@@ -403,11 +449,11 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       unitView.update();pipeline.setOverlay(null);
     }else pipeline.setOverlay(mouse || null);
     pipeline.setTime(time - startTime);
-    if(sidebar){sidebar.origin.value.set(x,y);sidebar.viewport.value.set(view.width,view.height);sidebar.pointer.value.set(input.mouse?input.mouse.x-view.width+160:-100,input.mouse?.y??-100);}
+    if(sidebar){sidebar.origin.value.set(x,y);sidebar.viewport.value.set(view.width,view.height);sidebar.pointer.value.set(input.mouse?.x??-100,input.mouse?.y??-100);}
     sidebar?.drawPixels();
-    radar?.update(x,y,view.width-160,view.height);
+    radar?.update(x,y,view.width-(sidebar?.width??0),view.height);
     lasers?.update(x,y,view.width,view.height);
-    construction?.update(input.mouse&&input.mouse.x<view.width-160?input.mouse.x+x:-100,input.mouse?input.mouse.y+y:-100);
+    construction?.update(input.mouse&&!sidebar?.contains(input.mouse.x,input.mouse.y)?input.mouse.x+x:-100,input.mouse?input.mouse.y+y:-100);
     // UNIT.CPP Take_Damage requests three shakes. The visual offset is local UI state.
     canvas.style.transform=time<shakeUntil?`translateY(${Math.ceil((shakeUntil-time)*60/1000)%2?2:-2}px)`:'';
     pipeline.render({ x, y, width: viewWidth, height: viewHeight }, scale);
@@ -424,13 +470,63 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     setFlow(enabled) { if (flow) flow.enabled.value = enabled ? 1 : 0; if(unitView) unitView.flow.value=enabled?1:0; },
     setVision(enabled) { if(unitView) unitView.vision.value=enabled?1:0; },
     setPerspective(value) { perspective?.setPerspective(value);spritesDirty=true; },
-    setPaused(value) { paused = value || economy?.outcome!==undefined; syncPlayback(); },
+    setPaused(value) { paused = value || economy?.outcome!==undefined; input.enabled=!paused&&!nuclearFlash; syncPlayback(); if (!value) renderer.setFrame(drawFrame); },
+    isPaused() { return paused; },
+    canDebug() { return !released && !nuclearFlash && !!economy && controlledOwner !== null && economy.outcome === undefined; },
+    async readDebugState() {
+      if (!economy || controlledOwner === null || !paused || released) throw new Error('Pause a playable mission before opening Debug');
+      await economy.settleForDebug();
+      if (released || controlledOwner === null) throw new Error('The mission has ended');
+      const house = economy.houses[controlledOwner];
+      return { money: house.economy.money, buildSpeed: house.debugBuildSpeed, gameSpeed: simulationSpeed, damageScale: house.debugDamageScale };
+    },
+    applyDebugState(value) {
+      if (!economy || controlledOwner === null || !paused || released || economy.outcome !== undefined || !validDebugState(value)) throw new Error('Invalid Debug settings');
+      const house = economy.houses[controlledOwner];
+      house.economy.setDebugMoney(value.money); house.debugBuildSpeed = value.buildSpeed; house.debugDamageScale = value.damageScale;
+      economy.syncDebugDamage();
+      simulationSpeed = value.gameSpeed;debugPace=value.gameSpeed===1?undefined:value.gameSpeed;
+      driver.setSpeed(simulationSpeed*gamePace); syncPlayback();
+    },
     setController(owner) {
       controlledOwner=owner;inputEpoch++;responses.length=0;bandStart=null;
       eva?.clear();economy?.setController(owner);selection?.setOwner(owner??-1);sidebar?.resetHouse();
     },
-    setSimulationSpeed(value) { simulationSpeed = value; driver.setSpeed(value); syncPlayback(); },
+    setSimulationSpeed(value) { debugPace = undefined; simulationSpeed = value; driver.setSpeed(value * gamePace); syncPlayback(); },
+    setPreferences(preferences) {
+      gamePace = preferences.gameSpeed === 0 ? Infinity : 4 / preferences.gameSpeed;
+      driver.setSpeed(simulationSpeed * gamePace); scroller.rate = preferences.scrollRate;
+      combatAudio?.setVolume(preferences.volume); voices?.setVolume(preferences.volume); eva?.setVolume(preferences.volume);
+      palette.setColors(adjustGamePalette(scene.setup.palette, preferences)); pipeline.setPalette(palette.colors);
+      if (paused && bufferWidth && bufferHeight) drawFrame(bufferWidth, bufferHeight, performance.now());
+    },
     setDensity(value){if(radar)radar.densityEnabled.value=Number(value);},
+    async saveState() {
+      if (!battle || !economy) throw new Error('This scene has no saved mission state');
+      paused = true; input.enabled=false; syncPlayback();
+      const savedEconomy = await economy.saveState();
+      const buffers = await Promise.all(saveBuffers.map(async buffer => new Uint8Array(await renderer.three.getArrayBufferAsync(buffer))));
+      return { frame: battle.frame, economy: savedEconomy, camera: { x: scroller.x, y: scroller.y, scale, bookmarks: [...bookmarks] }, buffers,
+        ...(debugPace === undefined ? {} : { debug: { gameSpeed: debugPace } }) };
+    },
+    loadState(saved) {
+      if (!battle || !economy || saved.buffers.length !== saveBuffers.length || saved.buffers.some((bytes, i) => bytes.byteLength !== saveBuffers[i].array.byteLength))
+        throw new Error('This saved mission uses a different simulation layout');
+      paused = true; input.enabled=false; syncPlayback();
+      economy.loadState(saved.economy);
+      debugPace = saved.debug?.gameSpeed===1?undefined:saved.debug?.gameSpeed; simulationSpeed = debugPace ?? 1;
+      driver.setSpeed(simulationSpeed*gamePace); syncPlayback();
+      battle.movement.frame = saved.frame;
+      for (let i = 0; i < saveBuffers.length; i++) {
+        const buffer = saveBuffers[i];
+        new Uint8Array(buffer.array.buffer, buffer.array.byteOffset, buffer.array.byteLength).set(saved.buffers[i]);
+        buffer.clearUpdateRanges(); buffer.needsUpdate = true;
+      }
+      scale = saved.camera.scale; bookmarks.splice(0, bookmarks.length, ...saved.camera.bookmarks);
+      scroller.setPosition(saved.camera.x, saved.camera.y);
+      controlledOwner = saved.economy.controlledOwner; selection?.setOwner(controlledOwner ?? -1); sidebar?.resetHouse();
+      spritesDirty = true; inputEpoch++; responses.length = 0; bandStart = null;
+    },
     dispose() {
       released=true;
       driver.dispose();

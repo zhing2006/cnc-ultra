@@ -3,8 +3,8 @@ import { movePoint } from '../coord.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 import type { ExplosionCommand } from './combat-state.ts';
 
-export type SuperKind = 'ion' | 'nuke';
-export const SUPER_RECHARGE = { ion: 10 * 900, nuke: 14 * 900 };
+export type SuperKind = 'ion' | 'nuke' | 'airstrike';
+export const SUPER_RECHARGE = { ion: 10 * 900, nuke: 14 * 900, airstrike: 8 * 900 };
 export const SUPER_SPRITES = 8, SUPER_VISUAL_WORDS = 5;
 export const SUPER_SHAPES = ['IONSFX', 'ART-EXP1', 'ATOMDOOR', 'ATOMICUP', 'ATOMICDN', 'ATOMSFX'] as const;
 
@@ -13,9 +13,16 @@ export class SuperCharge {
   present = false;
   ready = false;
   suspended = false;
+  oneTime = false;
+  spent = false;
   private deadline = 0;
   private saved = 0;
   constructor(readonly kind: SuperKind) {}
+  /** SUPER.CPP Enable / Forced_Charge. */
+  grant(frame: number, oneTime: boolean, charged = true) {
+    if (!this.present) { this.present = true; this.oneTime = oneTime; this.spent = false; this.deadline = frame + SUPER_RECHARGE[this.kind]; }
+    if (charged) { this.ready = true; this.suspended = false; }
+  }
   remaining(frame: number) { return this.suspended ? this.saved : Math.max(0, this.deadline - frame); }
   stage(frame: number) {
     if (!this.present) return 0;
@@ -24,6 +31,7 @@ export class SuperCharge {
     return (fraction * 102 + 128) >> 8;
   }
   step(frame: number, available: boolean, powered: boolean) {
+    if (this.oneTime) powered = true;
     if (!available) { this.present = this.ready = this.suspended = false; return false; }
     if (!this.present) {
       this.present = true; this.deadline = frame + SUPER_RECHARGE[this.kind];
@@ -39,22 +47,38 @@ export class SuperCharge {
   }
   discharge(frame: number) {
     if (!this.present || !this.ready || this.suspended) return false;
-    this.ready = false; this.deadline = frame + SUPER_RECHARGE[this.kind]; return true;
+    this.ready = false; this.deadline = frame + SUPER_RECHARGE[this.kind];
+    if (this.oneTime) { this.present = false; this.spent = true; this.oneTime = false; }
+    return true;
   }
 }
 
 export interface SuperBuilding { id:number; type:string; cell:number; owner:number; health:number; active:boolean; selling:boolean }
-interface Attack { owner:number; kind:SuperKind; target:number; born:number; launch:number; centerX:number; centerY:number; launchX:number; launchY:number; impact:number; damaged:boolean; cancelled:boolean; doorStarted:boolean; launched:boolean }
-export interface SuperEvent { owner:number; x:number; y:number; sound?:string; speech?:string; shake?:boolean }
+interface Attack { owner:number; kind:'ion'|'nuke'; target:number; born:number; launch:number; centerX:number; centerY:number; launchX:number; launchY:number; impact:number; damaged:boolean; cancelled:boolean; doorStarted:boolean; launched:boolean }
+export interface SuperEvent { owner:number; x:number; y:number; sound?:string; speech?:string; shake?:boolean; flash?:'rise'|'fall' }
 
 /** Few CPU-owned superweapon timelines; damage still uses the shared GPU combat pipeline. */
 export class SuperWeapons {
-  readonly charges = [0, 1].map(() => ({ ion: new SuperCharge('ion'), nuke: new SuperCharge('nuke') }));
+  campaign = false;
+  readonly charges: { ion: SuperCharge; nuke: SuperCharge; airstrike: SuperCharge }[];
+  onAirstrike?: (owner: number, cell: number, frame: number) => void;
   readonly visuals = new Int32Array(SUPER_SPRITES * SUPER_VISUAL_WORDS).fill(-1);
   private readonly attacks: Attack[] = [];
   readonly events:SuperEvent[]=[];
+  saveState() {
+    return { charges: this.charges.map(house => ({ ion: { ...house.ion }, nuke: { ...house.nuke }, airstrike: { ...house.airstrike } })),
+      attacks: this.attacks.map(attack => ({ ...attack })), visuals: Array.from(this.visuals) };
+  }
+  loadState(state: ReturnType<SuperWeapons['saveState']>) {
+    for (let owner = 0; owner < this.charges.length; owner++) for (const kind of ['ion', 'nuke', 'airstrike'] as const)
+      Object.assign(this.charges[owner][kind], state.charges[owner][kind]);
+    this.attacks.splice(0, this.attacks.length, ...state.attacks.map(attack => ({ ...attack })));
+    this.visuals.set(state.visuals); this.events.length = 0;
+  }
   constructor(readonly width:number, readonly height:number, readonly bounds:{x:number;y:number;width:number;height:number},
-    private readonly frameCounts:ReadonlyMap<string,number>) {}
+    private readonly frameCounts:ReadonlyMap<string,number>, houses = 2) {
+    this.charges = Array.from({ length: houses }, () => ({ ion: new SuperCharge('ion'), nuke: new SuperCharge('nuke'), airstrike: new SuperCharge('airstrike') }));
+  }
   private center(b:SuperBuilding):[number,number] {
     const shape=BUILDINGS.get(b.type)!;
     return [b.cell%this.width*256+(shape.width===2?255:shape.width*128),Math.trunc(b.cell/this.width)*256+(shape.height===2?255:shape.height*128)];
@@ -67,6 +91,7 @@ export class SuperWeapons {
     const x=cell%this.width,y=Math.trunc(cell/this.width);
     if(x<this.bounds.x||x>=this.bounds.x+this.bounds.width||y<this.bounds.y||y>=this.bounds.y+this.bounds.height)return false;
     if(!this.charges[owner][kind].discharge(frame))return false;
+    if(kind==='airstrike'){this.onAirstrike?.(owner,cell,frame);return true;}
     const site=buildings.find(b=>b.owner===owner&&b.type===(kind==='ion'?'EYE':'TMPL')&&b.health>0);
     const [centerX,centerY]=site?this.center(site):[x*256+128,128];
     const [launchX,launchY]=site?movePoint(centerX,centerY,1,0x1a0):[centerX,centerY];
@@ -112,15 +137,19 @@ export class SuperWeapons {
         if(a.cancelled)continue;
         if(frame===down)this.events.push({owner:a.owner,x,y:384,sound:'NUKEMISL',speech:'nukeincoming'});
         if(frame===a.impact)this.events.push({owner:a.owner,x,y,sound:'NUKEXPLO'});
+        if(this.campaign&&frame===a.impact+18)this.events.push({owner:a.owner,x,y,flash:'rise'});
+        if(this.campaign&&frame===a.impact+19)this.events.push({owner:a.owner,x,y,flash:'fall'});
         if(frame===a.impact+19)this.events.push({owner:a.owner,x,y,shake:true});
         if(frame>=down&&frame<a.impact)show(base+3,4,0,x,(a.launch>=0?384:128)+(frame-down)*100);
         if(frame>=a.impact)show(base+3,5,frame-a.impact,x,y);
         if(frame===a.impact)result.push({frame,x,y,damage:1,warhead:1,source:-1});
         if(!a.damaged&&frame-a.impact===19){
-          // ANIM.CPP Middle, multiplayer: 7x7 cells, each explosion has 200 / (3/2+1) = 100 damage.
-          for(let dx=-3;dx<=3;dx++)for(let dy=-3;dy<=3;dy++){
+          // ANIM.CPP Middle: single-player uses radius 4 and 1000 / (4/2+1) damage per cell.
+          const radius=this.campaign?4:3,damage=this.campaign?333:100;
+          const source=this.campaign?(buildings?.find(b=>b.id===a.launch&&b.health>0)?.id??buildings?.find(b=>b.owner===a.owner&&b.health>0)?.id??-1):-1;
+          for(let dx=-radius;dx<=radius;dx++)for(let dy=-radius;dy<=radius;dy++){
             const xx=Math.trunc(x/256)+dx,yy=Math.trunc(y/256)+dy;
-            if(xx>=this.bounds.x&&xx<this.bounds.x+this.bounds.width&&yy>=this.bounds.y&&yy<this.bounds.y+this.bounds.height)result.push({frame,x:xx*256+128,y:yy*256+128,damage:100,warhead:3,source:-1,scorch:true,crater:dx===0&&dy===0});
+            if(xx>=this.bounds.x&&xx<this.bounds.x+this.bounds.width&&yy>=this.bounds.y&&yy<this.bounds.y+this.bounds.height)result.push({frame,x:xx*256+128,y:yy*256+128,damage,warhead:3,source,scorch:true,crater:dx===0&&dy===0});
           }
           a.damaged=true;
         }

@@ -1,7 +1,8 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { areAllied } from './alliances.ts';
 import { desiredFacing256, distance } from '../coord.ts';
 import { BUILDINGS } from '../data/buildings.ts';
-import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
+import { canCaptureBuilding } from '../data/abilities.ts';
 import { MOVEMENT } from '../data/movement.ts';
 import { combatTypes, weapons } from '../data/combat.ts';
 import type { CpuCombat } from './combat-cpu.ts';
@@ -23,14 +24,15 @@ export function prepareSpecialInfantry(battle:CpuCombat) {
     const at=id*U.WORDS,mode=u[at+U.UABILITY_MODE],target=u[at+U.UABILITY_TARGET]-1,b=target*U.WORDS;
     if(!mode||u[at+U.UHEALTH]<=0||u[at+U.UATTACHED])continue;
     const name=target>=0?MOVEMENT[u[b+U.UTYPE]].name:'';
-    if(target<0||u[b+U.UHEALTH]<=0||u[b+U.UDOMAIN]!==2||mode%2===1&&!CAPTURABLE_BUILDINGS.has(name)){
+    const transport=name==='TRAN'&&u[b+U.UALTITUDE]===0&&mode%2===1&&!battle.setup.units.some((_,i)=>u[i*U.WORDS+U.UHEALTH]>0&&u[i*U.WORDS+U.UATTACHED]===target+1);
+    if(target<0||u[b+U.UHEALTH]<=0||!transport&&(u[b+U.UDOMAIN]!==2||mode%2===1&&!canCaptureBuilding(name,battle.setup.campaignLevel))){
       u[at+U.UABILITY_MODE]=u[at+U.UABILITY_TARGET]=0;m.goals[id]=m.pathGoals[id]=-1;continue;
     }
     if(mode>=3)continue;
-    if(!u[at+U.UABILITY_ENTRY]||u[at+U.UWAIT]>30){
+    if(!u[at+U.UABILITY_ENTRY]||u[at+U.UWAIT]>30||transport&&u[at+U.UABILITY_ENTRY]!==u[b+U.UCELL]+1){
       let score=0x7fffffff,approach=-1,entry=-1;
-      for(const [dx,dy] of BUILDINGS.get(name)!.occupy){
-        const destination=u[b+U.UORIGIN]+dy*w+dx;
+      for(const [dx,dy] of transport?[[0,0]]:BUILDINGS.get(name)!.occupy){
+        const destination=u[b+(transport?U.UCELL:U.UORIGIN)]+dy*w+dx;
         for(const [ox,oy] of neighbors){
           const x=destination%w+ox,y=Math.trunc(destination/w)+oy,cell=y*w+x;
           if(x<0||x>=w||y<0||y>=h||!m.setup.grid.edges[cell])continue;
@@ -58,7 +60,7 @@ export function finishSpecialInfantry(battle:CpuCombat) {
     if(target>=0&&u[b+U.UHEALTH]>0){
       if(mode===3){
         // Captured may decline an allied building, but Per_Cell_Process still consumes the engineer.
-        if(u[b+U.UOWNER]!==u[at+U.UOWNER]){
+        if(!areAllied(battle.setup,u[at+U.UOWNER],u[b+U.UOWNER])){
           u[b+U.UOWNER]=u[at+U.UOWNER];u[b+U.UCAPTURE_TICK]=battle.frame;
           c[target*C.CWORDS+C.CTARGET]=-1;c[target*C.CWORDS+C.CMISSION]=C.GUARD;
         }

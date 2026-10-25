@@ -1,4 +1,5 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { areAllied } from './alliances.ts';
 import { combatTypes, weapons, bullets, warheads,modifyDamage, ANIMATION_IDS } from '../data/combat.ts';
 import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
@@ -10,10 +11,11 @@ import { randomWord } from '../../engine/simulation/fixed.ts';
 import { CpuUnits, rotateFacing } from './units-cpu.ts';
 import * as U from './units-state.ts';
 import { prepareSpecialInfantry, finishSpecialInfantry } from './special-cpu.ts';
-import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
+import { canCaptureBuilding } from '../data/abilities.ts';
 import { advanceCloak, cloakContacts, uncloakUnit } from './cloak-cpu.ts';
 import * as C from './combat-state.ts';
 import { CpuSight } from './sight.ts';
+import { DAMAGE_SCALE, scaleIncomingDamage } from '../debug.ts';
 /** Ported from TURRET.CPP, Fire_Coord. Offsets are leptons, before projectile physics. */
 export function firePoint(name: string, x: number, y: number, direction: number, second: number, weapon = 0, target?:readonly[number,number]): [
   number,
@@ -60,6 +62,9 @@ export function firePoint(name: string, x: number, y: number, direction: number,
 }
 export class CpuCombat {
   humanOwner=0;
+  debugDamageOwner=-1;
+  debugDamageScale=DAMAGE_SCALE;
+  scaleDamage(amount:number,owner:number){return scaleIncomingDamage(amount,owner,this.debugDamageOwner,this.debugDamageScale);}
   readonly movement: CpuUnits;
   readonly state: Int32Array;
   readonly projectiles: Int32Array;
@@ -69,6 +74,7 @@ export class CpuCombat {
   constructor(readonly setup: C.CombatSetup) {
     this.movement = new CpuUnits(setup);
     this.sight = new CpuSight(setup.grid.width, setup.grid.height, setup.units.length, 0, setup.bounds);
+    if(this.movement.routing)this.movement.routing.visible=this.sight.shadow;
     this.sight.step(this.movement.units);
     this.state = C.initialCombat(setup);
     this.projectiles = C.initialProjectiles(setup.units.length);
@@ -111,7 +117,7 @@ export class CpuCombat {
   }
   private canTarget(id:number,target:number,weapon:number){
     if(target>=0&&this.units[target*U.WORDS+U.UCLOAK]===2)return false;
-    if(weapon<0)return target>=0&&MOVEMENT[this.units[id*U.WORDS+U.UTYPE]].name==='E6'&&CAPTURABLE_BUILDINGS.has(MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name);
+    if(weapon<0)return target>=0&&MOVEMENT[this.units[id*U.WORDS+U.UTYPE]].name==='E6'&&canCaptureBuilding(MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name,this.setup.campaignLevel);
     const air=target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===1&&this.units[target*U.WORDS+U.UALTITUDE]>0;
     if(combatTypes[this.units[id*U.WORDS+U.UTYPE]].name==='SAM'&&!air)return false;
     return !air||!!bullets[weapons[weapon].bullet].antiAir;
@@ -140,7 +146,7 @@ export class CpuCombat {
       let best = -1, score = -1;
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS, target = combatTypes[u[p + U.UTYPE]];
-        if ((u[p + U.UHEALTH] <= 0 || u[p + U.UATTACHED] !== 0) || u[p + U.UOWNER] === u[at + U.UOWNER] || !target.targetable ||
+        if ((u[p + U.UHEALTH] <= 0 || u[p + U.UATTACHED] !== 0) || areAllied(this.setup, u[at + U.UOWNER], u[p + U.UOWNER]) || !target.targetable ||
           !eligible(other)||!this.setup.multiplayer&&!this.state[other * C.CWORDS + C.CSEEN] || !this.canTarget(id,other,type.primary)&&!this.canTarget(id,other,type.secondary))
           continue;
         const raw = target.risk + target.reward;
@@ -171,7 +177,7 @@ export class CpuCombat {
     // TECHNO.CPP Greatest_Threat scans aircraft separately; flying aircraft never occupy ground cells.
     if([type.primary,type.secondary].some(w=>w>=0&&bullets[weapons[w].bullet].antiAir))for(let other=0;other<this.setup.units.length;other++){
       const p=other*U.WORDS;
-      if(u[p+U.UDOMAIN]!==1||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||u[p+U.UOWNER]===u[at+U.UOWNER]||!eligible(other)||!combatTypes[u[p+U.UTYPE]].targetable||!inReach(other))continue;
+      if(u[p+U.UDOMAIN]!==1||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||areAllied(this.setup, u[at+U.UOWNER], u[p+U.UOWNER])||!eligible(other)||!combatTypes[u[p+U.UTYPE]].targetable||!inReach(other))continue;
       const value=valueOf(other);if(value>bestValue){best=other;bestValue=value;}
     }
     const visit = (x: number, y: number) => {
@@ -181,7 +187,7 @@ export class CpuCombat {
       let candidate = -1;
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS;
-        if ((u[p + U.UHEALTH] > 0 && u[p + U.UATTACHED] === 0) && u[p + U.UOWNER] !== u[at + U.UOWNER] &&
+        if ((u[p + U.UHEALTH] > 0 && u[p + U.UATTACHED] === 0) && !areAllied(this.setup, u[at + U.UOWNER], u[p + U.UOWNER]) &&
           !WALLS[MOVEMENT[u[p+U.UTYPE]].name]&&(u[p+U.UDOMAIN]!==1||u[p+U.UALTITUDE]===0)&&
           Math.floor(u[p] / 256) === x && Math.floor(u[p + 1] / 256) === y) {
           candidate = other;
@@ -346,7 +352,7 @@ export class CpuCombat {
   private obstruction(id:number){
     const u=this.units,s=this.state,at=id*U.WORDS,c=id*C.CWORDS,other=u[at+U.UOBSTRUCTION]-1;
     const type=combatTypes[u[at+U.UTYPE]];
-    if(other>=0&&type.primary>=0&&u[other*U.WORDS+U.UOWNER]!==u[at+U.UOWNER]){
+    if(other>=0&&type.primary>=0&&!areAllied(this.setup, u[at+U.UOWNER], u[other*U.WORDS+U.UOWNER])){
       const wall=WALLS[MOVEMENT[u[other*U.WORDS+U.UTYPE]].name];
       const warhead=warheads[bullets[weapons[type.primary].bullet].warhead];
       if(!wall||u[at+U.UOWNER]!==this.humanOwner&&(warhead.wall||wall.wood&&warhead.wood)){
@@ -365,13 +371,31 @@ export class CpuCombat {
     const suspended=s[c+C.CSUSPENDED_TARGET];
     if(s[c+C.CSUSPENDED_MISSION]&&suspended>=0&&this.targetGone(suspended)){s[c+C.CSUSPENDED_MISSION]=0;s[c+C.CSUSPENDED_TARGET]=-1;}
     const target=s[c+C.CTARGET];
-    if(s[c+C.CSUSPENDED_MISSION]&&(this.targetGone(target)||target>=0&&u[target*U.WORDS+U.UOWNER]===u[at+U.UOWNER])){
+    if(s[c+C.CSUSPENDED_MISSION]&&(this.targetGone(target)||target>=0&&areAllied(this.setup, u[at+U.UOWNER], u[target*U.WORDS+U.UOWNER]))){
       s[c+C.CMISSION]=s[c+C.CSUSPENDED_MISSION]-1;s[c+C.CTARGET]=s[c+C.CSUSPENDED_TARGET];
       this.movement.goals[id]=s[c+C.CSUSPENDED_GOAL];u[at+U.UABILITY_MODE]=s[c+C.CSUSPENDED_ABILITY];
       s[c+C.CSUSPENDED_MISSION]=0;this.resetObstructionRoute(id);
     }
   }
   /** Ported from TECHNO.CPP/TURRET.CPP/TARCOM.CPP AI, and FOOT.CPP Mission_Guard. */
+  private randomAnimate(id:number){
+    // Ported from INFANTRY.CPP Random_Animate, called by FOOT.CPP Guard/Hunt.
+    const u=this.units,s=this.state,at=id*U.WORDS,c=id*C.CWORDS,type=combatTypes[u[at+U.UTYPE]];
+    if(!u[at+U.UKIND]||u[at+U.UDEST]>=0||s[c+C.CPRONE]||s[c+C.CACTION]||s[c+C.CFIRE]>=0)return;
+    const scatter=()=>{if(this.movement.goals[id]<0&&this.movement.scatter(id)>=0)s[c+C.CMISSION]=C.MOVE;};
+    if(type.fraidy&&u[at+U.UOWNER]!==this.humanOwner&&s[c+C.CFEAR]>10){scatter();return;}
+    const pick=(stream:number,size:number)=>randomWord(this.setup.seed,this.frame+1,id,stream)%size;
+    const action=(value:number)=>{if(type.actions[value*3+1]&&[0,9,10].includes(s[c+C.CACTION])){s[c+C.CACTION]=value;s[c+C.CSTAGE]=0;}};
+    if(type.name==='C10'&&pick(710,4)===0)action(10);
+    const choice=pick(711,56);
+    if(choice===10)action(28);else if(choice===11)action(30);else if(choice===12)action(27);else if(choice===13)action(29);
+    else if(choice<=4){
+      if(choice===1)action(9);else if(choice===2)action(10);
+      u[at+U.UFACE]=u[at+U.UDESIRED]=pick(712,8)*32;
+      if(choice===1&&type.name==='MOEBIUS'&&s[c+C.CSEEN]&&pick(713,20)===0)s[c+C.CIDLE_VOICE]=(this.frame+1)*4+1+pick(714,2);
+      if(choice===2&&type.name==='RMBO'&&u[at+U.UOWNER]===this.humanOwner&&pick(713,3)===0)s[c+C.CIDLE_VOICE]=(this.frame+1)*4+3;
+    }else if(choice<=9&&type.fraidy&&u[at+U.UOWNER]!==this.humanOwner)scatter();
+  }
   private prepare() {
     const u = this.units, s = this.state;
     // CELL.CPP Occupy_Down; TECHNO.CPP Per_Cell_Process. Partial shroud edge
@@ -391,12 +415,15 @@ export class CpuCombat {
         s[c + C.CARM]--;
       if (s[c + C.CLOCAL_WAIT])
         s[c + C.CLOCAL_WAIT]--;
-      if (s[c + C.CFEAR])
+      // INFANTRY.CPP AI: Nikoomba never recovers; armed civilians reload on recovery.
+      if (s[c + C.CFEAR] && type.name !== 'C10') {
         s[c + C.CFEAR]--;
+        if (!s[c+C.CFEAR] && !s[c+C.CAMMO] && type.primary >= 0) s[c+C.CAMMO]=type.ammo;
+      }
       // INFANTRY.CPP, AI; SPECIAL.H defaults IsDefenderAdvantage to true.
       const canLieDown = s[c + C.CPRONE] || (u[at + U.UDEST] < 0 && this.movement.goals[id] < 0);
       // MasterDoControls refuses DO_LIE_DOWN until a victory gesture finishes.
-      const gesturing=s[c+C.CACTION]===27 || s[c+C.CACTION]===29;
+      const gesturing=s[c+C.CACTION]>=27&&s[c+C.CACTION]<=30;
       const prone = gesturing ? s[c+C.CPRONE] : moving.infantry && canLieDown && s[c + C.CFEAR] >= 10 ? 1 : 0;
       if (prone !== s[c + C.CPRONE]) {
         s[c + C.CACTION] = prone ? 5 : 7;
@@ -409,7 +436,7 @@ export class CpuCombat {
       }
       s[c + C.CPRONE] = prone;
       if (moving.infantry)
-        u[at + U.USPEED] = prone ? 127 : 255;
+        u[at + U.USPEED] = prone ? type.fraidy && type.name !== 'E5' ? 510 : 127 : 255;
       // INFANTRY.CPP AI calls Scatter(true): Coord(1), not forced=true.
       // Scatter excludes human units under SPECIAL.H's default IsScatter=false.
       if (type.fraidy && u[at + U.UOWNER] !== this.humanOwner && s[c + C.CFEAR] > 10 && !s[c + C.CACTION] &&
@@ -433,7 +460,7 @@ export class CpuCombat {
           s[c+C.CFIRE]=-1;
         }
       }
-      if (s[c+C.CACTION]===27 || s[c+C.CACTION]===29) u[at+U.UWAIT]=Math.max(u[at+U.UWAIT],2);
+      if (s[c+C.CACTION]>=27&&s[c+C.CACTION]<=30) u[at+U.UWAIT]=Math.max(u[at+U.UWAIT],2);
       if (type.name === 'MLRS' && s[c + C.CAMMO] < type.ammo && u[at + U.UDEST] < 0) {
         if (s[c + C.CRELOAD] > 0)
           s[c + C.CRELOAD]--;
@@ -483,12 +510,14 @@ export class CpuCombat {
       if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] === C.GUARD && target !== -1 &&
         !this.inRange(id, target) && !this.inRange(id, target, 1))
         target = -1;
-      if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] !== C.MOVE) {
+      if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] !== C.MOVE && ![C.SLEEP,C.STICKY,C.AMBUSH].includes(s[c+C.CMISSION])) {
         const searching=target===-1;
         if (searching) target = this.findTarget(id);
         s[c + C.CSCAN] = s[c+C.CMISSION]===C.GUARD_AREA&&searching&&target!==-1?1:s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
+        if(target===-1&&(s[c+C.CMISSION]===C.GUARD||s[c+C.CMISSION]===C.HUNT))this.randomAnimate(id);
       }
-      if(type.name==='E6'&&target>=0&&s[c+C.CMISSION]===C.HUNT){
+      if([9,10].includes(s[c+C.CACTION])&&(target!==-1||this.movement.goals[id]>=0||u[at+U.UDEST]>=0))s[c+C.CACTION]=0;
+      if(type.name==='E6'&&target>=0&&(s[c+C.CMISSION]===C.HUNT||s[c+C.CMISSION]===C.ATTACK)&&!u[at+U.UABILITY_MODE]&&canCaptureBuilding(MOVEMENT[u[target*U.WORDS+U.UTYPE]].name,this.setup.campaignLevel)){
         u[at+U.UABILITY_TARGET]=target+1;u[at+U.UABILITY_MODE]=1;u[at+U.UABILITY_ENTRY]=u[at+U.UABILITY_ORIGIN]=0;
         s[c+C.CMISSION]=C.MOVE;target=-1;
       }
@@ -504,7 +533,7 @@ export class CpuCombat {
           if (type.lockTurret && u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
             u[at + U.UDESIRED] = dir;
         }
-        else if (type.name!=='SAM' && u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
+        else if (type.name!=='SAM' && type.name!=='A10' && u[at + U.UDEST] < 0 && this.movement.goals[id] < 0)
           u[at + U.UDESIRED] = type.name === 'FTNK' ? dirFacing(dir) * 32 : dir;
       }
       else {
@@ -556,7 +585,7 @@ export class CpuCombat {
       s[c + C.CTARGET] = -1;
       return;
     }
-    if (type.primary < 0 || target === -1 || s[c + C.CAMMO] === 0)
+    if (type.primary < 0 || target === -1 || s[c + C.CAMMO] === 0 && type.name !== 'A10')
       return;
     const infantry = u[at + U.UKIND] !== 0;
     const desired = desiredFacing256(u[at], u[at + 1], ...this.point(target));
@@ -565,6 +594,8 @@ export class CpuCombat {
     // TARCOM.CPP, AI tries the secondary after any primary Can_Fire failure.
     const canFire = (which: number) => {
       const weapon = which ? type.secondary : type.primary;
+      // AIRCRAFT.CPP Mission_Hunt calls Fire_At directly every five ticks.
+      if (type.name === 'A10') return weapon >= 0 && !!s[c + C.CACTIVE];
       if (weapon < 0 || s[c + C.CARM] || u[at+U.UCLOAK]!==0 || !this.inRange(id, target, which))
         return false;
       const bullet = bullets[weapons[weapon].bullet];
@@ -601,8 +632,8 @@ export class CpuCombat {
     if (p[b + C.BACTIVE])
       throw new Error('Projectile capacity exceeded');
     s[c + C.CCURSOR] = (s[c + C.CCURSOR] + 1) % C.SHOTS_PER_UNIT;
-    const [fx, fy] = this.muzzle(id, which);
-    let [tx, ty] = this.point(target), direction = bullet.homing ? dir : desiredFacing256(fx, fy, tx, ty);
+    const [fx, fy] = bullet.dropping ? [u[at], u[at+1]] : this.muzzle(id, which);
+    let [tx, ty] = this.point(target), direction = bullet.homing || bullet.dropping ? dir : desiredFacing256(fx, fy, tx, ty);
     // BULLET.CPP, Unlimbo: spread is keyed to the object and tick, as required by the constitution.
     if (u[at + U.UDEST] >= 0 || bullet.inaccurate || ((target < -1 || u[target * U.WORDS + U.UKIND]) && (bullet.warhead === 2 || bullet.fueled))) {
       if (bullet.homing || bullet.arcing) {
@@ -629,13 +660,13 @@ export class CpuCombat {
     p[b + C.BFACE] = p[b + C.BDESIRED] = direction;
     const d = distance(p[b], p[b + 1], tx, ty);
     const speed = bullet.arcing ? Math.max(25, bullet.speed + (d >> 5)) : bullet.speed === 255 ? 0 : bullet.speed;
-    p[b + C.BSPEED] = (speed * 255 + 128) >> 8;
+    p[b + C.BSPEED] = (speed * (bullet.dropping ? 40 : 255) + 128) >> 8;
     p[b + C.BTIMER] = Math.min(255, Math.max(bullet.arming, bullet.range || Math.floor(d / bullet.speed) + 4));
     p[b + C.BARM] = target>=0&&u[target*U.WORDS+U.UDOMAIN]===1?0:bullet.arming;
     p[b + C.BTO_X] = tx;
     p[b + C.BTO_Y] = ty;
     p[b + C.BPROXIMITY] = d;
-    p[b + C.BALTITUDE] = bullet.arcing ? 1 : 0;
+    p[b + C.BALTITUDE] = bullet.dropping ? 256 : bullet.arcing ? 1 : 0;
     p[b + C.BRISER] = bullet.arcing ? Math.max(10, Math.floor(Math.floor(d / 2) / (speed + 1)) * 3) : 0;
     p[b + C.BEXPLODED] = -1;
     p[b + C.BSOURCE] = id;
@@ -653,6 +684,11 @@ export class CpuCombat {
       s[c + C.CSECOND] ^= 1;
     if (s[c + C.CAMMO] > 0)
       s[c + C.CAMMO]--;
+    // INFANTRY.CPP Fire_At: an empty pistol sends civilians running for cover.
+    if(type.fraidy&&!s[c+C.CAMMO]){
+      s[c+C.CFEAR]=255;
+      if(s[c+C.CMISSION]===C.ATTACK||s[c+C.CMISSION]===C.HUNT)s[c+C.CMISSION]=C.GUARD;
+    }
     if (type.name === 'MLRS' && !s[c + C.CRELOAD])
       s[c + C.CRELOAD] = 450;
     s[c + C.CLAST_FIRE] = this.frame;
@@ -683,6 +719,10 @@ export class CpuCombat {
         if (p[b + C.BRISER] > -100)
           p[b + C.BRISER] -= 3;
       }
+      if (type.dropping) {
+        p[b + C.BALTITUDE] += p[b + C.BRISER]; forced = p[b + C.BALTITUDE] <= 0;
+        if (p[b + C.BRISER] > -100) p[b + C.BRISER]--;
+      }
       if (type.homing && (this.frame & 1) && target >= 0 && this.units[target * U.WORDS + U.UHEALTH] > 0)
         p[b + C.BDESIRED] = desiredFacing256(p[b], p[b + 1], ...this.point(target));
       p[b + C.BFACE] = rotateFacing(p[b + C.BFACE], p[b + C.BDESIRED], type.rotation);
@@ -699,7 +739,7 @@ export class CpuCombat {
         forced=true;p[b+C.BDAMAGE]+=Math.trunc(p[b+C.BDAMAGE]/(p[b+C.BTYPE]===7?3:2));
       }
       let explode = forced;
-      if (!forced) {
+      if (!forced && !type.dropping) {
         if (p[b + C.BTIMER])
           p[b + C.BTIMER]--;
         if (p[b + C.BARM])
@@ -738,7 +778,10 @@ export class CpuCombat {
     if (d >= 384 || !direct&&(Math.abs(Math.floor(x / 256) - Math.floor(u[at] / 256)) > 1 || Math.abs(Math.floor(y / 256) - Math.floor(u[at + 1] / 256)) > 1))
       return 0;
     if(u[at+U.UDOMAIN]===1){if(warhead===1)raw*=2;if(u[at+U.UALTITUDE]>0)raw=Math.trunc(raw/2);}
+    if(type.name==='BOAT'&&warhead===4)raw=u[at+U.UHEALTH]*3;
     if(type.name==='SAM'&&s[c+C.CSAM]===0)raw=Math.trunc(raw/2)+1;
+    // BUILDING.CPP Take_Damage: the campaign Temple is vulnerable to the ion cannon.
+    if(this.setup.campaignLevel!==undefined&&type.name==='TMPL'&&warhead===5)raw+=Math.trunc(raw/2);
     let damage = modifyDamage(s[c + C.CPRONE] ? raw >> 1 : raw, warhead, type.armor, d);
     if (damage && type.name === 'E4')
       damage += modifyDamage(5, warhead, type.armor, d);
@@ -837,8 +880,12 @@ export class CpuCombat {
   }
   private injure(id: number, amount: number, warhead: number, source: number, deaths: number[]) {
     const u = this.units, s = this.state, at = id * U.WORDS, c = id * C.CWORDS;
-    const wall=WALLS[MOVEMENT[u[at+U.UTYPE]].name];if(wall){s[c+C.CWALL]+=amount;if(s[c+C.CWALL]<wall.levels)return;amount=u[at+U.UHEALTH];}
-    if(u[at+U.UDOMAIN]===2){s[c+C.CWARHEAD]=warhead;if(amount>0){s[c+C.CHIT_FRAME]=this.frame;s[c+C.CHIT_SOURCE]=source+1;}}
+    const received=amount>0;
+    amount=this.scaleDamage(amount,u[at+U.UOWNER]);
+    if(amount===0&&!received)return;
+    const wall=WALLS[MOVEMENT[u[at+U.UTYPE]].name];if(wall){s[c+C.CWALL]+=amount;amount=s[c+C.CWALL]>=wall.levels?u[at+U.UHEALTH]:0;}
+    if(u[at+U.UDOMAIN]===2&&amount>0)s[c+C.CWARHEAD]=warhead;
+    if(received){s[c+C.CHIT_FRAME]=this.frame;s[c+C.CHIT_SOURCE]=source+1;}
     if(amount>0&&u[at+U.UCLOAK]===2){u[at+U.UCLOAK]=1;u[at+U.UCLOAK_STAGE]=19;}
     u[at + U.UHEALTH] = Math.max(0, u[at + U.UHEALTH] - amount);
     if (u[at + U.UHEALTH] === 0) {
@@ -853,7 +900,7 @@ export class CpuCombat {
       deaths.push(id);
     }
     else {
-      if (u[at + U.UKIND]) {
+      if (u[at + U.UKIND] && amount>0) {
         // INFANTRY.CPP Take_Damage; INFANTRY.H FEAR_*.
         const fear = s[c + C.CFEAR], type = combatTypes[u[at + U.UTYPE]];
         s[c + C.CFEAR] = source >= 0 && fear < 100 ? (type.fraidy ? 200 : 100) :
@@ -862,7 +909,7 @@ export class CpuCombat {
       }
       // BUILDING.CPP Take_Damage, with the default IsSmartDefense option disabled.
       if(u[at+U.UDOMAIN]===2){
-        if(source>=0&&MOVEMENT[u[at+U.UTYPE]].name!=='SAM'&&u[source*U.WORDS+U.UOWNER]!==u[at+U.UOWNER]
+        if(source>=0&&MOVEMENT[u[at+U.UTYPE]].name!=='SAM'&&!areAllied(this.setup, u[at+U.UOWNER], u[source*U.WORDS+U.UOWNER])
           &&combatTypes[u[at+U.UTYPE]].primary>=0&&(s[c+C.CTARGET]===-1||!this.inRange(id,s[c+C.CTARGET]))){
           if(u[at+U.UOWNER]!==this.humanOwner&&u[source*U.WORDS+U.UDOMAIN]!==1){s[c+C.CTARGET]=source;s[c+C.CMISSION]=C.ATTACK;}
           else if(u[at+U.UFACE]===u[at+U.UDESIRED])u[at+U.UDESIRED]=randomWord(this.setup.seed,this.frame,id,196)%256;
@@ -870,8 +917,9 @@ export class CpuCombat {
         return;
       }
       // FOOT.CPP, Take_Damage: human guards retaliate only in range; computer guards may pursue.
-      if (source >= 0 && u[source * U.WORDS + U.UOWNER] !== u[at + U.UOWNER] &&
-        combatTypes[u[at + U.UTYPE]].primary >= 0 && (s[c + C.CMISSION] === C.GUARD || s[c + C.CMISSION] === C.ATTACK) &&
+      if(source>=0&&s[c+C.CMISSION]===C.STICKY)s[c+C.CMISSION]=this.idleMission(id);
+      if (source >= 0 && !areAllied(this.setup, u[at + U.UOWNER], u[source * U.WORDS + U.UOWNER]) &&
+        combatTypes[u[at + U.UTYPE]].primary >= 0 && [C.GUARD,C.ATTACK,C.GUARD_AREA,C.AMBUSH].includes(s[c+C.CMISSION]) &&
         (s[c + C.CTARGET] === -1 || u[at + U.UOWNER] !== this.humanOwner && !this.inRange(id, s[c + C.CTARGET]))) {
         if (u[at + U.UOWNER] !== this.humanOwner || this.inRange(id, source)) {
           s[c + C.CTARGET] = source;
@@ -926,6 +974,7 @@ export class CpuCombat {
     u[start + U.UCELL] = cell;
     u[start + U.USLOT] = slot;
     u[start + U.UHEALTH] = 5 + randomWord(this.setup.seed, this.frame, dead, 61) % (Math.floor(MOVEMENT[u[start + U.UTYPE]].strength / 2) - 4);
+    u[start + U.UFLAGS] = /^C\d+$/.test(MOVEMENT[u[start + U.UTYPE]].name) ? U.TECHNICIAN : 0;
     this.state[c + C.CMISSION] = u[start + U.UOWNER] === this.humanOwner ? C.GUARD : C.HUNT;
     this.movement.occupancy[cell * 5 + slot] = id + 1;
   }
@@ -942,6 +991,7 @@ export class CpuCombat {
   /** UNIT.CPP, Per_Cell_Process and DRIVE.CPP, Overrun_Square. */
   private afterMove() {
     const u = this.units, s = this.state;
+    const crushed = new Set<number>();
     for (let vehicle = 0; vehicle < this.setup.units.length; vehicle++) {
       const source = vehicle * U.WORDS, cell = u[source + U.UOVERRUN_CELL];
       if (cell < 0 || u[source + U.UHEALTH] <= 0)
@@ -953,16 +1003,20 @@ export class CpuCombat {
         continue;
       for (let id = 0; id < this.setup.units.length; id++) {
         const at = id * U.WORDS, c = id * C.CWORDS;
-        if (!u[at + U.UKIND] || (u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0) || u[at + U.UOWNER] === u[source + U.UOWNER])
+        if (!u[at + U.UKIND] || (u[at + U.UHEALTH] <= 0 || u[at + U.UATTACHED] !== 0) || areAllied(this.setup, u[source + U.UOWNER], u[at + U.UOWNER]))
           continue;
         if (Math.floor(u[at + 1] / 256) * this.setup.grid.width + Math.floor(u[at] / 256) !== cell)
           continue;
         if (distance(u[at], u[at + 1], u[source + U.UOVERRUN_X], u[source + U.UOVERRUN_Y]) >= 0x80)
           continue;
-        u[at + U.UHEALTH] = 0;
+        if(crushed.has(id))continue;
+        crushed.add(id);
+        u[at + U.UHEALTH] -= this.scaleDamage(u[at+U.UHEALTH],u[at+U.UOWNER]);
+        if(u[at+U.UHEALTH]>0)continue;
         s[c + C.CDEATH] = this.frame;
         s[c + C.CWARHEAD] = C.CRUSHED;
         s[c + C.CKILLER] = vehicle;
+        s[c + C.CHIT_FRAME] = this.frame; s[c + C.CHIT_SOURCE] = vehicle + 1;
         s[c + C.CTARGET] = s[c + C.CFIRE] = -1;
         this.movement.goals[id] = this.movement.pathGoals[id] = -1;
         u[at + U.UDEST] = u[at + U.UMIDDLE] = u[at + U.UTRACK] = u[at + U.UJUMP] = -1;
@@ -1001,12 +1055,14 @@ export class CpuCombat {
         let special=command.kind==='capture'?1:command.kind==='sabotage'?2:0;
         if(command.kind==='attack'&&target>=0&&this.units[target*U.WORDS+U.UDOMAIN]===2){
           const name=MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name;
-          if(type.name==='E6'&&CAPTURABLE_BUILDINGS.has(name)&&this.units[target*U.WORDS+U.UOWNER]!==this.units[at+U.UOWNER])special=1;
+          if(type.name==='E6'&&canCaptureBuilding(name,this.setup.campaignLevel)&&!areAllied(this.setup, this.units[at+U.UOWNER], this.units[target*U.WORDS+U.UOWNER]))special=1;
           if(type.name==='RMBO')special=2;
         }
-        if(special===1&&(type.name!=='E6'||target<0||this.units[target*U.WORDS+U.UOWNER]===this.units[at+U.UOWNER]))continue;
+        if(command.kind==='attack'&&target>=0&&type.name==='E6'&&MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name==='TRAN')special=1;
+        if(special===1&&(type.name!=='E6'||target<0||areAllied(this.setup, this.units[at+U.UOWNER], this.units[target*U.WORDS+U.UOWNER])))continue;
         const attack=!special&&(command.kind==='attack'||command.kind==='attack-ground');
         if(attack && (type.name==='SAM' || this.units[at+U.UDOMAIN]===1 && type.primary<0))continue;
+        if(this.units[at+U.UDOMAIN]===0)this.units[at+U.UFLAGS]|=U.PLAYER_ORDER;
         this.state[c + C.CTARGET] = attack ? command.kind === 'attack' ? command.target! : -command.target! - 2 : -1;
         this.units[at+U.UABILITY_MODE]=special;this.units[at+U.UABILITY_TARGET]=special?command.target!+1:0;
         if(special===2)this.state[c+C.CSABOTAGE]=this.frame;

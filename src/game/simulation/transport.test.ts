@@ -2,10 +2,41 @@ import { expect,it } from 'vitest';
 import { gridEdges } from '../../engine/simulation/state.ts';
 import { movementType } from '../data/movement.ts';
 import { CpuCombat } from './combat-cpu.ts';
-import { initialTransport,stepTransport,TBASE,TWORDS,TORDER } from './transport-cpu.ts';
+import { initialTransport,stepTransport,TBASE,TWORDS,TORDER,SCRIPT_UNLOAD } from './transport-cpu.ts';
+import { CpuAircraft } from './aircraft-cpu.ts';
+import { CpuAirOperations } from './air-operations-cpu.ts';
 import * as U from './units-state.ts';
 import { groundLayout,updateGroundKeys } from './ground.ts';
 import type { GameScene } from '../scene.ts';
+
+it('flies an evacuation transport off the map without selecting another landing zone',()=>{
+  const passable=new Uint8Array(400).fill(1);
+  const battle=new CpuCombat({grid:gridEdges(20,20,passable,true),land:new Uint8Array(400),passable,seed:1995,
+    bounds:{x:1,y:1,width:18,height:18},houseEdges:[0,0],campaignLevel:12,
+    units:[{type:movementType('TRAN'),cell:210},{type:movementType('MOEBIUS'),cell:230}]});
+  const aircraft=new CpuAircraft(battle.movement),operations=new CpuAirOperations(battle,aircraft,passable),transport=initialTransport(2),pending=new Int32Array(4).fill(-1);
+  pending[2]=5;pending[3]=0;
+  for(let tick=0;tick<600;tick++){
+    stepTransport(battle,aircraft.state,transport,pending,passable);operations.before();aircraft.step();battle.step();operations.after();
+  }
+  expect(battle.units[U.UHEALTH]).toBe(0);expect(battle.units[U.WORDS+U.UHEALTH]).toBe(0);
+});
+
+it('flies a scripted unload to its waypoint before releasing passengers',()=>{
+  const passable=new Uint8Array(400).fill(1),destination=315;
+  const battle=new CpuCombat({grid:gridEdges(20,20,passable,true),land:new Uint8Array(400),passable,seed:1995,
+    bounds:{x:1,y:1,width:18,height:18},houseEdges:[0,0],campaignLevel:4,
+    units:[{type:movementType('TRAN'),cell:105,altitude:24},{type:movementType('E1'),cell:105,attached:1}]});
+  const aircraft=new CpuAircraft(battle.movement),operations=new CpuAirOperations(battle,aircraft,passable),transport=initialTransport(2),pending=new Int32Array(4).fill(-1);
+  pending[0]=SCRIPT_UNLOAD;pending[1]=destination;
+  let dropped=-1;
+  for(let tick=0;tick<900;tick++){
+    stepTransport(battle,aircraft.state,transport,pending,passable);
+    if(!battle.units[U.WORDS+U.UATTACHED]){dropped=battle.units[U.WORDS+U.UCELL];break;}
+    operations.before();aircraft.step();battle.step();operations.after();
+  }
+  expect(dropped).toBe(destination);
+});
 
 it('uses infantry sorting after production replaces a reserved vehicle slot',()=>{
   // FOOT.CPP Sort_Y adds 0x30; UNIT.CPP Sort_Y adds 0x80.

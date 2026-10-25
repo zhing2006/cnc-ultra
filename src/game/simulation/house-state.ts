@@ -1,5 +1,6 @@
 import { HouseEconomy, ProductionQueues, type FactoryBuilding } from './economy.ts';
 import type { SuperKind } from './super-weapons.ts';
+import { DAMAGE_SCALE, type DebugSpeed } from '../debug.ts';
 
 /** CPU house state; shared map occupancy and actor slots belong to the match, not a house. */
 export class HouseState {
@@ -18,10 +19,13 @@ export class HouseState {
   message = '';
   lastAttack = 0;
   lost = 0;
+  buildingsLost = 0;
   harvested = 0;
   refunded = 0;
   delivered = 0;
   repaired = 0;
+  debugBuildSpeed: DebugSpeed = 1;
+  debugDamageScale = DAMAGE_SCALE;
   constructor(readonly owner: number, readonly faction: number, credits: number) {
     this.economy = new HouseEconomy(credits);
     this.queues = new ProductionQueues(this.economy, this.factories);

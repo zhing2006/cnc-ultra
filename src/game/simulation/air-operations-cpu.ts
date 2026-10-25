@@ -5,7 +5,7 @@ import { movementType,MOVEMENT } from '../data/movement.ts';
 import { combatTypes,weapons } from '../data/combat.ts';
 import type { CpuCombat } from './combat-cpu.ts';
 import { CpuAircraft,initialAircraft,AIR_WORDS,ASTAGE,ADELAY,ASPEED,AFACING,ADESIRED,AGOAL,ATAKEOFF,ALANDING,
-  AGENERATION,AHOVER,ACONTACT,AMISSION,ASTATUS,ATIMER,ATARGET,ASERVICE } from './aircraft-cpu.ts';
+  AGENERATION,AHOVER,ACONTACT,AMISSION,ASTATUS,ATIMER,ATARGET,ASERVICE,ARETREAT } from './aircraft-cpu.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
 
@@ -19,6 +19,7 @@ export function airFireLocation(battle:CpuCombat,id:number,target:number,playabl
     for(let direction=0;direction<255;direction+=16){
       const [x,y]=movePoint(tx,ty,direction,r),cell=Math.trunc(y/256)*width+Math.trunc(x/256);
       if(x<0||y<0||x>=width*256||y>=battle.setup.grid.height*256||!playable[cell])continue;
+      if(battle.setup.multiplayer===false&&battle.sight.shadow[cell]===-2)continue;
       let clear=true;
       for(let other=0;other<battle.setup.units.length;other++)if(u[other*U.WORDS+U.UDOMAIN]===1&&u[other*U.WORDS+U.UHEALTH]>0&&(u[other*U.WORDS+U.UCELL]===cell||battle.movement.goals[other]===cell))clear=false;
       const d=distance(u[at],u[at+1],x,y);
@@ -37,8 +38,10 @@ export class CpuAirOperations {
     for(let id=0;id<goals.length;id++)if(u[id*U.WORDS+U.UTYPE]===movementType('HPAD'))u[id*U.WORDS+U.UDOOR]=0;
     for(let id=0;id<goals.length;id++){
       const at=id*U.WORDS,p=id*AIR_WORDS,s=id*C.CWORDS,type=combatTypes[u[at+U.UTYPE]];
-      if(u[at+U.UDOMAIN]!==1||u[at+U.UHEALTH]<=0||type.name==='C17')continue;
+      if(u[at+U.UDOMAIN]!==1||u[at+U.UHEALTH]<=0||type.name==='C17'||type.name==='A10')continue;
       if(a[p+AGENERATION]!==u[at+U.UGENERATION]){a.set(initialAircraft({...battle.setup,units:[{type:u[at+U.UTYPE],cell:u[at+U.UCELL],facing:u[at+U.UFACE]}]}),p);a[p+AGENERATION]=u[at+U.UGENERATION];}
+      if(a[p+ARETREAT]){c[s+C.CACTIVE]=0;continue;}
+      if(battle.setup.campaignLevel===7&&u[at+U.UOWNER]===battle.setup.goodOwner&&u[at+U.UOWNER]!==battle.humanOwner&&c[s+C.CMISSION]===C.GUARD&&u[at+U.UALTITUDE]!==24){c[s+C.CACTIVE]=0;continue;}
       // AIRCRAFT.CPP Mission_Hunt / Mission_Guard: rotary-wing sorties and computer repair.
       if(c[s+C.CMISSION]===C.HUNT&&c[s+C.CTARGET]>=0&&c[s+C.CAMMO])c[s+C.CMISSION]=C.ATTACK;
       if(u[at+U.UOWNER]!==battle.humanOwner&&c[s+C.CMISSION]===C.GUARD&&u[at+U.UALTITUDE]!==24){

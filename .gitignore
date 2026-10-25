@@ -3,6 +3,7 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+data/
 
 # Test output
 coverage/
@@ -27,6 +28,9 @@ refs/*
 !refs/fetch.sh
 !refs/fetch.ps1
 !refs/export-png.ts
+!refs/prepare-data.ts
+!refs/prepare-data.sh
+!refs/prepare-data.ps1
 
 # Editors and operating systems
 .idea/

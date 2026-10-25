@@ -8,6 +8,7 @@ it('drops fast-forward speech and resumes only with new events', () => {
   const played: string[] = [];
   class AudioStub {
     state = 'running'; destination = {};
+    createGain() { return { gain: { value: 1 }, connect() {} }; }
     createBuffer() { return { name: loading, getChannelData: () => new Float32Array(0) }; }
     createBufferSource() {
       return { buffer: null as null | { name: string }, connect() {}, disconnect() {},

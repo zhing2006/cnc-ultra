@@ -12,6 +12,7 @@ type I = Node<'int'>;
 
 /** MAP.CPP, MapClass::Logic. The bounded 30-cell scan stays entirely on the GPU. */
 export class GpuTiberium {
+  get saveBuffers() { return this.attributes; }
   readonly amount: StorageBufferAttribute;
   readonly variants: StorageBufferAttribute;
   readonly state: StorageBufferAttribute;

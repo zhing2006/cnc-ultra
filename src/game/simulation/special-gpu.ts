@@ -1,12 +1,13 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { alliedOwners } from './alliances.ts';
 import { StorageBufferAttribute, type ComputeNode, type Node } from 'three/webgpu';
 import { Fn, If, int, instanceIndex, ivec2, storage } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { GpuTaskMask } from '../../engine/simulation/task-mask.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { BUILDINGS } from '../data/buildings.ts';
-import { CAPTURABLE_BUILDINGS } from '../data/abilities.ts';
-import { MOVEMENT } from '../data/movement.ts';
+import { canCaptureBuilding } from '../data/abilities.ts';
+import { MOVEMENT,movementType } from '../data/movement.ts';
 import { combatTypes, weapons } from '../data/combat.ts';
 import type { GpuCombat } from './combat-gpu.ts';
 import { unitDirection, unitDistance } from './units-nodes.ts';
@@ -22,12 +23,13 @@ export class GpuSpecialInfantry {
   private readonly mapChanged:(edges:Uint32Array)=>void;
   constructor(private readonly battle:GpuCombat){
     const m=battle.movement,count=battle.setup.units.length,w=battle.setup.grid.width,h=battle.setup.grid.height;
-    const rows=MOVEMENT.flatMap((type,i)=>{const shape=BUILDINGS.get(type.name),row=new Array(36).fill(0);row[0]=Number(CAPTURABLE_BUILDINGS.has(type.name));row[1]=shape?.occupy.length??0;row[2]=weapons[combatTypes[i].primary]?.rof??0;shape?.occupy.forEach(([x,y],index)=>{row[4+index*2]=x;row[5+index*2]=y;});return row;});
+    const rows=MOVEMENT.flatMap((type,i)=>{const shape=BUILDINGS.get(type.name),row=new Array(36).fill(0);row[0]=Number(canCaptureBuilding(type.name,battle.setup.campaignLevel));row[1]=shape?.occupy.length??0;row[2]=weapons[combatTypes[i].primary]?.rof??0;shape?.occupy.forEach(([x,y],index)=>{row[4+index*2]=x;row[5+index*2]=y;});return row;});
     const edgeBase=rows.length;
     this.constants=new StorageBufferAttribute(Int32Array.from([...rows,...battle.setup.grid.edges]),1);
     this.mapChanged=edges=>{(this.constants.array as Int32Array).set(edges,edgeBase);this.constants.addUpdateRange(edgeBase,edges.length);this.constants.needsUpdate=true;};
     m.mapObservers.add(this.mapChanged);
     const data=storage(this.constants,'int',this.constants.count).toReadOnly(),u=storage(m.units,'int',m.units.count),c=storage(battle.state,'int',battle.state.count);
+    const relations=storage(m.actorIndex.buffer,'uint',m.actorIndex.buffer.count).toReadOnly();
     const goals=storage(m.goals,'int',m.goals.count),paths=storage(m.pathGoals,'int',m.pathGoals.count),occupied=storage(m.occupancy,'int',m.occupancy.count).toReadOnly(),clock=storage(m.control,'int',m.control.count).toReadOnly();
     const unit=(id:I,field:number)=>u.element(id.mul(U.WORDS).add(field)),state=(id:I,field:number)=>c.element(id.mul(C.CWORDS).add(field));
     const direct=(id:I,cell:I)=>{
@@ -38,13 +40,18 @@ export class GpuSpecialInfantry {
     const approach=Fn(()=>{
       const id=int(instanceIndex),mode=unit(id,U.UABILITY_MODE).toVar(),target=unit(id,U.UABILITY_TARGET).sub(1).toVar();
       If(mode.greaterThan(0).and(unit(id,U.UHEALTH).greaterThan(0)).and(unit(id,U.UATTACHED).equal(0)),()=>{
-        const valid=int(0).toVar();
-        If(target.greaterThanEqual(0),()=>{valid.assign(int(unit(target,U.UHEALTH).greaterThan(0).and(unit(target,U.UDOMAIN).equal(2)).and(mode.mod(2).equal(0).or(data.element(unit(target,U.UTYPE).mul(36)).notEqual(0)))));});
+        const valid=int(0).toVar(),transport=int(0).toVar();
+        If(target.greaterThanEqual(0),()=>{
+          transport.assign(int(unit(target,U.UTYPE).equal(movementType('TRAN')).and(unit(target,U.UALTITUDE).equal(0)).and(mode.mod(2).equal(1)).and(relations.element(target.add(m.actorIndex.cargoCount)).equal(0))));
+          valid.assign(int(unit(target,U.UHEALTH).greaterThan(0).and(transport.notEqual(0).or(unit(target,U.UDOMAIN).equal(2).and(mode.mod(2).equal(0).or(data.element(unit(target,U.UTYPE).mul(36)).notEqual(0)))))));
+        });
         If(valid.equal(0),()=>{unit(id,U.UABILITY_MODE).assign(0);unit(id,U.UABILITY_TARGET).assign(0);goals.element(id).assign(-1);paths.element(id).assign(-1);}).ElseIf(mode.lessThan(3),()=>{
-          If(unit(id,U.UABILITY_ENTRY).equal(0).or(unit(id,U.UWAIT).greaterThan(30)),()=>{
+          If(unit(id,U.UABILITY_ENTRY).equal(0).or(unit(id,U.UWAIT).greaterThan(30)).or(transport.notEqual(0).and(unit(id,U.UABILITY_ENTRY).notEqual(unit(target,U.UCELL).add(1)))),()=>{
             const score=int(0x7fffffff).toVar(),entry=int(-1).toVar(),origin=int(-1).toVar(),base=unit(target,U.UTYPE).mul(36);
-            Loop({start:int(0),end:data.element(base.add(1)),type:'int',condition:'<'},({i})=>{
-              const destination=unit(target,U.UORIGIN).add(data.element(base.add(i.mul(2)).add(4))).add(data.element(base.add(i.mul(2)).add(5)).mul(w));
+            const cells=data.element(base.add(1)).toVar();If(transport.notEqual(0),()=>{cells.assign(1);});
+            Loop({start:int(0),end:cells,type:'int',condition:'<'},({i})=>{
+              const destination=unit(target,U.UORIGIN).add(data.element(base.add(i.mul(2)).add(4))).add(data.element(base.add(i.mul(2)).add(5)).mul(w)).toVar();
+              If(transport.notEqual(0),()=>{destination.assign(unit(target,U.UCELL));});
               for(const [ox,oy] of [[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]]){
                 const x=destination.mod(w).add(ox),y=destination.div(w).add(oy),cell=y.mul(w).add(x);
                 If(x.greaterThanEqual(0).and(x.lessThan(w)).and(y.greaterThanEqual(0)).and(y.lessThan(h)),()=>{
@@ -68,7 +75,7 @@ export class GpuSpecialInfantry {
       const target=unit(id,U.UABILITY_TARGET).sub(1).toVar(),mode=unit(id,U.UABILITY_MODE).toVar();
       If(target.greaterThanEqual(0),()=>{If(unit(target,U.UHEALTH).greaterThan(0),()=>{
         If(mode.equal(3),()=>{
-          If(unit(target,U.UOWNER).notEqual(unit(id,U.UOWNER)),()=>{
+          If(alliedOwners(battle.setup,unit(id,U.UOWNER),unit(target,U.UOWNER)).not(),()=>{
             unit(target,U.UOWNER).assign(unit(id,U.UOWNER));unit(target,U.UCAPTURE_TICK).assign(clock.element(0));state(target,C.CTARGET).assign(-1);state(target,C.CMISSION).assign(C.GUARD);
           });
           unit(id,U.UHEALTH).assign(0);goals.element(id).assign(-1);paths.element(id).assign(-1);

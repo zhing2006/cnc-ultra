@@ -13,7 +13,7 @@ import { HouseState } from './house-state.ts';
 import { SuperWeapons, type SuperKind } from './super-weapons.ts';
 import { buildingPower, canPlaceBuilding, constructionAnimation, deployYard, placementOffsets, saleRefund, type PlacementGrid } from './building-rules.ts';
 import { GpuLifecycle, HEALTH, REMOVE, DESTINATION } from './lifecycle-gpu.ts';
-import { EconomyReport,REPORT_COUNTS,REPORT_HEADER,REPORT_RECORD } from './economy-report.ts';
+import { EconomyReport,REPORT_COUNTS,REPORT_RECORD } from './economy-report.ts';
 import type { EconomySetup, InitialBuilding } from './economy-setup.ts';
 import type { GpuCombat } from './combat-gpu.ts';
 import { initialHarvest } from './harvest-cpu.ts';
@@ -21,6 +21,9 @@ import { initialTransport } from './transport-cpu.ts';
 import { initialServices,FACTORY_POINT } from './services-cpu.ts';
 import { mcvDeployment } from '../ai/deployment.ts';
 import { GUARD,HUNT,ATTACK,GUARD_AREA } from './combat-state.ts';
+import { scaleIncomingDamage } from '../debug.ts';
+import type { AnimationRequest } from './building-effects-state.ts';
+import { TECHNICIAN } from './units-state.ts';
 
 export interface LiveBuilding extends InitialBuilding {
   health:number; active:boolean; started:number; duration:number; selling:boolean; repairing:boolean;
@@ -37,9 +40,12 @@ interface PendingSpawn {
   owner?:number;
 }
 export const BUILDING_WORDS=6;
+type SavedCommand = { kind: 'choose'; name: string; secondary: boolean } | { kind: 'fire'; weapon: SuperKind; cell: number }
+  | { kind: 'place'; name: string; cell: number } | { kind: 'building' | 'deploy' | 'primary'; id: number };
 /** CPU-owned construction. Moving units, occupancy, damage and mining remain GPU-owned. */
 export class EconomyRuntime {
-  readonly houses: readonly [HouseState, HouseState];
+  readonly animations: AnimationRequest[] = [];
+  readonly houses: readonly HouseState[];
   readonly supers: SuperWeapons;
   private actingOwner = 0;
   get owner(){return this.actingOwner;}
@@ -50,7 +56,17 @@ export class EconomyRuntime {
   get queues(){return this.current.queues;}
   controlledOwner:number|null=0;
   setOwner(owner:number){this.actingOwner=owner;this.report.select(this.selected);}
-  setController(owner:number|null){this.controlledOwner=owner;this.battle.humanOwner.value=owner??-1;if(owner!==null)this.setOwner(owner);}
+  setController(owner:number|null){this.controlledOwner=owner;this.battle.humanOwner.value=owner??-1;if(owner!==null)this.setOwner(owner);this.syncDebugDamage();}
+  syncDebugDamage(){
+    this.battle.debugDamageOwner.value=this.controlledOwner??-1;
+    this.battle.debugDamageScale.value=this.controlledOwner===null?1000:this.houses[this.controlledOwner].debugDamageScale;
+  }
+  /** Consume an already-submitted accounting report while paused, without executing another tick. */
+  async settleForDebug(){
+    await this.reportCompletion;
+    if(this.released)return;
+    if(this.ready){this.accept(this.ready);this.ready=undefined;this.waiting=false;}
+  }
   withOwner<T>(owner:number,work:()=>T):T{const before=this.actingOwner;this.actingOwner=owner;try{return work();}finally{this.actingOwner=before;}}
   readonly buildings=new Map<number,LiveBuilding>();
   readonly lifecycle:GpuLifecycle;
@@ -77,6 +93,8 @@ export class EconomyRuntime {
   onSound?:(name:string,x:number,y:number)=>void;
   onShake?:()=>void;
   onTick?:()=>void;
+  onSceneryVisibility?:(sprite:number,visible:boolean)=>void;
+  onNuclearFlash?:(phase:'rise'|'fall')=>void;
   onBaseAttacked?:(owner:number,enemy:number)=>void;
   get outcome():number|undefined{return undefined;}
   get extraSimulationBuffers():readonly StorageBufferAttribute[]{return [];}
@@ -85,7 +103,10 @@ export class EconomyRuntime {
   private ready:Int32Array|undefined;
   private waiting=false;
   private released=false;
-  private readonly actions:(()=>void)[]=[];
+  private readonly actions:{ run: () => void; owner: number; saved?: SavedCommand }[]=[];
+  private reportCompletion: Promise<void> = Promise.resolve();
+  protected get trackedActors(): readonly number[] { return []; }
+  protected actorDetail(id: number) { return this.details.get(id); }
   protected readonly pending:PendingSpawn[]=[];
   private get freebies(){return this.current.freebies;}
   private freeSlots:number[]=[];
@@ -93,7 +114,7 @@ export class EconomyRuntime {
   private readonly details=new Map<number,Int32Array>();
   private readonly attackers=new Map<number,number>();
   private readonly mobileYards=new Map<number,number>();
-  readonly inventory=new Int32Array(MOVEMENT.length*2);
+  readonly inventory:Int32Array;
   private get announcements(){return this.current.announcements;}
   private get knownOptions(){return this.current.knownOptions;} private set knownOptions(value:Set<string>){this.current.knownOptions=value;}
   private readonly busyFactories=new Set<number>();
@@ -102,9 +123,10 @@ export class EconomyRuntime {
   constructor(readonly battle:GpuCombat,readonly scene:EconomySetup,faction=1){
     const count=battle.setup.units.length,cells=scene.playable.length;
     const initial=scene.houses??[{faction,credits:scene.credits},{faction:faction===1?2:1,credits:0}];
-    this.houses=[new HouseState(0,initial[0].faction,initial[0].credits),new HouseState(1,initial[1].faction,initial[1].credits)];
+    this.houses=initial.map((house, owner)=>new HouseState(owner,house.faction,house.credits));
+    this.inventory=new Int32Array(MOVEMENT.length*this.houses.length);
     this.supers=new SuperWeapons(battle.setup.grid.width,battle.setup.grid.height,battle.setup.bounds??{x:0,y:0,width:battle.setup.grid.width,height:battle.setup.grid.height},
-      new Map([...scene.scene.animation!.frames].map(([name,frames])=>[name,frames.length])));
+      new Map([...scene.scene.animation!.frames].map(([name,frames])=>[name,frames.length])),this.houses.length);
     this.miningState=new StorageBufferAttribute(initialHarvest(count),1);
     this.transportState=new StorageBufferAttribute(initialTransport(count),1);
     this.serviceState=new StorageBufferAttribute(initialServices(count),1);
@@ -125,7 +147,7 @@ export class EconomyRuntime {
   get deliveredUnits(){return this.current.delivered;}
   get radar(){return this.house.powerFraction>=256&&[...this.buildings.values()].some(b=>b.owner===this.owner&&b.active&&(b.type==='HQ'||b.type==='EYE'));}
   select(id:number){this.selected=id;this.report.select(id);}
-  command(action:()=>void){const owner=this.owner;this.actions.push(()=>this.withOwner(owner,action));}
+  command(action:()=>void,saved?:SavedCommand){const owner=this.owner;this.actions.push({run:()=>this.withOwner(owner,action),owner,saved});}
   choose(name:string,secondary=false){this.command(()=>{
     const type=PRODUCTION.get(name);if(!type)return;
     const item=this.queues.items.get(type.category);
@@ -138,7 +160,7 @@ export class EconomyRuntime {
     if(item?.type.name===name&&item.complete&&type.category==='building'){this.placing=name;this.mode='normal';return;}
     if(item&&(item.type.name!==name||!item.suspended)){this.emit('busy');return;}
     if(this.queues.begin(name)){this.emit('building');this.message='';}
-  });}
+  },{kind:'choose',name,secondary});}
   toggle(mode:'repair'|'sell'){this.mode=this.mode===mode?'normal':mode;this.placing=undefined;}
   cancelPlacement(){this.placing=undefined;this.current.specialTarget=undefined;this.mode='normal';}
   chooseSuper(kind:SuperKind){
@@ -147,16 +169,16 @@ export class EconomyRuntime {
     else this.emit(weapon.suspended?'lowpower':kind==='ion'?'ioncharging':'notready');
   }
   click(cell:number){
-    if(this.current.specialTarget){const kind=this.current.specialTarget;this.command(()=>{this.supers.fire(this.owner,kind,cell,this.frame,[...this.buildings.values()]);this.current.specialTarget=undefined;});return true;}
-    if(this.placing){const name=this.placing;this.command(()=>this.place(name,cell));return true;}
+    if(this.current.specialTarget){const kind=this.current.specialTarget;this.command(()=>{this.supers.fire(this.owner,kind,cell,this.frame,[...this.buildings.values()]);this.current.specialTarget=undefined;},{kind:'fire',weapon:kind,cell});return true;}
+    if(this.placing){const name=this.placing;this.command(()=>this.place(name,cell),{kind:'place',name,cell});return true;}
     if(this.mode!=='normal'){
       const b=[...this.buildings.values()].find(b=>b.owner===this.owner&&placementOffsets(b.type).some(([x,y])=>b.cell+y*this.width+x===cell));
-      if(b)this.command(()=>{if(this.mode==='sell')this.sell(b.id);else if(b.active&&PRODUCTION.get(b.type)?.repairable){b.repairing=!b.repairing;b.wrenchVisible=true;}});
+      if(b)this.command(()=>{if(this.mode==='sell')this.sell(b.id);else if(b.active&&PRODUCTION.get(b.type)?.repairable){b.repairing=!b.repairing;b.wrenchVisible=true;}},{kind:'building',id:b.id});
       return true;
     }
     return false;
   }
-  deploy(id=this.selected){if(id>=0)this.command(()=>{this.deploying=id;});}
+  deploy(id=this.selected){if(id>=0)this.command(()=>{this.deploying=id;},{kind:'deploy',id});}
   /** Remaster UNIT.CPP Mission_Guard/Mission_Unload/Mission_Hunt; only tracked MCV reports cross to the CPU. */
   deployIdleMcvs(){
     if(this.deploying>=0)return;
@@ -178,10 +200,10 @@ export class EconomyRuntime {
     if(peers.length<2)return;
     const primary=!b.primary;for(const other of peers)other.primary=false;b.primary=primary;
     if(primary)this.emit('primary');
-  });}
+  },{kind:'primary',id});}
   private get deploying(){return this.current.deploying;} private set deploying(value:number){this.current.deploying=value;}
   protected freeSlot(){return this.freeSlots.find(id=>!this.pending.some(p=>p.id===id))??-1;}
-  private createBuilding(name:string,cell:number,id:number,faction:number,health=PRODUCTION.get(name)!.strength,category?:ProductionCategory){
+  protected createBuilding(name:string,cell:number,id:number,faction:number,health=PRODUCTION.get(name)!.strength,category?:ProductionCategory){
     this.pending.push({id,name,cell,faction,owner:this.owner,generation:this.generations[id]+1,building:true,category});
     this.lifecycle.create(id,{type:movementType(name),cell,health,owner:this.owner,facing:0},{ignore:id});
     this.lifecycle.status(id,this.house.powerFraction,false);
@@ -211,7 +233,8 @@ export class EconomyRuntime {
     const id=this.freeSlot();if(id<0)return;
     const roll=(stream:number,max:number)=>randomWord(this.scene.setup.seed,this.frame,b.id,220+index*8+stream)%max;
     let name='E1';
-    if(b.type==='SILO')name=roll(0,2)?'C7':'C1';
+    if(this.scene.houseNames?.[b.owner]==='Neutral')name=`C${1+roll(0,9)}`;
+    else if(b.type==='SILO')name=roll(0,2)?'C7':'C1';
     else if(allowEngineer&&b.type==='FACT'&&b.faction===this.faction&&roll(0,4)===0)name='E6';
     else if(combatTypes[movementType(b.type)].primary<0&&roll(1,7)===1)name=roll(2,2)?'C7':'C1';
     const max=PRODUCTION.get(name)!.strength,health=damaged?5+roll(3,max-4):max;
@@ -220,11 +243,12 @@ export class EconomyRuntime {
     const source=damaged?(b.saboteur??-1):-1,target=source>=0&&this.owners[source]!==b.owner?source:-1;
     const mission=!damaged?GUARD_AREA:target>=0?ATTACK:this.controlledOwner===b.owner?GUARD:HUNT;
     const offsets=[-this.width,1-this.width,1,this.width+1,this.width,this.width-1,-1,-this.width-1],destination=cell+offsets[roll(4,8)];
-    this.lifecycle.create(id,{type:movementType(name),cell,health,owner:b.owner},{ignore:b.id,mission,target,destination:destination>=0&&destination<this.cells?destination:-1});
+    this.lifecycle.create(id,{type:movementType(name),cell,health,owner:b.owner,flags:/^C\d+$/.test(name)&&this.scene.houseNames?.[b.owner]!=='Neutral'?TECHNICIAN:0},{ignore:b.id,mission,target,destination:destination>=0&&destination<this.cells?destination:-1});
     return name;
   }
   private open(b:LiveBuilding){
     b.active=true;b.opened=true;
+    this.buildingOpened(b);
     if(b.type==='PROC')this.freebies.push({name:'HARV',building:b.id,attempt:0});
     if(b.type==='HPAD')this.freebies.push({name:this.faction===2?'HELI':'ORCA',building:b.id,attempt:0});
   }
@@ -289,12 +313,12 @@ export class EconomyRuntime {
   }
   private accept(report:Int32Array){
     this.busyFactories.clear();this.docked.clear();this.details.clear();this.attackers.clear();
-    this.inventory.set(report.subarray(REPORT_COUNTS,REPORT_HEADER));
+    this.inventory.set(report.subarray(REPORT_COUNTS,this.report.losses));
     const records=report[16],free=report[17];
     for(let i=0;i<records;i++){
-      const at=REPORT_HEADER+i*REPORT_RECORD,id=report[at];
+      const at=this.report.header+i*REPORT_RECORD,id=report[at];
       this.health[id]=report[at+1];this.generations[id]=report[at+2];this.types[id]=report[at+7];this.owners[id]=report[at+12];
-      this.details.set(id,new Int32Array([id,report[at+7],report[at+8],report[at+9],report[at+10],report[at+1],report[at+13],report[at+11]]));
+      this.details.set(id,new Int32Array([id,report[at+7],report[at+8],report[at+9],report[at+10],report[at+1],report[at+13],report[at+11],report[at+16],report[at+17],report[at+18],report[at+19],report[at+20]]));
       if(this.health[id]<=0||this.types[id]!==movementType('MCV'))this.mobileYards.delete(id);
       if(report[at+14]>=0)this.attackers.set(id,report[at+14]);
       const building=this.buildings.get(id);if(building)building.saboteur=report[at+15];
@@ -302,10 +326,12 @@ export class EconomyRuntime {
       if(report[at+5]>=0)this.docked.set(id,{id:report[at+5],load:report[at+6]});
     }
     this.freeSlots.length=0;
-    for(let i=0;i<free;i++){const at=REPORT_HEADER+records*REPORT_RECORD+i*2,id=report[at];this.freeSlots.push(id);this.health[id]=0;this.generations[id]=report[at+1];}
+    for(let i=0;i<free;i++){const at=this.report.header+records*REPORT_RECORD+i*2,id=report[at];this.freeSlots.push(id);this.health[id]=0;this.generations[id]=report[at+1];}
     this.detail.set(report.subarray(0,8));
     for(const state of this.houses)this.withOwner(state.owner,()=>{
-      for(;state.lost<report[state.owner===0?15:19];state.lost++)this.emit('unitlost');
+      for(;state.lost<report[this.report.losses+state.owner*2];state.lost++)this.emit('unitlost');
+      state.buildingsLost=report[this.report.losses+state.owner*2+1];
+      if(state.owner>=2)return;
       const harvested=report[8+state.owner],refunded=report[10+state.owner],delivered=report[state.owner===0?12:18],repaired=report[13+state.owner];
       if(harvested>state.harvested)this.house.harvest(harvested-state.harvested);state.harvested=harvested;
       if(refunded>state.refunded)this.house.refund(refunded-state.refunded);state.refunded=refunded;
@@ -356,7 +382,7 @@ export class EconomyRuntime {
     }
     if(changed)this.rebuildMap();this.refreshHouse();
   }
-  protected stepProduction(){this.queues.step();}
+  protected stepProduction(){this.queues.step(this.current.debugBuildSpeed);}
   /** Called before the next fixed tick. A late report stalls that tick without dropping it. */
   beginTick(){
     if(this.waiting&&!this.ready)return false;
@@ -364,12 +390,13 @@ export class EconomyRuntime {
     this.frame=this.battle.frame+1;
     this.onTick?.();
     if(this.outcome!==undefined)return false;
-    for(const action of this.actions.splice(0))action();
+    for(const action of this.actions.splice(0))action.run();
     for(const state of this.houses)this.withOwner(state.owner,()=>this.advanceHouse());
     this.advanceSupers();
     for(const b of this.buildings.values())this.lifecycle.status(b.id,this.houses[b.owner].economy.powerFraction,b.active);
     this.lifecycle.flush();this.updateVisuals();return true;
   }
+  protected superAvailable(_kind: 'ion' | 'nuke', available: boolean) { return available; }
   private advanceSupers(){
     const buildings=[...this.buildings.values()];
     for(const state of this.houses)this.withOwner(state.owner,()=>{
@@ -377,8 +404,8 @@ export class EconomyRuntime {
         const weapon=this.supers.charges[this.owner][kind],wasPresent=weapon.present;
         // HOUSE.CPP AI checks IsHuman only when granting a new nuclear device.
         // An existing device survives handover and the AI may still fire it.
-        const available=(kind!=='nuke'||wasPresent||this.controlledOwner===this.owner)&&
-          buildings.some(b=>b.owner===this.owner&&b.active&&b.health>0&&!b.selling&&b.type===(kind==='ion'?'EYE':'TMPL'));
+        const available=this.superAvailable(kind,(kind!=='nuke'||wasPresent||this.controlledOwner===this.owner)&&
+          buildings.some(b=>b.owner===this.owner&&b.active&&b.health>0&&!b.selling&&b.type===(kind==='ion'?'EYE':'TMPL')));
         if(weapon.step(this.frame,available,this.house.powerFraction>=256))this.emit(kind==='ion'?'ionready':'nukeready');
         if(!wasPresent&&weapon.present&&kind==='ion'&&!weapon.suspended)this.emit('ioncharging');
         if(this.controlledOwner!==this.owner&&weapon.ready){
@@ -393,6 +420,7 @@ export class EconomyRuntime {
       if(event.sound)this.onSound?.(event.sound,event.x,event.y);
       if(event.speech)this.onEvent?.(event.speech,event.owner);
       if(event.shake)this.onShake?.();
+      if(event.flash)this.onNuclearFlash?.(event.flash);
     }
   }
   private advanceHouse(){
@@ -414,6 +442,7 @@ export class EconomyRuntime {
       if(b.owner!==this.owner)continue;
       if(b.dying!==undefined){
         if(this.frame-b.dying>=(b.selling?0:8)){
+          if(!b.selling)this.buildingDebris(b);
           const odds=2-Number((b.saboteur??-1)>=0)+(b.faction===this.faction?0:6);
           for(const [i,[x,y]] of BUILDINGS.get(b.type)!.occupy.entries())if(randomWord(this.scene.setup.seed,this.frame,id,210+i)%(odds+1)===1)this.spawnCrew(b,b.cell+y*this.width+x,i,true);
           if(b.opened)this.house.adjustCapacity(-(PRODUCTION.get(b.type)!.capacity??0),true);
@@ -433,7 +462,7 @@ export class EconomyRuntime {
       }
       // HOUSE.CPP AI applies one AP hit each minute while power is insufficient.
       if(this.frame%900===0&&this.house.powerFraction<256&&b.health*2>PRODUCTION.get(b.type)!.strength){
-        b.health-=modifyDamage(1,bullets[2].warhead,combatTypes[movementType(b.type)].armor);this.lifecycle.edit(id,HEALTH,b.health);
+        b.health-=scaleIncomingDamage(modifyDamage(1,bullets[2].warhead,combatTypes[movementType(b.type)].armor),b.owner,this.controlledOwner??-1,this.houses[this.controlledOwner??0].debugDamageScale);this.lifecycle.edit(id,HEALTH,b.health);
       }
     }
     if(changed){this.rebuildMap();this.refreshHouse();}
@@ -455,7 +484,7 @@ export class EconomyRuntime {
     const factory=candidates.find(b=>b.primary)??candidates.at(-1);
     if(factory){if(factory.type==='AFLD')this.spawnDelivery(name,factory,category);else this.spawnNear(name,factory,category);}
   }
-  private spawnDelivery(name:string,b:LiveBuilding,category:ProductionCategory){
+  protected spawnDelivery(name:string,b:LiveBuilding,category?:ProductionCategory){
     const id=this.freeSlot();if(id<0)return;
     const bounds=this.scene.setup.bounds!;
     const cell=(Math.trunc(b.cell/this.width)+1)*this.width+bounds.x+bounds.width;
@@ -465,7 +494,7 @@ export class EconomyRuntime {
     this.lifecycle.create(id,{type:movementType('C17'),cell,owner:b.owner,facing:192,altitude:24,enter:b.id+1});
     this.lifecycle.create(cargo,{type:movementType(name),cell,owner:b.owner,attached:id+1});
   }
-  private spawnNear(name:string,b:LiveBuilding,category?:ProductionCategory,free=false,attempt=this.frame){
+  protected spawnNear(name:string,b:LiveBuilding,category?:ProductionCategory,free=false,attempt=this.frame){
     const id=this.freeSlot();if(id<0){if(free){if(name==='HARV')this.house.refund(PRODUCTION.get('HARV')!.cost);this.freebies.shift();}return;}
     const shape=BUILDINGS.get(b.type)!,air=PRODUCTION.get(name)!.category==='aircraft';
     const exits:number[]=[];
@@ -480,12 +509,67 @@ export class EconomyRuntime {
     this.lifecycle.create(id,{type:movementType(name),cell,owner:b.owner,facing:air?32:160,enter:air?b.id+1:point?-b.id-1:0},{ignore:b.id,nearby:gift});
     if(!air&&!point&&!gift)this.lifecycle.edit(id,DESTINATION,cell);
   }
+  protected buildingOpened(_building: LiveBuilding) {}
+  protected buildingDebris(_building: LiveBuilding) {}
+  protected observeTick(): Promise<void> { return Promise.resolve(); }
   endTick(){
     // Reserve enough free IDs for every building's possible crew, gifts and production.
     let slots=16;for(const b of this.buildings.values())slots+=Math.max(5,BUILDINGS.get(b.type)!.occupy.length);
-    this.report.request([...this.buildings.keys(),...this.pending.map(p=>p.id),...this.mobileYards.keys(),...this.houses.flatMap(h=>[h.selected,h.deploying]).filter(id=>id>=0)],slots);
+    this.report.request([...this.buildings.keys(),...this.pending.map(p=>p.id),...this.mobileYards.keys(),...this.trackedActors,...this.houses.flatMap(h=>[h.selected,h.deploying]).filter(id=>id>=0)],slots);
     this.waiting=true;
-    return this.report.read().then(result=>{if(!this.released)this.ready=result;});
+    return this.reportCompletion=Promise.all([this.report.read(),this.observeTick()]).then(([result])=>{if(!this.released)this.ready=result;});
+  }
+  /** Freeze at a tick boundary, preserving the report that the next tick has yet to consume. */
+  async saveState() {
+    await this.reportCompletion;
+    return {
+      owner:this.owner,controlledOwner:this.controlledOwner,frame:this.frame,placementVersion:this.placementVersion,animations:this.animations.map(request=>({...request})),
+      houses:this.houses.map(h=>{const {queues,economy,factories,knownOptions,...state}=h;return {...state,knownOptions:[...knownOptions],
+        economy:{...economy},factories:factories.map(f=>({...f})),queues:queues.saveState()};}),
+      buildings:[...this.buildings].map(([id,b])=>[id,{...b}] as const),supers:this.supers.saveState(),
+      health:Array.from(this.health),generations:Array.from(this.generations),types:Array.from(this.types),owners:Array.from(this.owners),
+      placement:{occupied:Array.from(this.placement.occupied),owners:Array.from(this.placement.owners),bibs:Array.from(this.placement.bibs)},
+      ready:this.ready?Array.from(this.ready):undefined,waiting:this.waiting,pending:this.pending.map(p=>({...p})),freeSlots:[...this.freeSlots],
+      detail:Array.from(this.detail),details:[...this.details].map(([id,value])=>[id,Array.from(value)] as const),
+      attackers:[...this.attackers],mobileYards:[...this.mobileYards],inventory:Array.from(this.inventory),busyFactories:[...this.busyFactories],
+      docked:[...this.docked].map(([id,value])=>[id,{...value}] as const),visualIds:[...this.visualIds],
+      actions:this.actions.map(action=>{if(!action.saved)throw new Error('A non-recordable development command is pending');return {owner:action.owner,command:action.saved};}),
+    };
+  }
+  loadState(saved: Awaited<ReturnType<EconomyRuntime['saveState']>>) {
+    this.animations.splice(0,this.animations.length,...saved.animations);
+    this.frame=saved.frame;this.controlledOwner=saved.controlledOwner;this.placementVersion=saved.placementVersion;
+    for(let i=0;i<this.houses.length;i++){
+      const {queues,economy,factories,knownOptions,...values}=saved.houses[i],house=this.houses[i];
+      Object.assign(house,values);house.knownOptions=new Set(knownOptions);Object.assign(house.economy,economy);
+      house.factories.splice(0,house.factories.length,...factories);house.queues.loadState(queues);
+    }
+    this.buildings.clear();for(const [id,b] of saved.buildings)this.buildings.set(id,{...b});
+    this.supers.loadState(saved.supers);
+    this.health.set(saved.health);this.generations.set(saved.generations);this.types.set(saved.types);this.owners.set(saved.owners);
+    (this.placement.occupied as Int32Array).set(saved.placement.occupied);(this.placement.owners as Int32Array).set(saved.placement.owners);(this.placement.bibs as Int32Array).set(saved.placement.bibs);
+    this.ready=saved.ready?Int32Array.from(saved.ready):undefined;this.waiting=saved.waiting;
+    this.pending.splice(0,this.pending.length,...saved.pending);this.freeSlots=[...saved.freeSlots];this.detail.set(saved.detail);
+    this.details.clear();for(const [id,value] of saved.details)this.details.set(id,Int32Array.from(value));
+    this.attackers.clear();for(const [id,value] of saved.attackers)this.attackers.set(id,value);
+    this.mobileYards.clear();for(const [id,value] of saved.mobileYards)this.mobileYards.set(id,value);
+    this.inventory.set(saved.inventory);this.busyFactories.clear();for(const id of saved.busyFactories)this.busyFactories.add(id);
+    this.docked.clear();for(const [id,value] of saved.docked)this.docked.set(id,{...value});
+    this.visualIds.clear();for(const id of saved.visualIds)this.visualIds.add(id);
+    this.actions.length=0;
+    for(const {owner,command} of saved.actions)this.withOwner(owner,()=>{
+      switch(command.kind){
+        case 'choose':this.choose(command.name,command.secondary);break;
+        case 'deploy':this.deploy(command.id);break;
+        case 'primary':this.selectPrimary(command.id);break;
+        case 'place':this.command(()=>this.place(command.name,command.cell),command);break;
+        case 'fire':this.command(()=>{this.supers.fire(this.owner,command.weapon,command.cell,this.frame,[...this.buildings.values()]);this.current.specialTarget=undefined;},command);break;
+        case 'building':this.command(()=>{const b=this.buildings.get(command.id);if(!b)return;if(this.mode==='sell')this.sell(b.id);else if(b.active&&PRODUCTION.get(b.type)?.repairable){b.repairing=!b.repairing;b.wrenchVisible=true;}},command);break;
+      }
+    });
+    this.setOwner(saved.owner);this.battle.humanOwner.value=saved.controlledOwner??-1;
+    this.syncDebugDamage();
+    this.rebuildMap();this.updateVisuals();this.placementVersion=saved.placementVersion;
   }
   dispose(){this.released=true;this.report.dispose();this.lifecycle.dispose();releaseStorage(this.battle.renderer,[this.visuals,this.miningState,this.transportState,this.serviceState]);}
 }

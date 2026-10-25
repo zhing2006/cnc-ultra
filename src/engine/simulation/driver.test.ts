@@ -93,3 +93,12 @@ it('surfaces an asynchronous GPU report failure instead of silently stalling', a
   expect(() => driver.advance(200)).toThrow(failure);
   driver.dispose();
 });
+
+it('runs the original zero-delay speed in yielding slices, even with identical clock readings', () => {
+  const schedule = scheduling(); let frames = 0;
+  const driver = new SimulationDriver(15, () => { frames++; schedule.cost(1); }, schedule.scheduler);
+  driver.setSpeed(Infinity); driver.advance(100); driver.advance(100);
+  schedule.tasks.shift()!(); expect(frames).toBe(4); expect(schedule.tasks).toHaveLength(1);
+  schedule.tasks.shift()!(); expect(frames).toBe(8);
+  driver.setPaused(true); schedule.flush(); expect(frames).toBe(8); driver.dispose();
+});

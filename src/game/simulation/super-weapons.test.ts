@@ -50,3 +50,19 @@ it('uses the multiplayer nuclear footprint instead of campaign damage', () => {
   expect(blast.every(hit => hit.warhead === 3)).toBe(true);
   expect(new Set(blast.map(hit => hit.frame)).size).toBe(1);
 });
+
+it('fades the campaign nuclear strike to white before applying the original nine-cell-wide blast', () => {
+  const weapons=new SuperWeapons(32,32,{x:1,y:1,width:30,height:30},new Map([['ATOMSFX',40]]));
+  weapons.campaign=true;weapons.charges[1].nuke.grant(0,true);
+  const temple:SuperBuilding={id:1,type:'TMPL',cell:400,owner:1,health:2000,active:true,selling:false};
+  weapons.fire(1,'nuke',528,0,[temple]);
+  const hits=[],flashes:{frame:number;phase:string}[]=[];
+  for(let frame=0;frame<300;frame++){
+    hits.push(...weapons.step(frame,[temple]));
+    for(const event of weapons.events)if(event.flash)flashes.push({frame,phase:event.flash});
+  }
+  const damage=hits.filter(hit=>hit.damage===333);
+  expect(damage).toHaveLength(81);expect(new Set(damage.map(hit=>`${hit.x},${hit.y}`)).size).toBe(81);
+  expect(flashes).toEqual([{frame:damage[0].frame-1,phase:'rise'},{frame:damage[0].frame,phase:'fall'}]);
+  expect(weapons.charges[1].nuke.present).toBe(false);
+});

@@ -7,8 +7,11 @@ import { AIR_WORDS,AACCUM,AFACING,ADESIRED,ASPEED,AGENERATION,ARETREAT,AGOAL,ini
 import type { CpuCombat } from './combat-cpu.ts';
 import * as U from './units-state.ts';
 import * as C from './combat-state.ts';
+import { CIVILIAN_INFANTRY } from '../data/abilities.ts';
 
 export const TBASE=6,TWORDS=16,TMODE=0,TTIMER=1,TLAST=2,TGEN=3,TORDER=4,TRESERVED=5,TCONTACT=6,TLOCKED=7;
+/** TEAM.CPP Coordinate_Unload carries a destination; the player's unload command does not. */
+export const SCRIPT_UNLOAD=9;
 export const APC_LOAD_FACING=[128,160,224,224,32,32,32,96];
 export const LOAD_DIRECTIONS=[4,4,5,3,6,2,7,1];
 export const UNLOAD_DIRECTIONS=[4,5,3,7,1,0,6,2];
@@ -57,7 +60,12 @@ export function stepTransport(battle:CpuCombat,air:Int32Array,t:Int32Array,pendi
     const command=pending[id*2];
     if(command===0||command===1){u[at+U.UENTER]=0;if(t[p+TMODE]===5||u[at+U.UTYPE]===movementType('APC'))t[p+TMODE]=0;}
     if(command===5){if(u[at+U.UKIND])t[p+TLAST]=-1;u[at+U.UENTER]=pending[id*2+1]+1;pending[id*2]=-1;c[id*C.CWORDS+C.CTARGET]=-1;c[id*C.CWORDS+C.CMISSION]=C.MOVE;}
-    if(command===6&&(u[at+U.UTYPE]===movementType('TRAN')||u[at+U.UTYPE]===movementType('APC'))){t[p+TMODE]=1;t[p+TTIMER]=0;pending[id*2]=-1;if(u[at+U.UTYPE]===movementType('APC')){m.goals[id]=m.pathGoals[id]=-1;c[id*C.CWORDS+C.CTARGET]=-1;c[id*C.CWORDS+C.CMISSION]=C.GUARD;}if(u[at+U.UALTITUDE]>0)m.goals[id]=u[at+U.UCELL];}
+    if((command===6||command===SCRIPT_UNLOAD)&&(u[at+U.UTYPE]===movementType('TRAN')||u[at+U.UTYPE]===movementType('APC'))){
+      t[p+TMODE]=1;t[p+TTIMER]=0;pending[id*2]=-1;
+      if(u[at+U.UTYPE]===movementType('APC')){m.goals[id]=m.pathGoals[id]=-1;c[id*C.CWORDS+C.CTARGET]=-1;c[id*C.CWORDS+C.CMISSION]=C.GUARD;}
+      else if(command===SCRIPT_UNLOAD&&pending[id*2+1]>=0){m.goals[id]=pending[id*2+1];c[id*C.CWORDS+C.CMISSION]=C.MOVE;}
+      else if(u[at+U.UALTITUDE]>0)m.goals[id]=u[at+U.UCELL];
+    }
     const target=u[at+U.UENTER]-1;
     if(target>=0&&u[at+U.UKIND]&&!u[at+U.UATTACHED]){
       const b=target*U.WORDS;
@@ -71,6 +79,7 @@ export function stepTransport(battle:CpuCombat,air:Int32Array,t:Int32Array,pendi
       if(t[p+TMODE]===5){
         if(u[at+U.UDEST]<0&&u[at+U.UCELL]===u[b+U.UCELL]){
           u[at+U.UATTACHED]=target+1;u[at+U.UENTER]=0;m.goals[id]=m.pathGoals[id]=-1;t[p+TORDER]=++t[3];t[p+TMODE]=0;t[contact]=0;if(u[b+U.UTYPE]===movementType('APC')&&cargo(target).length===5)apcDoor(target,false);
+          if(u[b+U.UTYPE]===movementType('TRAN')&&CIVILIAN_INFANTRY.has(MOVEMENT[u[at+U.UTYPE]].name)&&!(u[at+U.UFLAGS]&U.TECHNICIAN))t[TBASE+target*TWORDS+TMODE]=4;
         }
         continue;
       }
@@ -153,9 +162,9 @@ export function stepTransport(battle:CpuCombat,air:Int32Array,t:Int32Array,pendi
       u[pp+U.UDEST]=u[pp+U.UTRACK]=-1;u[pp+U.UENTER]=0;m.goals[passenger]=destination;m.pathGoals[passenger]=-1;
       c[passenger*C.CWORDS+C.CMISSION]=u[pp+U.UOWNER]===0?C.MOVE:C.HUNT;t[p+TLAST]=passenger;t[p+TTIMER]=0;
     }else if(t[p+TMODE]===3&&u[at+U.UDOOR]===0){
-      t[p+TMODE]=u[at+U.UOWNER]===0?0:4;
-      if(t[p+TMODE]===4){air[id*AIR_WORDS+ARETREAT]=65;air[id*AIR_WORDS+AGOAL]=-1;m.goals[id]=-1;}
+      t[p+TMODE]=u[at+U.UOWNER]===0&&!(u[at+U.UFLAGS]&U.LOANER)?0:4;
     }
+    if(t[p+TMODE]===4){air[id*AIR_WORDS+ARETREAT]=(battle.setup.houseEdges?.[u[at+U.UOWNER]]??64)+1;air[id*AIR_WORDS+AGOAL]=-1;m.goals[id]=-1;}
   }
   // Fixed-wing cargo uses the same integer FLY physics, but never helicopters' stop-and-land mission.
   for(let id=0;id<count;id++){

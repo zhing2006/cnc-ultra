@@ -1,12 +1,12 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
-import { IndirectStorageBufferAttribute,StorageBufferAttribute,type ComputeNode,type Node } from 'three/webgpu';
+import { IndirectStorageBufferAttribute,StorageBufferAttribute,Vector4,type ComputeNode,type Node } from 'three/webgpu';
 import { Fn,If,Continue,Break,int,uint,storage,uniform,instanceIndex,select,vec4,atomicStore,atomicMax,wgslFn } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { randomNode,intMax,intMin } from '../../engine/simulation/integer-nodes.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { GpuPrefixSum } from '../../engine/simulation/prefix-sum.ts';
 import { BUILDINGS } from '../data/buildings.ts';
-import { MOVEMENT } from '../data/movement.ts';
+import { MOVEMENT,movementType } from '../data/movement.ts';
 import { WALLS } from '../data/overlays.ts';
 import { ANIMATION_IDS as A,combatTypes,warheads } from '../data/combat.ts';
 import { movePoint } from '../coord.ts';
@@ -22,12 +22,15 @@ const exchange=wgslFn('fn effectExchange(p: ptr<storage, atomic<u32>, read_write
 
 /** Ordered original building effects; fire damage and animation lifetime remain integer state. */
 export class GpuBuildingEffects {
+  get saveBuffers() { return this.attributes; }
   readonly state:StorageBufferAttribute;
   readonly smudges:StorageBufferAttribute;
   readonly capacity:number;
   private readonly attributes:StorageBufferAttribute[]=[];
   private readonly passes:ComputeNode[];
   private readonly spawnPass:ComputeNode;
+  private readonly external=uniform(new Vector4(),'ivec4');
+  private readonly externalPass:ComputeNode;
   private readonly prefixes:GpuPrefixSum[];
   private drawPass?:ComputeNode;
   constructor(readonly battle:GpuCombat,frames:E.EffectFrames,smudges?:StorageBufferAttribute){
@@ -44,6 +47,18 @@ export class GpuBuildingEffects {
     const requestBuffer=keep(new Int32Array(count*MAX_REQUESTS*E.EFFECT_WORDS)),countBuffer=keep(new Int32Array(count)),freeBuffer=keep(new Int32Array(wordCount*2)),markBuffer=keep(new Int32Array(cells));
     const dispatch=new IndirectStorageBufferAttribute(new Uint32Array([0,1,1]),1);this.attributes.push(dispatch);
     const s=storage(this.state,'int',this.state.count),u=storage(battle.units,'int',battle.units.count),c=storage(battle.state,'int',battle.state.count),clock=storage(battle.movement.control,'int',2).toReadOnly();
+    this.externalPass=Fn(()=>{
+      const request=this.external,kind=request.x;
+      If(data.element(kind.mul(8).add(defBase)).greaterThan(0),()=>{
+        Loop(this.capacity,({i})=>{
+          const at=i.mul(E.EFFECT_WORDS).add(base);
+          If(s.element(at.add(E.ETYPE)).equal(0),()=>{
+            const values=[kind.add(1),int(0),int(0),intMax(int(1),request.w.mul(data.element(kind.mul(8).add(defBase+4))).bitAnd(255)),int(0),int(0),request.y,request.z,clock.element(0),int(0),int(0)];
+            values.forEach((value,index)=>s.element(at.add(index)).assign(value));Break();
+          });
+        });
+      });
+    })().compute(1);
     const links=storage(linkBuffer,'uint',linkBuffer.count).toAtomic(),linked=storage(linkBuffer,'uint',linkBuffer.count).toReadOnly();
     const clearLinks=Fn(()=>{atomicStore(links.element(instanceIndex),uint(0xffffffff));})().compute(count);
     const link=Fn(()=>{
@@ -68,13 +83,18 @@ export class GpuBuildingEffects {
         If(attached.notEqual(0),()=>{
           s.element(at.add(E.EACCUM)).addAssign(data.element(type.add(5)));
           const raw=s.element(at.add(E.EACCUM)).shiftRight(8).toVar();s.element(at.add(E.EACCUM)).bitAndAssign(255);
-          const p=parent.mul(U.WORDS),damage=raw.mul(data.element(u.element(p.add(U.UTYPE)).mul(3).add(2))).add(128).shiftRight(8);
+          const p=parent.mul(U.WORDS),damage=battle.scaleDamage(raw.mul(data.element(u.element(p.add(U.UTYPE)).mul(3).add(2))).add(128).shiftRight(8),u.element(p.add(U.UOWNER)));
           If(damage.greaterThan(0),()=>{u.element(p.add(U.UHEALTH)).assign(intMax(int(0),u.element(p.add(U.UHEALTH)).sub(damage)));c.element(parent.mul(C.CWORDS).add(C.CWARHEAD)).assign(3);});
           If(u.element(p.add(U.UHEALTH)).equal(0),()=>{
             const cp=parent.mul(C.CWORDS);c.element(cp.add(C.CDEATH)).assign(tick);c.element(cp.add(C.CKILLER)).assign(-1);c.element(cp.add(C.CTARGET)).assign(-1);c.element(cp.add(C.CFIRE)).assign(-1);s.element(at.add(E.ETYPE)).assign(0);Continue();
           });
-        }).Else(()=>{s.element(at.add(E.EPARENT)).assign(0);});
-        }else{s.element(at.add(E.EPARENT)).assign(0);}
+        }).Else(()=>{
+          If(parent.greaterThanEqual(0),()=>{s.element(at.add(E.EX)).addAssign(u.element(parent.mul(U.WORDS).add(U.UX)));s.element(at.add(E.EY)).addAssign(u.element(parent.mul(U.WORDS).add(U.UY)));s.element(at.add(E.EPARENT)).assign(0);});
+        });
+        }else{
+          const parent=s.element(at.add(E.EPARENT)).sub(1);
+          If(parent.greaterThanEqual(0),()=>{s.element(at.add(E.EX)).addAssign(u.element(parent.mul(U.WORDS).add(U.UX)));s.element(at.add(E.EY)).addAssign(u.element(parent.mul(U.WORDS).add(U.UY)));s.element(at.add(E.EPARENT)).assign(0);});
+        }
         const end=select(s.element(at.add(E.ELOOPS)).greaterThan(1),data.element(type.add(1)).sub(data.element(type.add(2))),data.element(type));
         If(s.element(at.add(E.EFRAME)).greaterThanEqual(end),()=>{
           If(s.element(at.add(E.ELOOPS)).greaterThan(0),()=>{s.element(at.add(E.ELOOPS)).subAssign(1);});
@@ -113,7 +133,16 @@ export class GpuBuildingEffects {
         const at=id.mul(U.WORDS),p=id.mul(C.CWORDS),hp=u.element(at.add(U.UHEALTH)).toVar(),old=s.element(id.mul(2)).toVar(),type=u.element(at.add(U.UTYPE)).mul(3).toVar();
         const same=s.element(id.mul(2).add(1)).equal(u.element(at.add(U.UGENERATION))).toVar();
         s.element(id.mul(2)).assign(hp);s.element(id.mul(2).add(1)).assign(u.element(at.add(U.UGENERATION)));
-        If(same.not().or(data.element(type).equal(0)),()=>{Continue();});
+        If(same.not(),()=>{Continue();});
+        If(u.element(at.add(U.UTYPE)).equal(movementType('BOAT')).and(hp.greaterThan(0)).and(old.mul(2).greaterThanEqual(700)).and(hp.mul(2).lessThan(700)),()=>{
+          const kind=A.ANIM_ON_FIRE_MED;
+          If(data.element(int(kind*8+defBase)).greaterThan(0),()=>{
+            const x=int(randomNode(uint(battle.setup.seed),uint(tick),uint(id),uint(322)).mod(uint(17))).sub(8).mul(256).add(12).div(24);
+            const dst=id.mul(MAX_REQUESTS*E.EFFECT_WORDS),entry=[int(kind+1),int(0),int(1),data.element(int(kind*8+defBase+4)),int(0),id.add(1),x,int(-20),tick,u.element(at.add(U.UGENERATION)),int(0)];
+            entry.forEach((value,index)=>requests.element(dst.add(index)).assign(value));requestCount.assign(1);
+          });
+        });
+        If(data.element(type).equal(0),()=>{Continue();});
         const death=c.element(p.add(C.CDEATH)),dead=old.greaterThan(0).and(hp.lessThanEqual(0)).and(death.greaterThanEqual(0));
         const burn=hp.greaterThan(0).and(old.mul(2).greaterThanEqual(data.element(type.add(1))).and(hp.mul(2).lessThan(data.element(type.add(1)))).or(hp.equal(1).and(old.greaterThan(1))));
         const debris=hp.lessThanEqual(0).and(death.greaterThanEqual(0)).and(death.equal(tick.sub(8)));
@@ -123,12 +152,12 @@ export class GpuBuildingEffects {
             If(data.element(type).bitAnd(int(1).shiftLeft(offset)).equal(0),()=>{Continue();});
             const cell=u.element(at.add(U.UORIGIN)).add(offset.div(4).mul(width)).add(offset.mod(4)).toVar();
             const pick=(stream:number,n:number)=>int(randomNode(uint(battle.setup.seed),uint(tick),uint(id),uint(part.mul(24).add(300+stream))).mod(uint(n)));
-            const spawn=(kind:I,radius:number,delay:I,loops:I,parent:I,stream:number)=>{
+            const spawn=(kind:I,radius:number,delay:I,loops:I,parent:I,stream:number,offsetX=0,offsetY=0,corner=false)=>{
               If(data.element(kind.mul(8).add(defBase)).greaterThan(0),()=>{
-                const x=cell.mod(width).mul(256).add(128),y=cell.div(width).mul(256).add(128),direction=pick(stream,256).mul(2).add(trigBase);
+                const origin=corner?0:128,x=cell.mod(width).mul(256).add(origin+offsetX),y=cell.div(width).mul(256).add(origin+offsetY),direction=pick(stream,256).mul(2).add(trigBase);
                 const xx=x.add(data.element(direction).mul(radius).shiftRight(7)).toVar(),yy=y.sub(data.element(direction.add(1)).negate().mul(radius).shiftRight(7)).toVar();
                 If(xx.lessThan(0).or(yy.lessThan(0)).or(xx.greaterThanEqual(width*256)).or(yy.greaterThanEqual(battle.setup.grid.height*256)),()=>{xx.assign(x);yy.assign(y);});
-                const dst=id.mul(MAX_REQUESTS).add(requestCount).mul(E.EFFECT_WORDS),entry=[kind.add(1),int(0),delay,intMax(int(1),intMax(int(1),loops).mul(data.element(kind.mul(8).add(defBase+4))).bitAnd(255)),int(0),parent,xx,yy,tick,u.element(at.add(U.UGENERATION)),int(0)];
+                const dst=id.mul(MAX_REQUESTS).add(requestCount).mul(E.EFFECT_WORDS),entry=[kind.add(1),int(0),delay,intMax(int(1),intMax(int(1),loops).mul(data.element(kind.mul(8).add(defBase+4))).bitAnd(255)),int(0),parent,xx.sub(select(parent.greaterThan(0),u.element(at.add(U.UX)),int(0))),yy.sub(select(parent.greaterThan(0),u.element(at.add(U.UY)),int(0))),tick,u.element(at.add(U.UGENERATION)),int(0)];
                 entry.forEach((value,index)=>requests.element(dst.add(index)).assign(value));requestCount.addAssign(1);
               });
             };
@@ -138,6 +167,9 @@ export class GpuBuildingEffects {
               spawn(int(A.ANIM_FBALL1),64,pick(9,4),int(1),int(0),10);
             });
             If(burn,()=>{
+              If(part.equal(0).and(u.element(at.add(U.UTYPE)).equal(movementType('V19'))).and(old.mul(2).greaterThanEqual(data.element(type.add(1)))).and(hp.mul(2).lessThan(data.element(type.add(1)))),()=>{
+                spawn(int(A.ANIM_OILFIELD_BURN),0,int(1),int(1),id.add(1),21,304,64,true);
+              });
               If(c.element(p.add(C.CWARHEAD)).equal(3),()=>{const roll=pick(11,14);If(roll.lessThan(9),()=>{spawn(int(select(roll.lessThan(5),int(A.ANIM_ON_FIRE_SMALL),select(roll.lessThan(8),int(A.ANIM_ON_FIRE_MED),int(A.ANIM_ON_FIRE_BIG)))),96,int(0),int(select(roll.equal(8),int(1),pick(12,3).add(1))),id.add(1),13);});})
                 .ElseIf(pick(11,2).equal(0),()=>{spawn(int(A.ANIM_FIRE_SMALL),96,pick(12,8),pick(13,3).add(1),id.add(1),14);});
             });
@@ -170,23 +202,27 @@ export class GpuBuildingEffects {
     const applyMarks=Fn(()=>{const cell=int(instanceIndex),value=markValues.element(cell);If(value.greaterThan(0),()=>{marks.element(cell).assign(value.mod(16));});})().compute(cells);
     this.passes=[clearLinks,link,loose,attached,collectFree,clearMarks,emit,...requestPrefix.kernels,...freePrefix.kernels,applyMarks,prepare];
   }
-  prepareForPlay(){return this.battle.renderer.compileComputeAsync([...this.passes,this.spawnPass]);}
+  prepareForPlay(){return this.battle.renderer.compileComputeAsync([...this.passes,this.spawnPass,this.externalPass]);}
   step(){this.battle.renderer.compute(this.passes);this.battle.renderer.compute(this.spawnPass);this.battle.movement.refreshOccupancy();}
   setView(pipeline:PalettePipeline,scene:GameScene,start:number){
     const rects:number[]=[],starts=E.effectDefinitions(scene.animation!.frames).flatMap(a=>{const at=rects.length/4;for(const r of scene.animation!.frames.get(a.name)??[])rects.push(r.x,r.y,r.width,r.height);return [at,a.start];});
     const attribute=new StorageBufferAttribute(Int32Array.from([...starts,...rects]),1);this.attributes.push(attribute);
     const data=storage(attribute,'int',attribute.count).toReadOnly(),s=storage(this.state,'int',this.state.count).toReadOnly(),dest=storage(pipeline.spriteBuffer,'vec4',pipeline.spriteBuffer.count),base=this.battle.setup.units.length*2;
+    const units=storage(this.battle.movement.units,'int',this.battle.movement.units.count).toReadOnly();
     this.drawPass=Fn(()=>{
       const id=int(instanceIndex),at=id.mul(E.EFFECT_WORDS).add(base),dst=id.add(start).mul(3),kind=s.element(at.add(E.ETYPE)).sub(1);
       dest.element(dst).assign(vec4(0));dest.element(dst.add(2)).assign(vec4(0));
       If(kind.greaterThanEqual(0).and(s.element(at.add(E.EDELAY)).equal(0)),()=>{
         const frame=data.element(kind.mul(2)).add(data.element(kind.mul(2).add(1))).add(s.element(at.add(E.EFRAME))),r=frame.mul(4).add(starts.length);
         const w=data.element(r.add(2)),h=data.element(r.add(3));
-        dest.element(dst).assign(vec4(s.element(at.add(E.EX)).mul(24).add(128).div(256).sub(w.div(2)),s.element(at.add(E.EY)).mul(24).add(128).div(256).sub(h.div(2)),w,h));
+        const x=s.element(at.add(E.EX)).toVar(),y=s.element(at.add(E.EY)).toVar(),parent=s.element(at.add(E.EPARENT)).sub(1);
+        If(parent.greaterThanEqual(0),()=>{x.addAssign(units.element(parent.mul(U.WORDS).add(U.UX)));y.addAssign(units.element(parent.mul(U.WORDS).add(U.UY)));});
+        dest.element(dst).assign(vec4(x.mul(24).add(128).div(256).sub(w.div(2)),y.mul(24).add(128).div(256).sub(h.div(2)),w,h));
         dest.element(dst.add(1)).assign(vec4(data.element(r),data.element(r.add(1)),scene.plainRemap,0));
       });
     })().compute(this.capacity);
   }
   update(){if(this.drawPass)this.battle.renderer.compute(this.drawPass);}
-  dispose(){for(const pass of this.passes)if(!this.prefixes.some(prefix=>prefix.kernels.includes(pass)))pass.dispose();for(const prefix of this.prefixes)prefix.dispose();this.spawnPass.dispose();this.drawPass?.dispose();releaseStorage(this.battle.renderer,this.attributes);}
+  spawn(request:E.AnimationRequest){this.external.value.set(request.kind,request.x,request.y,request.loops??1);this.battle.renderer.compute(this.externalPass);}
+  dispose(){for(const pass of this.passes)if(!this.prefixes.some(prefix=>prefix.kernels.includes(pass)))pass.dispose();for(const prefix of this.prefixes)prefix.dispose();this.externalPass.dispose();this.spawnPass.dispose();this.drawPass?.dispose();releaseStorage(this.battle.renderer,this.attributes);}
 }

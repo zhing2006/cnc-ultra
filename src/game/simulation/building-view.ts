@@ -36,6 +36,7 @@ export class BuildingView {
         b?.width??1,b?.height??1,Number(combatTypes[id].turret));
     }
     const weap2=frames('WEAP2')[0],wrench=frames('SELECT')[0]+2,ti=Array.from({length:12},(_,i)=>frames(`TI${i+1}`)[0]);
+    const wake=frames('WAKE')[0];
     const bibStarts=[frames('BIB1')[0],frames('BIB2')[0],frames('BIB3')[0]];
     const tiBase=values.length;values.push(...ti);
     const bibBase=values.length;values.push(...bibStarts);
@@ -74,8 +75,31 @@ export class BuildingView {
         If(id.greaterThanEqual(0),()=>{
           const at=id.mul(U.WORDS),type=units.element(at.add(U.UTYPE)),row=type.mul(13),part=relative.mod(layout.slots);
           const atlas=sprites.element(index.mul(3).add(1)).toVar();
-          If(units.element(at.add(U.UHEALTH)).greaterThan(0),()=>{atlas.z.assign(select(units.element(at.add(U.UOWNER)).equal(0),0,1));sprites.element(index.mul(3).add(1)).assign(atlas);});
+          If(units.element(at.add(U.UHEALTH)).greaterThan(0),()=>{
+            const remaps=world.remaps??[{unit:0,building:0},{unit:1,building:1}];
+            for(const [owner,remap] of remaps.entries())If(units.element(at.add(U.UOWNER)).equal(int(owner)),()=>{
+              atlas.z.assign(select(units.element(at.add(U.UDOMAIN)).equal(int(2)),remap.building,remap.unit));
+            });
+            sprites.element(index.mul(3).add(1)).assign(atlas);
+          });
           If(units.element(at.add(U.UDOMAIN)).equal(0).and(part.greaterThan(select(data.element(row.add(12)).notEqual(0),int(1),int(0)))),()=>{sprites.element(index.mul(3)).assign(vec4(0));});
+          // Ported from UNIT.CPP Draw_It: the gunboat frame includes its turret and damage state.
+          If(units.element(at.add(U.UHEALTH)).greaterThan(0).and(type.equal(movementType('BOAT')).or(type.equal(movementType('LST')))),()=>{
+            const x=units.element(at).mul(24).add(128).div(256).toVar(),y=units.element(at.add(1)).mul(24).add(128).div(256).toVar();
+            const shape=int(-1).toVar(),remap=atlas.z.toVar(),shadow=int(1).toVar();
+            If(type.equal(movementType('LST')),()=>{If(part.equal(0),()=>{shape.assign(data.element(row));});}).Else(()=>{
+              const east=units.element(at.add(U.UFACE)).greaterThanEqual(16).and(units.element(at.add(U.UFACE)).lessThan(112));
+              If(part.equal(0),()=>{shape.assign(int(wake).add(select(east,int(0),int(6))).add(clock.element(0).div(2).mod(6)));x.addAssign(select(east,int(-1),int(3)));y.addAssign(3);remap.assign(scene.plainRemap);shadow.assign(0);});
+              If(part.equal(1),()=>{
+                const turret=data.element(combat.element(id.mul(C.CWORDS).add(C.CTURRET)).add(facingBase));
+                shape.assign(data.element(row).add(turret).add(select(east,int(96),int(0))));
+                If(units.element(at.add(U.UHEALTH)).mul(2).lessThan(data.element(row.add(9))),()=>{shape.addAssign(32);});
+                If(units.element(at.add(U.UHEALTH)).mul(4).lessThan(data.element(row.add(9))),()=>{shape.addAssign(32);});
+              });
+            });
+            sprites.element(index.mul(3)).assign(vec4(0));
+            If(shape.greaterThanEqual(0),()=>{const region=rectangle(shape);sprites.element(index.mul(3)).assign(vec4(x.sub(region.z.div(2)),y.sub(region.w.div(2)),region.z,region.w));sprites.element(index.mul(3).add(1)).assign(vec4(region.x,region.y,remap,shadow));});
+          });
           If(type.equal(movementType('HARV')).and(part.equal(0)).and(mining.element(id.mul(HWORDS).add(HBASE+HMODE)).equal(1)).and(units.element(at.add(U.UDEST)).lessThan(0)),()=>{
             const face=data.element(units.element(at.add(U.UFACE)).add(facingBase)),stage=mining.element(id.mul(HWORDS).add(HBASE+HSTAGE)).div(2).mod(6);
             const phase=select(stage.lessThan(4),stage,int(6).sub(stage));

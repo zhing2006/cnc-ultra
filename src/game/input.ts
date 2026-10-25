@@ -8,6 +8,7 @@ export interface ViewSize {
 }
 export interface UnitInput {
   gesture(): void;
+  interfaceClick?(position: {x:number;y:number},button:number): boolean;
   down(position: {x:number;y:number},button:number,shift:boolean): void;
   up(position: {x:number;y:number},button:number,shift:boolean,ctrl:boolean): void;
   key(event: KeyboardEvent): boolean;
@@ -46,6 +47,7 @@ const ZOOM_WHEEL_DISTANCE = 240;
  * article 3). Esc releases the lock, as the browser decides.
  */
 export class GameInput {
+  enabled = true;
   private readonly fullscreen = fullscreenControls();
   /** The pointer position in image pixels while the pointer is locked, otherwise null. */
   mouse: { x: number; y: number } | null = null;
@@ -70,14 +72,17 @@ export class GameInput {
     this.canvas = canvas;
     this.view = view;
     const listen = <E extends Event>(target: EventTarget, type: string, listener: (event: E) => void) => {
-      target.addEventListener(type, listener as EventListener, { passive: false });
-      this.listeners.push([target, type, listener as EventListener]);
+      const guarded:EventListener=event=>{if(this.enabled||['keyup','blur','pointerlockchange'].includes(type))listener(event as E);};
+      target.addEventListener(type, guarded, { passive: false });
+      this.listeners.push([target, type, guarded]);
     };
 
     listen<MouseEvent>(canvas, 'mousedown', (event) => {
       actions?.gesture();
       if (document.pointerLockElement !== canvas) {
         this.place(event.offsetX, event.offsetY);
+        // Interface buttons remain usable without entering pointer lock.
+        if(actions?.interfaceClick?.({x:Math.floor(this.exactX),y:Math.floor(this.exactY)},event.button))return;
         // A rejected request, for example while the browser still holds a recent release, changes nothing.
         canvas.requestPointerLock().catch(() => {});
         return;

@@ -67,9 +67,9 @@ export class CpuAircraft {
         s.fill(0,a,a+AIR_WORDS);s[a+AGENERATION]=u[at+U.UGENERATION];s[a+AGOAL]=s[a+ACONTACT]=s[a+ATARGET]=s[a+AFIRED]=-1;s[a+AFACING]=s[a+ADESIRED]=u[at+U.UFACE];
       }
       const type=MOVEMENT[u[at+U.UTYPE]];
-      if(type.name==='C17')continue;
+      if(type.name==='C17'||type.name==='A10')continue;
       let goal=goals[id];
-      if(goal<0&&s[a+AGOAL]>=0&&!s[a+AHOVER]&&u[at+U.UALTITUDE]>0){goal=goals[id]=this.landingZone(id,u[at+U.UCELL]);s[a+ACONTACT]=-1;s[a+ATAKEOFF]=0;s[a+ALANDING]=0;}
+      if(!s[a+ARETREAT]&&goal<0&&s[a+AGOAL]>=0&&!s[a+AHOVER]&&u[at+U.UALTITUDE]>0){goal=goals[id]=this.landingZone(id,u[at+U.UCELL]);s[a+ACONTACT]=-1;s[a+ATAKEOFF]=0;s[a+ALANDING]=0;}
       if(goal!==s[a+AGOAL]){s[a+AGOAL]=goal;s[a+ASTAGE]=0;s[a+ADELAY]=0;}
       if(s[a+ADELAY]>0)s[a+ADELAY]--;
       if(s[a+ARETREAT]){
@@ -78,7 +78,7 @@ export class CpuAircraft {
         s[a+ASPEED]=altitude>=24?255:altitude>=20?64:altitude>=16?32:0;
         if(altitude>=24)s[a+ADESIRED]=u[at+U.UDESIRED]=s[a+ARETREAT]-1;
       }
-      if(goal>=0&&s[a+ADELAY]===0){
+      if(!s[a+ARETREAT]&&goal>=0&&s[a+ADELAY]===0){
         s[a+ADELAY]=1;
         const altitude=u[at+U.UALTITUDE];
         if(s[a+ASTAGE]===0){

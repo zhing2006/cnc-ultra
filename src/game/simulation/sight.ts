@@ -97,6 +97,7 @@ export class CpuSight {
   }
 }
 export class GpuSight {
+  get saveBuffers() { return this.attributes; }
   readonly mapped: StorageBufferAttribute;
   readonly current: StorageBufferAttribute;
   readonly shadow: StorageBufferAttribute;

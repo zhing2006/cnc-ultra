@@ -3,7 +3,7 @@
  * LCWUNCMP.CPP, LCW_Uncompress, the C version of the library routine in the remaster's Red Alert
  * source. Writes past the end of dest are dropped, as typed arrays drop them.
  */
-export function lcwUncompress(source: Uint8Array, sourceOffset: number, dest: Uint8Array): number {
+export function lcwUncompress(source: Uint8Array, sourceOffset: number, dest: Uint8Array, relative = false): number {
   let s = sourceOffset;
   let d = 0;
   for (;;) {
@@ -36,6 +36,7 @@ export function lcwUncompress(source: Uint8Array, sourceOffset: number, dest: Ui
       }
       let from = source[s] + (source[s + 1] << 8);
       s += 2;
+      if (relative) from = d - from;
       while (count--) dest[d++] = dest[from++];
     }
   }

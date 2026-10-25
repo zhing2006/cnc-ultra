@@ -12,6 +12,9 @@ export class PaletteCycle {
     this.colors = colors.slice();
   }
 
+  /** User palette controls apply before cycling the water colors. */
+  setColors(colors: Uint8Array) { this.original.set(colors); this.colors.set(colors); this.phase = -1; }
+
   /** elapsed is presentation time, independent of simulation and display refresh rate. */
   update(elapsed: number): boolean {
     // Color_Cycle's timer starts expired, so the first presentation already rotates once.

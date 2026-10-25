@@ -1,4 +1,5 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { areAllied } from './alliances.ts';
 import { CpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
 import { DIRECTIONS, UNREACHABLE } from '../../engine/simulation/state.ts';
 import { checksum, randomWord } from '../../engine/simulation/fixed.ts';
@@ -11,12 +12,14 @@ import { INFANTRY_SPOTS } from './map.ts';
 import { entryPoint, entrySpot, freeSpot } from './infantry-spots.ts';
 import { cellFacing, pathDestination, reachablePrefix, PATH_DELAY } from './navigation.ts';
 import * as S from './units-state.ts';
+import { CpuCampaignRouting } from './campaign-routing.ts';
 /** Ported from FACING.H, Difference, and FACING.CPP, Rotation_Adjust. */
 export function rotateFacing(current: number, desired: number, rate: number) {
   const difference = ((desired - current + 128) & 255) - 128;
   return (current + Math.sign(difference) * Math.min(Math.abs(difference), Math.min(127, rate))) & 255;
 }
 export class CpuUnits {
+  readonly routing?:CpuCampaignRouting;
   readonly units: Int32Array;
   readonly goals: Int32Array;
   /** Basic_Path's effective destination, separate from the player's NavCom. */
@@ -30,7 +33,8 @@ export class CpuUnits {
     this.goals = new Int32Array(setup.units.length).fill(-1);
     this.pathGoals = new Int32Array(setup.units.length).fill(-1);
     this.occupancy = new Int32Array(setup.grid.edges.length * 5);
-    this.flow = new CpuFlowFields(setup.grid, setup.units.length);
+    this.routing=setup.campaignRouting?new CpuCampaignRouting(setup,this.units,this.pathGoals):undefined;
+    this.flow = new CpuFlowFields(setup.grid, setup.units.length,this.routing?.policy);
     this.occupy();
   }
   point(cell: number, slot = 0): [
@@ -71,14 +75,16 @@ export class CpuUnits {
   }
   private free(cell: number, id: number) {
     const at = id * S.WORDS;
+    // UNIT.CPP Can_Enter_Cell: the scripted gunboat patrol always permits entry.
+    if (this.units[at + S.UTYPE] === movementType('BOAT')) return 0;
     const infantry = this.units[at + S.UKIND];
     let mask = 0;
     for (let slot = 0; slot < 5; slot++) {
       const owner = this.occupancy[cell * 5 + slot];
       const other = (owner - 1) * S.WORDS;
       const crushable = owner > 0 && combatTypes[this.units[at + S.UTYPE]].crusher &&
-        this.units[other + S.UKIND] && this.units[other + S.UOWNER] !== this.units[at + S.UOWNER];
-      if (owner && !crushable && this.units[other + S.UOWNER] !== this.units[at + S.UOWNER]) return -1;
+        this.units[other + S.UKIND] && !areAllied(this.setup, this.units[at + S.UOWNER], this.units[other + S.UOWNER]);
+      if (owner && !crushable && !areAllied(this.setup, this.units[at + S.UOWNER], this.units[other + S.UOWNER])) return -1;
       if (!owner || owner === id + 1 || crushable)
         mask |= 1 << slot;
     }
@@ -87,9 +93,10 @@ export class CpuUnits {
   private neighbor(cell: number, dir: number) {
     return this.setup.grid.edges[cell] & (1 << dir) ? cell + DIRECTIONS[dir][1] * this.setup.grid.width + DIRECTIONS[dir][0] : -1;
   }
-  private next(cell: number, goal: number) {
-    const field = goal < 0 ? -1 : this.flow.lookup[goal];
-    return field < 0 || !this.flow.fields[field * FIELD_WORDS + 1] ? -1 : this.flow.next[field * this.setup.grid.edges.length + cell];
+  private next(cell: number, goal: number,id:number) {
+    const field = goal < 0 ? -1 : this.flow.lookup[this.routing?.key(id,goal)??goal];
+    if(field<0||!this.flow.fields[field*FIELD_WORDS+1])return -1;
+    const cells=this.setup.grid.edges.length,value=this.flow.next[field*cells+cell];return value>=cells?value-cells:value;
   }
   private overrun(at: number) {
     if (this.units[at + S.UKIND]) return;
@@ -152,7 +159,7 @@ export class CpuUnits {
       }
       // Ported from DRIVE.CPP, While_Moving: reserve the next cell before changing tracks.
       if (step === RAW_TRACKS[control[0]][0]) {
-        const following = this.next(u[at + S.UDEST], this.pathGoals[id]);
+        const following = this.next(u[at + S.UDEST], this.pathGoals[id],id);
         if (following >= 0) {
           const face = dirFacing(desiredFacing256(...this.point(u[at + S.UDEST]), ...this.point(following)));
           const candidate = dirFacing(control[2]) * 8 + face;
@@ -213,7 +220,7 @@ export class CpuUnits {
     const u=this.units,at=id*S.WORDS;
     for(let slot=0;slot<5;slot++){
       const occupant=this.occupancy[cell*5+slot],other=(occupant-1)*S.WORDS;
-      if(occupant&&u[other+S.UOWNER]!==u[at+S.UOWNER]&&!(combatTypes[u[at+S.UTYPE]].crusher&&u[other+S.UKIND])){
+      if(occupant&&!areAllied(this.setup, u[at+S.UOWNER], u[other+S.UOWNER])&&!(combatTypes[u[at+S.UTYPE]].crusher&&u[other+S.UKIND])){
         // MOVE_CLOAK is a contact, not a request to attack an invisible blocker.
         if(u[other+S.UCLOAK]===2)this.shimmers.add(occupant-1);
         else{u[at+S.UOBSTRUCTION]=occupant;u[at+S.UOBSTRUCTION_GOAL]=this.goals[id];}
@@ -237,7 +244,8 @@ export class CpuUnits {
       if (this.goals[id] < 0 || this.units[id*S.WORDS+S.UDOMAIN]) this.pathGoals[id] = -1;
       else if (this.pathGoals[id] === -1) this.pathGoals[id] = pathDestination(this.setup, this.units, this.occupancy, id, this.goals[id]);
     }
-    this.flow.step(this.pathGoals);
+    this.routing?.step(this.flow);
+    this.flow.step(this.routing?.goals??this.pathGoals);
     const u = this.units;
     const rotated = new Uint8Array(this.goals.length);
     const wasDriving = new Uint8Array(this.goals.length);
@@ -264,9 +272,10 @@ export class CpuUnits {
     }
     this.occupy();
     for(let id=0;id<this.goals.length;id++){
-      const at=id*S.WORDS,goal=this.goals[id],path=this.pathGoals[id],source=u[at+S.UCELL],field=path<0?-1:this.flow.lookup[path];
+      const at=id*S.WORDS,goal=this.goals[id],path=this.pathGoals[id],source=u[at+S.UCELL],key=this.routing?.key(id,path)??path,field=path<0?-1:this.flow.lookup[key];
       if(goal<0||u[at+S.UHEALTH]<=0||u[at+S.UATTACHED]||u[at+S.UDOMAIN]||u[at+S.UDEST]>=0||u[at+S.UWAIT]||field<0||!this.flow.fields[field*FIELD_WORDS+1])continue;
-      if(path===source&&goal!==source){
+      if(key>=cells&&this.flow.distance[field*cells+source]===UNREACHABLE){prefixPending[id]=1;}
+      else if(path===source&&goal!==source){
         const prefix=reachablePrefix(this.setup,source,goal,this.flow.distance,field*cells);
         if(prefix>=0){this.pathGoals[id]=prefix;prefixPending[id]=1;}else{this.pathGoals[id]=-1;prefixFailed[id]=1;}
       }else if(this.flow.distance[field*cells+source]===UNREACHABLE){
@@ -302,10 +311,10 @@ export class CpuUnits {
       }
       if (prefixPending[id] || goal < 0 || (type.name==='APC'&&u[at+S.UDOOR]) || rotated[id] || u[at + S.UDEST] >= 0 || u[at + S.UWAIT] || (type.infantry && wasDriving[id]))
         continue;
-      const field = prefixFailed[id]?this.flow.lookup[u[at+S.UCELL]]:this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.pathGoals[id]];
+      const field = prefixFailed[id]?this.flow.lookup[u[at+S.UCELL]]:this.pathGoals[id] < 0 ? -1 : this.flow.lookup[this.routing?.key(id,this.pathGoals[id])??this.pathGoals[id]];
       const direct=this.pathGoals[id]===S.DIRECT_STEP;
       if (!direct && (field < 0 || !this.flow.fields[field * FIELD_WORDS + 1])) continue;
-      let cell = direct ? goal : u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id]);
+      let cell = direct ? goal : u[at + S.UROUTE] >= 0 ? u[at + S.UROUTE] : this.next(u[at + S.UCELL], this.pathGoals[id],id);
       if (cell < 0) {
         if (field >= 0 && this.flow.fields[field * FIELD_WORDS + 1]){
           const source=u[at+S.UCELL];
@@ -331,7 +340,7 @@ export class CpuUnits {
         // Ported from UNIT.CPP, Can_Enter_Cell: nearby opposing traffic returns MOVE_NO.
         const headOn = Array.from(blockers).some(x => {
           const other = (x - 1) * S.WORDS;
-          return u[other + S.UOWNER] === u[at + S.UOWNER] && previousGoals[x - 1] >= 0 &&
+          return areAllied(this.setup, u[at + S.UOWNER], u[other + S.UOWNER]) && previousGoals[x - 1] >= 0 &&
             dirFacing(u[at + S.UFACE]) === (dirFacing(u[other + S.UFACE]) ^ 4) && distance(u[at], u[at + 1], u[other], u[other + 1]) <= 0x1ff;
         });
         const moving = !headOn && Array.from(blockers).some(x => u[(x - 1) * S.WORDS + S.UDEST] >= 0 || previousGoals[x - 1] >= 0);
@@ -348,7 +357,7 @@ export class CpuUnits {
         // It must not become an endless series of successful detours around them.
         if (!moving && !headOn) {
           for (const blocker of blockers)
-            if (u[(blocker - 1) * S.WORDS + S.UOWNER] === u[at + S.UOWNER]) scatter.add(blocker - 1);
+            if (areAllied(this.setup, u[at + S.UOWNER], u[(blocker - 1) * S.WORDS + S.UOWNER])) scatter.add(blocker - 1);
           u[at + S.UROUTE] = -1;
           this.failedPath(id);
           continue;
@@ -360,7 +369,7 @@ export class CpuUnits {
           const other = this.neighbor(u[at + S.UCELL], d);
           // A one-step detour must make progress in the shared distance field.
           // Otherwise its reverse is equally eligible on the next tick.
-          if (other < 0 || this.free(other, id) < 0 || this.flow.distance[base + other] >= this.flow.distance[base + u[at + S.UCELL]])
+          if (other < 0 || this.free(other, id) < 0 || this.flow.next[base+other]>=cells || this.flow.distance[base + other] >= this.flow.distance[base + u[at + S.UCELL]])
             continue;
           const cost = this.flow.distance[base + other] + (d & 1 ? 362 : 256);
           if (cost < best) {
@@ -385,7 +394,7 @@ export class CpuUnits {
         }
       }
       else if (!type.infantry) {
-        const following = this.next(cell, this.pathGoals[id]);
+        const following = this.next(cell, this.pathGoals[id],id);
         if (following >= 0) {
           const nextdir = dirFacing(desiredFacing256(...to, ...this.point(following)));
           const candidate = dir * 8 + nextdir;
@@ -423,8 +432,8 @@ export class CpuUnits {
         for (let slot = 0; slot < 5; slot++) {
           const owner = this.occupancy[p.cell * 5 + slot], queried = this.occupancy[p.approach * 5 + slot];
           const claim = claims[p.cell * 5 + slot];
-          if(owner&&u[(owner-1)*S.WORDS+S.UOWNER]!==u[at+S.UOWNER]||queried&&u[(queried-1)*S.WORDS+S.UOWNER]!==u[at+S.UOWNER]||
-            claim<p.id&&u[claim*S.WORDS+S.UOWNER]!==u[at+S.UOWNER])hostile=true;
+          if(owner&&!areAllied(this.setup, u[at+S.UOWNER], u[(owner-1)*S.WORDS+S.UOWNER])||queried&&!areAllied(this.setup, u[at+S.UOWNER], u[(queried-1)*S.WORDS+S.UOWNER])||
+            claim<p.id&&!areAllied(this.setup, u[at+S.UOWNER], u[claim*S.WORDS+S.UOWNER]))hostile=true;
           const progress = distance(...this.point(p.cell, slot), ...this.point(p.approach)) < distance(u[at], u[at + 1], ...this.point(p.approach));
           if (progress && (!owner || owner === p.id + 1) && (!queried || queried === p.id + 1) && claims[p.cell * 5 + slot] > p.id)
             mask |= 1 << slot;
@@ -468,6 +477,7 @@ export class CpuUnits {
         }
         else {
           let speed = GROUND_SPEED[this.setup.land[p.middle < 0 ? p.cell : p.middle]][type.locomotion];
+          if (type.name === 'BOAT') speed = 255;
           if (u[at + S.UHEALTH] < (type.strength >> 1))
             speed -= speed >> 2;
           u[at + S.USPEED] = speed;
@@ -488,7 +498,7 @@ export class CpuUnits {
         const owner = this.occupancy[cell * 5 + slot] - 1;
         if (owner < 0 || owner === p.id) continue;
         if (previousGoals[owner] >= 0) moving = true;
-        else if (u[owner * S.WORDS + S.UOWNER] === u[at + S.UOWNER]) scatter.add(owner);
+        else if (areAllied(this.setup, u[at + S.UOWNER], u[owner * S.WORDS + S.UOWNER])) scatter.add(owner);
       }
       if (moving && distance(u[at], u[at + 1], ...this.point(this.goals[p.id])) >= 0x280) u[at + S.UWAIT] = PATH_DELAY;
       else this.failedPath(p.id);
@@ -517,6 +527,7 @@ export class CpuUnits {
           if (u[at + S.UHEALTH] <= 0)
             continue;
           u[at+S.UOBSTRUCTION]=0;
+          if(u[at+S.UDOMAIN]===0)u[at+S.UFLAGS]|=S.PLAYER_ORDER;
           if (command.kind === 'scatter')
             this.scatter(id);
           else {
@@ -534,7 +545,7 @@ export class CpuUnits {
     }
   }
   buffers() {
-    return [new Int32Array([this.frame, this.setup.seed]), this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
+    return [new Int32Array([this.frame, this.setup.seed]), this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals,...(this.routing?[this.routing.layout.data,this.routing.goals]:[])];
   }
   checksum() {
     return checksum(this.buffers());

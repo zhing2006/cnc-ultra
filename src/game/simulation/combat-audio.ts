@@ -4,7 +4,7 @@ import { Fn, If, int, uint, storage, instanceIndex, atomicMin, atomicStore, atom
 import { weapons, bullets, animations, combatTypes } from '../data/combat.ts';
 import { MOVEMENT,movementType } from '../data/movement.ts';
 import { PRODUCTION } from '../data/production.ts';
-import { decodeAud } from '../formats/aud.ts';
+import { AudioBuffers } from '../audio-buffers.ts';
 import type { MixSet } from '../formats/mix.ts';
 import type { GpuCombat } from './combat-gpu.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
@@ -15,7 +15,9 @@ import * as C from './combat-state.ts';
 /** Bounded sound events, with visible sources preferred before reducing duplicate sounds. */
 export class CombatAudio {
   private readonly context = new AudioContext();
-  private readonly buffers = new Map<number, AudioBuffer>();
+  private readonly output = this.context.createGain();
+  private readonly buffers:AudioBuffers;
+  private readonly soundNames:string[];
   private readonly soundIds = new Map<string, number>();
   private readonly playing = new Set<{
     sound: number;
@@ -33,20 +35,11 @@ export class CombatAudio {
   private muted = false;
   private playbackEpoch = 0;
   onShake?: () => void;
-  constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, mix: MixSet) {
-    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS,'CRUMBLE','OBELPOWR','NUKEMISL','TRANS1','BOMBIT1'])].filter(Boolean);
-    names.forEach((name, i) => {
-      this.soundIds.set(name,i);
-      const bytes = mix.get(`${name}.AUD`);
-      if (!bytes)
-        return;
-      const sound = decodeAud(bytes), input = new DataView(sound.pcm.buffer, sound.pcm.byteOffset, sound.pcm.byteLength);
-      const buffer = this.context.createBuffer(1, sound.pcm.length / (sound.bits / 8), sound.rate);
-      const data = buffer.getChannelData(0);
-      for (let j = 0; j < data.length; j++)
-        data[j] = sound.bits === 8 ? (sound.pcm[j] - 128) / 128 : input.getInt16(j * 2, true) / 32768;
-      this.buffers.set(i, buffer);
-    });
+  constructor(private readonly renderer: WebGPURenderer, battle: GpuCombat, mix: MixSet, selection?:StorageBufferAttribute) {
+    this.output.connect(this.context.destination);
+    const names = [...new Set([...weapons.map(w => w.sound), ...animations.map(a => a.sound), ...DEATH_SOUNDS, ...COMMANDO_TAUNTS,'CRUMBLE','OBELPOWR','NUKEMISL','TRANS1','BOMBIT1','MPLAN3','MTIBER1','CMON1'])].filter(Boolean);
+    this.soundNames=names;this.buffers=new AudioBuffers(this.context,mix);
+    names.forEach((name,i)=>this.soundIds.set(name,i));
     const keep = (array: Int32Array | Uint32Array) => {
       const b = new StorageBufferAttribute(array, 1);
       this.attributes.push(b);
@@ -61,6 +54,7 @@ export class CombatAudio {
     const u = storage(battle.units, 'int', battle.units.count).toReadOnly();
     const p = storage(battle.projectiles, 'int', battle.projectiles.count).toReadOnly();
     const clock = storage(battle.movement.control, 'int', 2).toReadOnly();
+    const selected=selection&&storage(selection,'int',selection.count).toReadOnly();
     const count = battle.setup.units.length, shots = count * C.SHOTS_PER_UNIT;
     const stride = 2 ** Math.ceil(Math.log2(shots * 2 + count * 3));
     const rankLimit = Math.floor(0xffffffff / stride) - 1;
@@ -101,6 +95,11 @@ export class CombatAudio {
     })().compute(shots);
     const deaths = Fn(() => {
       const id = int(instanceIndex), at = id.mul(U.WORDS), state = id.mul(C.CWORDS), type = u.element(at.add(U.UTYPE));
+      const idle=c.element(state.add(C.CIDLE_VOICE));
+      If(idle.greaterThan(0).and(idle.div(4).equal(clock.element(0))).and(selected?selected.element(id).equal(0):int(1).equal(1)),()=>{
+        const voice=select(idle.mod(4).equal(1),int(names.indexOf('MPLAN3')),select(idle.mod(4).equal(2),int(names.indexOf('MTIBER1')),int(names.indexOf('CMON1'))));
+        choose(voice,id.add(shots*2+count*2),u.element(at),u.element(at.add(1)));
+      });
       If(u.element(at.add(U.UCLOAK_EVENT)).div(8).equal(clock.element(0)).and(u.element(at.add(U.UCLOAK_EVENT)).bitAnd(2).notEqual(0)),()=>{choose(int(names.indexOf('TRANS1')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
       If(clock.element(0).greaterThan(0).and(c.element(state.add(C.CSABOTAGE)).equal(clock.element(0))),()=>{choose(int(names.indexOf('BOMBIT1')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
       If(type.equal(movementType('OBLI')).and(c.element(state.add(C.CCHARGE)).equal(1)),()=>{choose(int(names.indexOf('OBELPOWR')),id.add(shots*2),u.element(at),u.element(at.add(1)));});
@@ -198,18 +197,20 @@ export class CombatAudio {
   }
   private play(sound:number,x:number,y:number,view:{x:number;y:number;width:number;height:number}) {
     if(this.muted||this.disposed)return;
-    const buffer=this.buffers.get(sound);if(!buffer)return;
+    const buffer=this.buffers.get(`${this.soundNames[sound]}.AUD`);if(!buffer)return;
     const gain=soundGain(x,y,view),same=[...this.playing].filter(p=>p.sound===sound);
     const candidates=same.length>=3?same:this.playing.size>=16?[...this.playing]:[];
     if(candidates.length){const quiet=candidates.reduce((a,b)=>a.gain<=b.gain?a:b);if(quiet.gain>gain)return;quiet.source.stop();this.playing.delete(quiet);}
     const source=this.context.createBufferSource(),volume=this.context.createGain(),pan=this.context.createStereoPanner();
     source.buffer=buffer;volume.gain.value=gain*0.65;pan.pan.value=gain===1?0:Math.max(-1,Math.min(1,(x-view.x-view.width/2)/4096));
-    source.connect(volume);volume.connect(pan);pan.connect(this.context.destination);
+    source.connect(volume);volume.connect(pan);pan.connect(this.output);
     const playing={sound,gain,source};this.playing.add(playing);
     source.onended=()=>{this.playing.delete(playing);source.disconnect();volume.disconnect();pan.disconnect();};source.start();
   }
+  setVolume(volume:number){this.output.gain.value=volume/255;}
   dispose() {
     this.disposed = true;
+    this.buffers.clear();
     for (const p of this.playing)
       p.source.stop();
     void this.context.close();

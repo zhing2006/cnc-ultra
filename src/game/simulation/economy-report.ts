@@ -9,13 +9,17 @@ import * as C from './combat-state.ts';
 import { movementType,MOVEMENT } from '../data/movement.ts';
 import { HBASE,HWORDS,HLOAD } from './harvest-cpu.ts';
 import { SERVICE_BASE,SERVICE_WORDS,SMODE,SFACILITY } from './services-cpu.ts';
+import { WALLS } from '../data/overlays.ts';
 
-export const REPORT_COUNTS=20,REPORT_HEADER=REPORT_COUNTS+MOVEMENT.length*2,REPORT_RECORD=16;
+export const REPORT_COUNTS=20,REPORT_HEADER=REPORT_COUNTS+MOVEMENT.length*2+4,REPORT_RECORD=21;
 /** CPU decisions receive requested actors, account totals and a bounded list of reusable slots. */
 export class EconomyReport {
+  get saveBuffers() { return [this.scratch, this.result, this.requests, this.available]; }
   readonly result:StorageBufferAttribute;
   readonly requests:StorageBufferAttribute;
   readonly kernels:ComputeNode[];
+  readonly header:number;
+  readonly losses:number;
   private readonly facts:ComputeNode;
   private readonly scratch:StorageBufferAttribute;
   private readonly available:StorageBufferAttribute;
@@ -26,12 +30,15 @@ export class EconomyReport {
   private bytes=REPORT_HEADER*4;
   get readbackBytes(){return this.bytes;}
   constructor(readonly battle:GpuCombat,ledger:StorageBufferAttribute,transport:StorageBufferAttribute,services:StorageBufferAttribute){
-    const count=battle.setup.units.length;
-    this.result=new StorageBufferAttribute(new Int32Array(REPORT_HEADER+count*(REPORT_RECORD+2)),1);
+    const count=battle.setup.units.length,houses=battle.setup.houseCount??2;
+    this.losses=REPORT_COUNTS+MOVEMENT.length*houses;this.header=this.losses+houses*2;this.bytes=this.header*4;
+    this.result=new StorageBufferAttribute(new Int32Array(this.header+count*(REPORT_RECORD+2)),1);
     this.requests=new StorageBufferAttribute(new Int32Array(count+3),1);(this.requests.array as Int32Array)[0]=-1;
-    const inventoryOffset=count*4+2,inventorySize=MOVEMENT.length*2;
-    const initial=new Int32Array(inventoryOffset+inventorySize);initial.fill(-1000,count,count*2);
+    const inventoryOffset=count*4+houses*2,inventorySize=MOVEMENT.length*houses;
+    const priorOwner=inventoryOffset+inventorySize,priorGeneration=priorOwner+count,campaign=battle.setup.campaignLevel!==undefined;
+    const initial=new Int32Array(priorOwner+(campaign?count*2:0));initial.fill(-1000,count,count*2);
     for(const [id,unit] of battle.setup.units.entries())initial[id]=unit.health??MOVEMENT[unit.type].strength;
+    if(campaign)for(const [id,unit] of battle.setup.units.entries()){initial[priorOwner+id]=unit.owner??0;initial[priorGeneration+id]=1;}
     this.scratch=new StorageBufferAttribute(initial,1);this.available=new StorageBufferAttribute(new Uint32Array(count),1);
     this.freePrefix=new GpuPrefixSum(battle.renderer,this.available,count);
     this.readback=new ReadbackBuffer(this.result.array.byteLength);
@@ -50,13 +57,30 @@ export class EconomyReport {
       If(atomicLoad(totals.element(id)).greaterThan(0).and(health.lessThanEqual(0)),()=>{
         atomicStore(totals.element(id.add(count)),clock.element(0));
         const owner=u.element(at.add(U.UOWNER));
-        If(combat.element(id.mul(C.CWORDS).add(C.CDEATH)).greaterThanEqual(0).and(owner.greaterThanEqual(0)).and(owner.lessThan(2)).and(u.element(at.add(U.UDOMAIN)).notEqual(2)),()=>{atomicAdd(totals.element(owner.add(count*4)),int(1));});
+        const death=combat.element(id.mul(C.CWORDS).add(C.CDEATH));
+        let isWall=u.element(at.add(U.UTYPE)).equal(int(-1));
+        for(const name of Object.keys(WALLS))isWall=isWall.or(u.element(at.add(U.UTYPE)).equal(int(movementType(name))));
+        const recorded=campaign?u.element(at.add(U.UDOMAIN)).notEqual(2).or(combat.element(id.mul(C.CWORDS).add(C.CHIT_SOURCE)).greaterThan(0)):int(1).equal(1);
+        If(death.greaterThanEqual(int(0)).or(death.equal(int(C.CRUSHED))).and(owner.greaterThanEqual(int(0))).and(owner.lessThan(int(houses))).and(isWall.not()).and(recorded),()=>{
+          atomicAdd(totals.element(owner.mul(2).add(int(u.element(at.add(U.UDOMAIN)).equal(int(2)))).add(count*4)),int(1));
+        });
       });
+      if(campaign){
+        // TECHNO.CPP Captured -> Record_The_Kill(NULL): only previously damaged buildings count as lost.
+        const previous=atomicLoad(totals.element(id.add(priorOwner)));
+        If(health.greaterThan(0).and(u.element(at.add(U.UCAPTURE_TICK)).equal(clock.element(0)))
+          .and(previous.notEqual(u.element(at.add(U.UOWNER)))).and(u.element(at.add(U.UGENERATION)).equal(atomicLoad(totals.element(id.add(priorGeneration)))))
+          .and(u.element(at.add(U.UDOMAIN)).notEqual(2).or(combat.element(id.mul(C.CWORDS).add(C.CHIT_SOURCE)).greaterThan(0))),()=>{
+          atomicAdd(totals.element(previous.mul(2).add(count*4).add(int(u.element(at.add(U.UDOMAIN)).equal(2)))),int(1));
+        });
+        atomicStore(totals.element(id.add(priorOwner)),u.element(at.add(U.UOWNER)));
+        atomicStore(totals.element(id.add(priorGeneration)),u.element(at.add(U.UGENERATION)));
+      }
       atomicStore(totals.element(id),health);
       available.element(id).assign(uint(health.lessThanEqual(0).and(clock.element(0).add(1).sub(atomicLoad(totals.element(id.add(count)))).greaterThanEqual(90))));
       If(health.greaterThan(0),()=>{
         const owner=u.element(at.add(U.UOWNER));
-        If(owner.greaterThanEqual(0).and(owner.lessThan(2)),()=>{atomicAdd(totals.element(owner.mul(MOVEMENT.length).add(u.element(at.add(U.UTYPE))).add(inventoryOffset)),int(1));});
+        If(owner.greaterThanEqual(int(0)).and(owner.lessThan(int(houses))),()=>{atomicAdd(totals.element(owner.mul(MOVEMENT.length).add(u.element(at.add(U.UTYPE))).add(inventoryOffset)),int(1));});
         const enter=u.element(at.add(U.UENTER)),factory=select(enter.lessThan(0),enter.negate(),select(u.element(at.add(U.UTYPE)).equal(movementType('C17')),enter,u.element(at.add(U.UATTACHED)))).toVar();
         If(factory.greaterThan(0),()=>{atomicStore(totals.element(factory.sub(1).add(count*2)),int(1));});
         const service=id.mul(SERVICE_WORDS).add(SERVICE_BASE);
@@ -64,16 +88,20 @@ export class EconomyReport {
       });
     })().compute(count);
     this.facts=Fn(()=>{
-      const index=int(instanceIndex),id=request.element(index.add(3)).toVar(),at=id.mul(U.WORDS),out=index.mul(REPORT_RECORD).add(REPORT_HEADER);
+      const index=int(instanceIndex),id=request.element(index.add(3)).toVar(),at=id.mul(U.WORDS),out=index.mul(REPORT_RECORD).add(this.header);
       const dock=scratch.element(id.add(count*3)).sub(1).toVar(),load=int(0).toVar();
       const saboteur=u.element(at.add(U.UBOMB_SOURCE)).sub(1).toVar(),repay=int(-1).toVar();
       If(saboteur.greaterThanEqual(int(0)),()=>{If(u.element(saboteur.mul(U.WORDS).add(U.UHEALTH)).greaterThan(int(0)),()=>{repay.assign(saboteur);});});
       If(dock.greaterThanEqual(0),()=>{load.assign(credits.element(dock.mul(HWORDS).add(HBASE+HLOAD)));});
       const fields=[id,u.element(at.add(U.UHEALTH)),u.element(at.add(U.UGENERATION)),combat.element(id.mul(C.CWORDS).add(C.CDEATH)),scratch.element(id.add(count*2)),dock,load,u.element(at.add(U.UTYPE)),u.element(at.add(U.UCELL)),u.element(at.add(U.UFACE)),u.element(at.add(U.UDEST)),goals.element(id),u.element(at.add(U.UOWNER)),combat.element(id.mul(C.CWORDS).add(C.CMISSION)).mul(2).add(int(u.element(at.add(U.UATTACHED)).notEqual(0).or(u.element(at.add(U.UENTER)).notEqual(0)))),select(combat.element(id.mul(C.CWORDS).add(C.CHIT_FRAME)).equal(clock.element(0)),combat.element(id.mul(C.CWORDS).add(C.CHIT_SOURCE)).sub(1),int(-1)),repay];
+      fields.push(u.element(at.add(U.UX)),u.element(at.add(U.UY)));
+      fields.push(select(u.element(at.add(U.UABILITY_MODE)).greaterThan(0),u.element(at.add(U.UABILITY_TARGET)).sub(1),combat.element(id.mul(C.CWORDS).add(C.CTARGET))));
+      fields.push(u.element(at.add(U.UALTITUDE)));
+      fields.push(u.element(at.add(U.UFLAGS)));
       for(const [i,value] of fields.entries())result.element(out.add(i)).assign(value);
     })().compute(1);
     const free=Fn(()=>{
-      const id=int(instanceIndex),index=int(prefix.element(id)).toVar(),out=request.element(1).mul(REPORT_RECORD).add(REPORT_HEADER).add(index.mul(2));
+      const id=int(instanceIndex),index=int(prefix.element(id)).toVar(),out=request.element(1).mul(REPORT_RECORD).add(this.header).add(index.mul(2));
       If(available.element(id).notEqual(0).and(index.lessThan(request.element(2))),()=>{result.element(out).assign(id);result.element(out.add(1)).assign(u.element(id.mul(U.WORDS).add(U.UGENERATION)));});
     })().compute(count);
     const detail=Fn(()=>{
@@ -86,7 +114,8 @@ export class EconomyReport {
       for(let i=0;i<3;i++)result.element(10+i).assign(deliveries.element(i));
       result.element(13).assign(repairs.element(0));result.element(14).assign(repairs.element(1));result.element(15).assign(scratch.element(count*4));
       result.element(16).assign(request.element(1));result.element(17).assign(intMin(int(prefix.element(count)),request.element(2)));
-      result.element(18).assign(deliveries.element(5));result.element(19).assign(scratch.element(count*4+1));
+      result.element(18).assign(deliveries.element(5));result.element(19).assign(scratch.element(count*4+2));
+      for(let owner=0;owner<houses;owner++)for(let kind=0;kind<2;kind++)result.element(this.losses+owner*2+kind).assign(scratch.element(count*4+owner*2+kind));
     })().compute(1);
     const inventory=Fn(()=>{const id=int(instanceIndex);result.element(id.add(REPORT_COUNTS)).assign(scratch.element(id.add(inventoryOffset)));})().compute(inventorySize);
     this.kernels=[reset,observe,...this.freePrefix.kernels,free,detail,account,inventory];
@@ -96,7 +125,7 @@ export class EconomyReport {
     const actors=[...new Set(ids)],values=this.requests.array as Int32Array;this.requested=actors.length;this.freeLimit=Math.min(this.battle.setup.units.length,freeLimit);
     const next=[this.requested,this.freeLimit,...actors];
     if(next.some((value,i)=>values[i+1]!==value)){values.set(next,1);this.requests.addUpdateRange(1,next.length);this.requests.needsUpdate=true;}
-    this.facts.count=this.requested;this.bytes=(REPORT_HEADER+this.requested*REPORT_RECORD+this.freeLimit*2)*4;
+    this.facts.count=this.requested;this.bytes=(this.header+this.requested*REPORT_RECORD+this.freeLimit*2)*4;
   }
   prepareForPlay(){return this.battle.renderer.compileComputeAsync([...this.kernels,this.facts]);}
   async read(){

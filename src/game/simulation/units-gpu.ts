@@ -1,5 +1,6 @@
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
+import { alliedOwners } from './alliances.ts';
 import { StorageBufferAttribute, type ComputeNode, type WebGPURenderer, type Node } from 'three/webgpu';
 import { Fn, If, Break, int, uint, instanceIndex, storage, uniform, atomicStore, atomicLoad, atomicMin, atomicOr, wgslFn, ivec2, select } from 'three/tsl';
 import { GpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
@@ -19,6 +20,7 @@ import { DESTINATION_NEIGHBORS, PATH_DELAY } from './navigation.ts';
 import * as S from './units-state.ts';
 import { GpuOccupancyEdits } from './occupancy-edits.ts';
 import { GpuActorIndex } from './actor-index.ts';
+import { GpuCampaignRouting } from './campaign-routing.ts';
 type I = Node<'int'>;
 /** Passes surrounding each movement tick, including ticks submitted in a batch. */
 export interface UnitTickExtension {
@@ -26,7 +28,8 @@ export interface UnitTickExtension {
   after: ComputeNode[];
   refreshOccupancy?: boolean;
 }
-const PROPOSAL_WORDS = 20;
+const PROPOSAL_WORDS = 21;
+const P_FLOW_KEY = 20;
 const P_CELL = 0;
 const P_MIDDLE = 1;
 const P_SLOT = 2;
@@ -58,6 +61,8 @@ const TRACK_WORDS = 7;
 // TSL has no atomicExchange wrapper. Only the cell-list link needs this WGSL primitive.
 const exchangeHead = wgslFn('fn exchangeHead(head: ptr<storage, atomic<u32>, read_write>, value: u32) -> u32 { return atomicExchange(head, value); }');
 export class GpuUnits {
+  get saveBuffers() { return [...this.attributes, ...this.flow.saveBuffers,...(this.routing?.saveBuffers??[])]; }
+  readonly routing?:GpuCampaignRouting;
   readonly mapObservers=new Set<(edges:Uint32Array,passable:Uint8Array,land:Uint8Array)=>void>();
   readonly units: StorageBufferAttribute;
   readonly goals: StorageBufferAttribute;
@@ -98,6 +103,7 @@ export class GpuUnits {
   get actorIndex(){return this.relations??=new GpuActorIndex(this);}
   frame = 0;
   constructor(readonly renderer: WebGPURenderer, readonly setup: S.UnitsSetup) {
+    const allied = (source: I, target: I) => alliedOwners(setup, source, target);
     const count = setup.units.length;
     const cells = setup.grid.edges.length;
     const keep = (a: Int32Array | Uint32Array) => {
@@ -119,7 +125,8 @@ export class GpuUnits {
     this.occupancy = keep(new Uint32Array(cells * 5));
     this.ids = keep(new Int32Array(count));
     this.pending = keep(new Int32Array(count * 2).fill(-1));
-    this.flow = new GpuFlowFields(renderer, setup.grid, this.pathGoals);
+    this.routing=setup.campaignRouting?new GpuCampaignRouting(renderer,setup,this.units,this.pathGoals):undefined;
+    this.flow = new GpuFlowFields(renderer, setup.grid, this.routing?.goals??this.pathGoals,this.routing?.policy);
     const u = storage(this.units, 'int', count * S.WORDS).setName('unit_u');
     const goals = storage(this.goals, 'int', count).setName('unit_goals');
     const pathGoals = storage(this.pathGoals, 'int', count).setName('unit_pathGoals');
@@ -134,7 +141,9 @@ export class GpuUnits {
     // it through atomics in every cell invocation serializes AMD's D3D path.
     const occupancyStatus = storage(this.occupancyChanges, 'uint', count + 1).setName('unit_occupancy_status').toReadOnly();
     const invalidateOccupancy = () => { atomicStore(nudges.element(count), uint(1)); };
-    const proposal = storage(keep(new Int32Array(count * PROPOSAL_WORDS)), 'int', count * PROPOSAL_WORDS).setName('unit_proposal');
+    const proposalAttribute=keep(new Int32Array(count * PROPOSAL_WORDS));
+    const proposal = storage(proposalAttribute, 'int', count * PROPOSAL_WORDS).setName('unit_proposal');
+    const routingPasses=this.routing?.connect(this.flow,proposalAttribute,PROPOSAL_WORDS,P_FLOW_KEY)??[];
     const heads = storage(keep(new Uint32Array(cells)), 'uint', cells).setName('unit_heads').toAtomic();
     const links = storage(keep(new Uint32Array(count)), 'uint', count).setName('unit_links');
     const ids = storage(this.ids, 'int', count).setName('unit_ids').toReadOnly();
@@ -250,22 +259,22 @@ export class GpuUnits {
         // UNIT.CPP, Can_Enter_Cell: crushers may enter enemy infantry reservations.
         If(owner.greaterThan(uint(0)).and(type(at, TYPE_CRUSHER).notEqual(0)), () => {
           const other = int(owner).sub(1).mul(S.WORDS).toVar();
-          If(u.element(other.add(S.UKIND)).notEqual(0).and(u.element(other.add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER)))), () => {
+          If(u.element(other.add(S.UKIND)).notEqual(0).and(allied(u.element(at.add(S.UOWNER)),u.element(other.add(S.UOWNER))).not()), () => {
             unused.assign(true);
           });
         });
         If(owner.greaterThan(uint(0)).and(unused.not()),()=>{
-          If(u.element(int(owner).sub(1).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+          If(allied(u.element(at.add(S.UOWNER)),u.element(int(owner).sub(1).mul(S.WORDS).add(S.UOWNER))).not(),()=>{hostile.assign(1);});
         });
         const physicalOwner = atomicLoad(occupancy.element(physicalCell.mul(int(5)).add(s)));
         const physicalFree = physicalOwner.equal(uint(0)).or(physicalOwner.equal(uint(id.add(int(1)))));
         if(withClaims){
           If(physicalOwner.greaterThan(uint(0)),()=>{
-            If(u.element(int(physicalOwner).sub(1).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+            If(allied(u.element(at.add(S.UOWNER)),u.element(int(physicalOwner).sub(1).mul(S.WORDS).add(S.UOWNER))).not(),()=>{hostile.assign(1);});
           });
           const claim=atomicLoad(claims.element(physicalCell.mul(5).add(s)));
           If(claim.lessThan(uint(id)),()=>{
-            If(u.element(int(claim).mul(S.WORDS).add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER))),()=>{hostile.assign(1);});
+            If(allied(u.element(at.add(S.UOWNER)),u.element(int(claim).mul(S.WORDS).add(S.UOWNER))).not(),()=>{hostile.assign(1);});
           });
         }
         const progress = unitDistance(point(physicalCell, s), point(cell)).lessThan(unitDistance(position(at), point(cell)));
@@ -299,6 +308,7 @@ export class GpuUnits {
         });
       });
       If(hostile.notEqual(int(0)),()=>{chosen.assign(-1);});
+      If(u.element(at.add(S.UTYPE)).equal(int(movementType('BOAT'))),()=>{chosen.assign(0);});
       return chosen;
     };
     // UNIT.CPP / INFANTRY.CPP Can_Enter_Cell: report the enemy without changing a mission here.
@@ -308,7 +318,7 @@ export class GpuUnits {
         const owner=int(atomicLoad(occupancy.element(cell.mul(5).add(slot)))).toVar();
         If(owner.greaterThan(int(0)).and(blocking.equal(int(0))),()=>{
           const other=owner.sub(1).mul(S.WORDS);
-          If(u.element(other.add(S.UOWNER)).notEqual(u.element(at.add(S.UOWNER)))
+          If(allied(u.element(at.add(S.UOWNER)),u.element(other.add(S.UOWNER))).not()
             .and(type(at,TYPE_CRUSHER).equal(int(0)).or(u.element(other.add(S.UKIND)).equal(int(0)))),()=>{blocking.assign(owner);});
         });
       });
@@ -320,8 +330,9 @@ export class GpuUnits {
       });
     };
     const meta = storage(this.flow.fields, 'int', this.flow.fields.count).setName('unit_meta').toReadOnly();
-    const lookup = storage(this.flow.lookup, 'int', cells).setName('unit_lookup').toReadOnly();
+    const lookup = storage(this.flow.lookup, 'int', this.flow.lookup.count).setName('unit_lookup').toReadOnly();
     const next = storage(this.flow.next, 'int', this.flow.next.count).setName('unit_next').toReadOnly();
+    const nextCell=(at:I)=>{const value=next.element(at);return this.routing?select(value.greaterThanEqual(cells),value.sub(cells),value):value;};
     const distance = storage(this.flow.distance, 'int', this.flow.distance.count).setName('unit_distance').toReadOnly();
     const overrun = (at: I) => {
       If(type(at, TYPE_INFANTRY).equal(0), () => {
@@ -571,25 +582,27 @@ export class GpuUnits {
         // kernel within WebGPU's eight-storage-buffer baseline.
         proposal.element(p.add(int(P_NEXT))).assign(proposal.element(p.add(int(P_GOAL))));
       }).ElseIf(goal.greaterThanEqual(int(0)), () => {
-        const field = lookup.element(goal).toVar();
+        const key=this.routing?proposal.element(p.add(P_FLOW_KEY)):goal;
+        const field = lookup.element(key).toVar();
         If(field.greaterThanEqual(int(0)), () => {
           If(meta.element(field.mul(int(FIELD_WORDS)).add(int(1))).notEqual(int(0)), () => {
             proposal.element(p.add(int(P_READY))).assign(1);
             If(u.element(at.add(int(S.UDEST))).greaterThanEqual(int(0)), () => {
-              proposal.element(p.add(int(P_JUMP_NEXT))).assign(next.element(field.mul(int(cells)).add(u.element(at.add(int(S.UDEST))))));
+              proposal.element(p.add(int(P_JUMP_NEXT))).assign(nextCell(field.mul(int(cells)).add(u.element(at.add(int(S.UDEST))))));
             });
             const route = u.element(at.add(int(S.UROUTE)));
-            const first = select(route.greaterThanEqual(int(0)), route, next.element(field.mul(int(cells)).add(cell)));
+            const first = select(route.greaterThanEqual(int(0)), route, nextCell(field.mul(int(cells)).add(cell)));
             proposal.element(p.add(int(P_NEXT))).assign(first);
             If(first.greaterThanEqual(int(0)), () => {
-              proposal.element(p.add(int(P_FOLLOWING))).assign(next.element(field.mul(int(cells)).add(first)));
+              proposal.element(p.add(int(P_FOLLOWING))).assign(nextCell(field.mul(int(cells)).add(first)));
             });
             for (let d = 0; d < 8; d++) {
               proposal.element(p.add(int(P_COST + d))).assign(0x7fffffff);
               If(data.element(cell.add(int(edgeBase))).bitAnd(int(1 << d)).notEqual(int(0)), () => {
                 const neighbor = cell.add(int(DIRECTIONS[d][1] * setup.grid.width + DIRECTIONS[d][0]));
                 const neighborCost = distance.element(field.mul(int(cells)).add(neighbor));
-                If(neighborCost.lessThan(distance.element(field.mul(int(cells)).add(cell))), () => {
+                const allowed=this.routing?next.element(field.mul(cells).add(neighbor)).lessThan(cells):int(1).equal(1);
+                If(allowed.and(neighborCost.lessThan(distance.element(field.mul(int(cells)).add(cell)))), () => {
                   proposal.element(p.add(int(P_COST + d))).assign(neighborCost.add(d & 1 ? 362 : 256));
                 });
               });
@@ -598,7 +611,9 @@ export class GpuUnits {
               const requested=proposal.element(p.add(P_GOAL)).toVar();
               const defer=()=>{proposal.element(p.add(P_READY)).assign(0);proposal.element(p.add(P_NEXT)).assign(-1);};
               If(requested.greaterThanEqual(int(0)).and(u.element(at.add(S.UHEALTH)).greaterThan(int(0))).and(u.element(at.add(S.UATTACHED)).equal(int(0))).and(u.element(at.add(S.UDOMAIN)).equal(int(0))).and(u.element(at.add(S.UDEST)).lessThan(int(0))).and(u.element(at.add(S.UWAIT)).equal(int(0))),()=>{
-                If(goal.equal(cell).and(requested.notEqual(cell)),()=>{
+                const constrained=this.routing?key.greaterThanEqual(cells):int(0).notEqual(0);
+                If(constrained.and(distance.element(field.mul(cells).add(cell)).equal(int(UNREACHABLE))),()=>{defer();})
+                .ElseIf(goal.equal(cell).and(requested.notEqual(cell)),()=>{
                   const cursor=cell.toVar(),prefix=cell.toVar();
                   Loop(Math.max(setup.grid.width,setup.grid.height),()=>{
                     If(cursor.equal(requested),()=>{Break();});
@@ -689,7 +704,7 @@ export class GpuUnits {
                 const other = blocker.mul(int(S.WORDS));
                 const face = u.element(at.add(int(S.UFACE))).add(int(16)).bitAnd(int(255)).shiftRight(int(5));
                 const otherFace = u.element(other.add(int(S.UFACE))).add(int(16)).bitAnd(int(255)).shiftRight(int(5)).bitXor(int(4));
-                If(u.element(other.add(int(S.UOWNER))).equal(u.element(at.add(int(S.UOWNER))))
+                If(allied(u.element(at.add(int(S.UOWNER))), u.element(other.add(int(S.UOWNER))))
                   .and(proposal.element(blocker.mul(int(PROPOSAL_WORDS)).add(int(P_GOAL))).greaterThanEqual(int(0)))
                   .and(face.equal(otherFace)).and(unitDistance(position(at), position(other)).lessThanEqual(int(0x1ff))), () => {
                   headOn.assign(1);
@@ -714,7 +729,7 @@ export class GpuUnits {
               Loop(5, ({ i: s }) => {
                 const blocker = int(atomicLoad(occupancy.element(cell.mul(int(5)).add(s)))).sub(int(1));
                 If(blocker.greaterThanEqual(int(0)).and(blocker.notEqual(id)), () => {
-                  If(u.element(blocker.mul(int(S.WORDS)).add(int(S.UOWNER))).equal(u.element(at.add(int(S.UOWNER)))), () => {
+                  If(allied(u.element(at.add(int(S.UOWNER))), u.element(blocker.mul(int(S.WORDS)).add(int(S.UOWNER)))), () => {
                     atomicOr(nudges.element(blocker), uint(1));
                   });
                 });
@@ -888,6 +903,7 @@ export class GpuUnits {
             }).Else(() => {
               const land = data.element(select(middle.lessThan(int(0)), cell, middle).add(int(landBase)));
               const speed = data.element(land.mul(int(7)).add(type(at, TYPE_LOCOMOTION)).add(int(groundBase))).toVar();
+              If(u.element(at.add(S.UTYPE)).equal(movementType('BOAT')), () => { speed.assign(255); });
               If(u.element(at.add(int(S.UHEALTH))).lessThan(type(at, TYPE_STRENGTH).shiftRight(int(1))), () => {
                 speed.subAssign(speed.shiftRight(int(2)));
               });
@@ -920,7 +936,7 @@ export class GpuUnits {
           If(owner.greaterThanEqual(int(0)).and(owner.notEqual(id)), () => {
             If(proposal.element(owner.mul(int(PROPOSAL_WORDS)).add(int(P_GOAL))).greaterThanEqual(int(0)), () => {
               moving.assign(1);
-            }).ElseIf(u.element(owner.mul(int(S.WORDS)).add(int(S.UOWNER))).equal(u.element(at.add(int(S.UOWNER)))), () => {
+            }).ElseIf(allied(u.element(at.add(int(S.UOWNER))), u.element(owner.mul(int(S.WORDS)).add(int(S.UOWNER)))), () => {
               atomicOr(nudges.element(owner), uint(1));
             });
           });
@@ -945,6 +961,7 @@ export class GpuUnits {
       const at = id.mul(int(S.WORDS)).toVar();
       If(ids.element(id).notEqual(int(0)), () => {
         u.element(at.add(S.UOBSTRUCTION)).assign(0);
+        If(u.element(at.add(S.UDOMAIN)).equal(0).and(u.element(at.add(S.UHEALTH)).greaterThan(0)),()=>{u.element(at.add(S.UFLAGS)).bitOrAssign(S.PLAYER_ORDER);});
         If(this.commandKind.equal(int(2)), () => {
           scatter(id);
         }).Else(() => {
@@ -985,8 +1002,8 @@ export class GpuUnits {
     });
     // Start inter-cell moves first, then reserve short infantry steps in the
     // vacated source slots. This preserves same-tick starts without overlapping reservations.
-    this.prepare = this.flow.prepareKernels.length ? [this.resolvePaths,...this.flow.prepareKernels] : [];
-    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths]), ...this.flow.kernels, begin, query, motion, clear, ...occupy, finishOccupancy,
+    this.prepare = this.flow.prepareKernels.length ? [this.resolvePaths,...routingPasses,...this.flow.prepareKernels] : [];
+    this.tick = [...(this.prepare.length ? [] : [this.resolvePaths,...routingPasses]), ...this.flow.kernels, begin, query, motion, clear, ...occupy, finishOccupancy,
       snapshotGoals, proposalQuery, propose, prepareInfantry,
       clearHeads, linkInfantry(true), allocateInfantry, accept, clear, ...occupy, finishOccupancy,
       clearHeads, linkInfantry(false), allocateInfantry, accept, blockedInfantry, resumeJump, clearOccupancy, ...occupy, finishOccupancy, yieldSpace, this.applyPending];
@@ -1001,7 +1018,9 @@ export class GpuUnits {
     await this.relations?.prepareForPlay();
     await this.edits?.prepareForPlay();
     await this.renderer.compileComputeAsync(this.kernels);
+    if(this.routing)await this.renderer.compileComputeAsync(this.routing.kernels);
   }
+  useRoutingSight(sight:StorageBufferAttribute){if(this.routing)this.prepare.unshift(this.routing.copySight(sight));}
   step(commands: readonly S.UnitCommand[] = []) {
     if (this.unitsVersion !== this.units.version) this.refreshOccupancy();
     if (this.prepare.length) this.renderer.compute(this.prepare);
@@ -1081,7 +1100,7 @@ export class GpuUnits {
     this.refreshOccupancy();
   }
   buffers() {
-    return [this.control, this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals];
+    return [this.control, this.units, this.goals, this.occupancy, ...this.flow.buffers(), this.pathGoals,...(this.routing?.saveBuffers??[])];
   }
   checksum() {
     return this.digest.read();
@@ -1092,7 +1111,7 @@ export class GpuUnits {
   dispose() {
     this.relations?.dispose();this.edits?.dispose();
     this.digest.dispose();
-    this.flow.dispose();
+    this.flow.dispose();this.routing?.dispose();
     for (const k of this.kernels)
       k.dispose();
     releaseStorage(this.renderer, this.attributes);
