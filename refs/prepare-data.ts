@@ -1,7 +1,7 @@
 // Extract original files without decoding or converting them. Downloads are pinned by fetch.sh/ps1.
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,14 @@ async function digest(path: string) {
   const hash = createHash('sha256');
   for await (const block of createReadStream(path)) hash.update(block);
   return hash.digest('hex');
+}
+
+export async function copyDataFile(source: string, destination: string) {
+  // ISO entries can be read-only; reruns and SETUP.Z replacements need writable copies.
+  const mode = ((await stat(source)).mode & 0o777) | 0o200;
+  if (existsSync(destination)) await chmod(destination, mode);
+  await copyFile(source, destination);
+  await chmod(destination, mode);
 }
 
 // Run the pinned reference decoder as a tool; no OpenRA code or library enters the application.
@@ -76,55 +84,57 @@ class Export {
   }
 }
 
-// Verify every source before touching an existing data installation.
-for (const [name, sha256] of archives) {
-  const path = join(refs, 'downloads', name);
-  if (await digest(path) !== sha256) throw new Error(`Checksum mismatch: ${name}. Run refs/fetch.sh or refs/fetch.ps1 first.`);
-}
-await mkdir(destination, { recursive: true });
-const staging = await mkdtemp(join(destination, '.extract-'));
-try {
-  for (const [name, , disc] of archives) {
-    const source = join(refs, 'downloads', name);
-    const entries = run(['-tf', source]).split(/\r?\n/).filter(entry => {
-      const plain = entry.replace(/^\.\//, '');
-      if (disc === 'nod') return /^(general|movies)\.mix$/i.test(plain);
-      return /^[^/]+\.(mix|vqa|vqp)$/i.test(plain) || /^install\/cclocal\.mix$/i.test(plain);
-    });
-    if (!entries.length) throw new Error(`No game files found in ${name}`);
-    const temporary = join(staging, disc);
-    await mkdir(temporary);
-    run(['-xf', source, '-C', temporary, ...entries]);
-    const copy = async (directory: string) => {
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) { await copy(path); continue; }
-        if (!entry.isFile()) throw new Error(`Unexpected archive entry: ${path}`);
-        const filename = entry.name.toLowerCase();
-        const target = /^(general|movies)\.mix$/.test(filename)
-          ? join(destination, disc) : destination;
-        await mkdir(target, { recursive: true });
-        await copyFile(path, join(target, filename));
-        // The static map demonstrations use GDI's general.mix at the original common URL.
-        if (disc === 'gdi' && filename === 'general.mix') await copyFile(path, join(destination, filename));
-        console.log(`Extracted ${disc}/${filename}`);
-      }
-    };
-    await copy(temporary);
-    if (disc === 'gdi') {
-      run(['-xf', source, '-C', temporary, 'INSTALL/SETUP.Z']);
-      await extractInstaller(join(temporary, 'INSTALL', 'SETUP.Z'), destination);
-    }
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Verify every source before touching an existing data installation.
+  for (const [name, sha256] of archives) {
+    const path = join(refs, 'downloads', name);
+    if (await digest(path) !== sha256) throw new Error(`Checksum mismatch: ${name}. Run refs/fetch.sh or refs/fetch.ps1 first.`);
   }
-} finally {
-  const absolute = resolve(staging);
-  if (!absolute.startsWith(destination + sep) || !absolute.slice(destination.length + 1).startsWith('.extract-'))
-    throw new Error('Refusing to remove an extraction directory outside data/');
-  await rm(absolute, { recursive: true, force: true });
+  await mkdir(destination, { recursive: true });
+  const staging = await mkdtemp(join(destination, '.extract-'));
+  try {
+    for (const [name, , disc] of archives) {
+      const source = join(refs, 'downloads', name);
+      const entries = run(['-tf', source]).split(/\r?\n/).filter(entry => {
+        const plain = entry.replace(/^\.\//, '');
+        if (disc === 'nod') return /^(general|movies)\.mix$/i.test(plain);
+        return /^[^/]+\.(mix|vqa|vqp)$/i.test(plain) || /^install\/cclocal\.mix$/i.test(plain);
+      });
+      if (!entries.length) throw new Error(`No game files found in ${name}`);
+      const temporary = join(staging, disc);
+      await mkdir(temporary);
+      run(['-xf', source, '-C', temporary, ...entries]);
+      const copy = async (directory: string) => {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) { await copy(path); continue; }
+          if (!entry.isFile()) throw new Error(`Unexpected archive entry: ${path}`);
+          const filename = entry.name.toLowerCase();
+          const target = /^(general|movies)\.mix$/.test(filename)
+            ? join(destination, disc) : destination;
+          await mkdir(target, { recursive: true });
+          await copyDataFile(path, join(target, filename));
+          // The static map demonstrations use GDI's general.mix at the original common URL.
+          if (disc === 'gdi' && filename === 'general.mix') await copyDataFile(path, join(destination, filename));
+          console.log(`Extracted ${disc}/${filename}`);
+        }
+      };
+      await copy(temporary);
+      if (disc === 'gdi') {
+        run(['-xf', source, '-C', temporary, 'INSTALL/SETUP.Z']);
+        await extractInstaller(join(temporary, 'INSTALL', 'SETUP.Z'), destination);
+      }
+    }
+  } finally {
+    const absolute = resolve(staging);
+    if (!absolute.startsWith(destination + sep) || !absolute.slice(destination.length + 1).startsWith('.extract-'))
+      throw new Error('Refusing to remove an extraction directory outside data/');
+    await rm(absolute, { recursive: true, force: true });
+  }
+  const manifest: Record<string, number> = {};
+  for (const prefix of ['', 'gdi/', 'nod/']) for (const entry of await readdir(join(destination, prefix), { withFileTypes: true })) {
+    if (entry.isFile() && /\.(mix|vqa|vqp)$/.test(entry.name) && entry.name !== 'local.mix')
+      manifest[prefix + entry.name] = (await stat(join(destination, prefix, entry.name))).size;
+  }
+  await writeFile(join(destination, 'index.json'), JSON.stringify(manifest));
 }
-const manifest: Record<string, number> = {};
-for (const prefix of ['', 'gdi/', 'nod/']) for (const entry of await readdir(join(destination, prefix), { withFileTypes: true })) {
-  if (entry.isFile() && /\.(mix|vqa|vqp)$/.test(entry.name) && entry.name !== 'local.mix')
-    manifest[prefix + entry.name] = (await stat(join(destination, prefix, entry.name))).size;
-}
-await writeFile(join(destination, 'index.json'), JSON.stringify(manifest));
