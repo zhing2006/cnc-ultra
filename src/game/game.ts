@@ -12,6 +12,7 @@ import { PlaybackPresentation } from './playback-presentation.ts';
 import { initialZoom, MAX_ZOOM, zoomOrigin } from './zoom.ts';
 import { DelayedReadback } from '../engine/simulation/clock.ts';
 import { SimulationDriver } from '../engine/simulation/driver.ts';
+import { batchCompute } from '../engine/compute-batch.ts';
 import { GpuSimulation } from '../engine/simulation/gpu.ts';
 import { GpuChecksum } from '../engine/simulation/checksum.ts';
 import { unitState } from '../engine/simulation/state.ts';
@@ -299,28 +300,30 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   if (!active) pipeline.setSprites(scene.sprites);
 
   function stepSimulation() {
-    if (!active || !ground) return;
-    if (economy && !economy.beginTick()) {
-      if(economy.outcome!==undefined){paused=true;syncPlayback();options.onOutcome?.(economy.outcome);}
-      return false;
-    }
-    // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
-    // rendered with the order computed from the previous tick's positions.
-    ground.sort();
-    if(battleSystems)stepBattle(battleSystems,afterFlight);
-    else simulation!.step(simulationSetup!.commands(simulation!.frame + 1));
-    combatView?.step();
-    buildingView?.step();
-    spritesDirty = true;
-    const completion = economy?.endTick();
-    sidebar?.update(false);
-    eva?.step();
-    combatAudio?.update(scroller.x, scroller.y, pixelToLepton(view.width), pixelToLepton(view.height));
-    if (active.frame % 15 === 0 && checksum) readback.request(active.frame, () => checksum.read());
-    const completed = readback.take(active.frame);
-    if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
-    options.onStats?.(active.frame, digest);
-    return completion;
+    return batchCompute(renderer.three, () => {
+      if (!active || !ground) return;
+      if (economy && !economy.beginTick()) {
+        if(economy.outcome!==undefined){paused=true;syncPlayback();options.onOutcome?.(economy.outcome);}
+        return false;
+      }
+      // Ported from CONQUER.CPP, Main_Loop: Sort precedes Logic.AI, so the new positions are
+      // rendered with the order computed from the previous tick's positions.
+      ground.sort();
+      if(battleSystems)stepBattle(battleSystems,afterFlight);
+      else simulation!.step(simulationSetup!.commands(simulation!.frame + 1));
+      combatView?.step();
+      buildingView?.step();
+      spritesDirty = true;
+      const completion = economy?.endTick();
+      sidebar?.update(false);
+      eva?.step();
+      combatAudio?.update(scroller.x, scroller.y, pixelToLepton(view.width), pixelToLepton(view.height));
+      if (active.frame % 15 === 0 && checksum) readback.request(active.frame, () => checksum.read());
+      const completed = readback.take(active.frame);
+      if (completed) digest = Array.from(completed.value, word => word.toString(16).padStart(8, '0')).join('');
+      options.onStats?.(active.frame, digest);
+      return completion;
+    });
   }
 
   const drawFrame: FrameCallback = (width, height, time) => {

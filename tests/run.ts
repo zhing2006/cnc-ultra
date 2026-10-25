@@ -23,6 +23,7 @@ import { checkNavigation } from './navigation.ts';
 import { checkMatchCrew } from './match-crew.ts';
 import { checkMatchRegressions } from './match-regressions.ts';
 import { checkHarvest } from './harvest.ts';
+import { checkComputeBatch } from './compute-batch.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -75,6 +76,7 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Batched compute preserves uploads and readback order', checkComputeBatch],
     ['Independent house sight and fixed-tick fast-forward', checkMatchFoundations],
     ['Fixed-tick effects and deferred sprite projection', checkMatchRendering],
     ['Two AI openings, control handover and deterministic restart', checkMatch],

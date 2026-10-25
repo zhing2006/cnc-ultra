@@ -1,4 +1,5 @@
 import { createRenderer } from '../src/engine/renderer.ts';
+import { batchCompute } from '../src/engine/compute-batch.ts';
 import { loadData } from '../src/game/data-files.ts';
 import { skirmishScene } from '../src/game/skirmish-scene.ts';
 import { MatchRuntime } from '../src/game/match-runtime.ts';
@@ -27,6 +28,8 @@ export interface MatchSimulationOptions {
   progressEvery?: number;
   /** Diagnostic only: issue an explicit all-armed-units attack after this tick. */
   forceAttackAt?: number;
+  /** Capture state once at the end for implementation comparisons, outside timing. */
+  captureState?: boolean;
 }
 
 /** No RAF, presentation, audio, wall-clock multiplier or timer sleeps. */
@@ -130,18 +133,28 @@ export async function runMatchSimulation(options: MatchSimulationOptions,
       };
     };
     while (battle.frame < options.ticks) {
-      if (!economy.beginTick()) {
-        if (economy.outcome !== undefined) break;
-        throw new Error('A completed economy report did not permit the next tick');
-      }
-      stepBattle(systems);
-      if (forced && battle.frame === options.forceAttackAt) {
-        for (const owner of [0, 1]) forced.issue({ owner, frame: battle.frame, attack: true, forced: true });
-      }
-      await economy.endTick();
+      const completion = batchCompute(renderer, () => {
+        if (!economy.beginTick()) {
+          if (economy.outcome !== undefined) return;
+          throw new Error('A completed economy report did not permit the next tick');
+        }
+        stepBattle(systems);
+        if (forced && battle.frame === options.forceAttackAt) {
+          for (const owner of [0, 1]) forced.issue({ owner, frame: battle.frame, attack: true, forced: true });
+        }
+        return economy.endTick();
+      });
+      if (!completion) break;
+      await completion;
       if (progress && battle.frame % (options.progressEvery ?? 3000) === 0) await progress(battle.frame, await inspect());
     }
-    return await inspect();
+    const result = await inspect();
+    const state = options.captureState ? await Promise.all([
+      ...battle.buffers(), aircraft.state, economy.miningState, transport.state, services.state,
+      ...economy.extraSimulationBuffers, ...ore.buffers(), opposingSight.mapped, opposingSight.current,
+      opposingSight.shadow, buildingEffects.state, buildingEffects.smudges,
+    ].map(async buffer => Array.from(new Int32Array(await renderer.getArrayBufferAsync(buffer))))) : undefined;
+    return { ...result, state };
   } finally {
     forced?.dispose();
     opposingSight.dispose();
