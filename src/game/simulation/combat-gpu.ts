@@ -1569,6 +1569,8 @@ export class GpuCombat {
         });
       });
       If(kind.equal(int(7)),()=>{If(target.lessThan(int(0)).or(unit(id,U.UTYPE).notEqual(movementType('E6'))).or(allied(unit(id, U.UOWNER), unit(target, U.UOWNER))),()=>{kind.assign(-1);});});
+      // INFANTRY.CPP, What_Action: an engineer attacks only by capturing an eligible target.
+      If(kind.greaterThanEqual(3).and(kind.lessThanEqual(4)).and(unit(id,U.UTYPE).equal(movementType('E6'))),()=>{kind.assign(-1);});
       const allowed=kind.lessThan(3).or(unit(id,U.UTYPE).notEqual(movementType('SAM')).and(unit(id,U.UDOMAIN).notEqual(1).or(type(id,TYPE.PRIMARY).greaterThanEqual(0))));
       If(kind.greaterThanEqual(int(0)).and(allowed).and(unit(id, U.UHEALTH).greaterThan(int(0)).and(unit(id, U.UATTACHED).equal(0))), () => {
         If(unit(id,U.UDOMAIN).equal(0),()=>{unit(id,U.UFLAGS).bitOrAssign(U.PLAYER_ORDER);});

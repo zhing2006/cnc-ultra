@@ -1061,6 +1061,8 @@ export class CpuCombat {
         if(command.kind==='attack'&&target>=0&&type.name==='E6'&&MOVEMENT[this.units[target*U.WORDS+U.UTYPE]].name==='TRAN')special=1;
         if(special===1&&(type.name!=='E6'||target<0||areAllied(this.setup, this.units[at+U.UOWNER], this.units[target*U.WORDS+U.UOWNER])))continue;
         const attack=!special&&(command.kind==='attack'||command.kind==='attack-ground');
+        // INFANTRY.CPP, What_Action: an unarmed engineer cannot attack an allied building.
+        if(attack&&type.name==='E6')continue;
         if(attack && (type.name==='SAM' || this.units[at+U.UDOMAIN]===1 && type.primary<0))continue;
         if(this.units[at+U.UDOMAIN]===0)this.units[at+U.UFLAGS]|=U.PLAYER_ORDER;
         this.state[c + C.CTARGET] = attack ? command.kind === 'attack' ? command.target! : -command.target! - 2 : -1;

@@ -45,11 +45,13 @@ export async function compareSpecialInfantry(renderer:WebGPURenderer){
   const passable=new Uint8Array(20*12).fill(1);
   const setup={grid:gridEdges(20,12,passable,true),land:new Uint8Array(passable.length),passable,seed:1995,
     units:[{cell:84,type:movementType('E6')},{cell:105,type:movementType('NUKE'),owner:1},
-      {cell:94,type:movementType('RMBO')},{cell:115,type:movementType('SILO'),owner:1}]};
+      {cell:94,type:movementType('RMBO')},{cell:115,type:movementType('SILO'),owner:1},
+      {cell:22,type:movementType('E6')},{cell:43,type:movementType('NUKE')}]};
   const cpu=new CpuCombat(setup),gpu=new GpuCombat(renderer,setup);
-  for(let id=0;id<4;id++)cpu.state[id*C.CWORDS+C.CMISSION]=C.MOVE;
+  for(let id=0;id<setup.units.length;id++)cpu.state[id*C.CWORDS+C.CMISSION]=C.MOVE;
   (gpu.state.array as Int32Array).set(cpu.state);gpu.state.needsUpdate=true;
-  const commands=[{frame:1,kind:'attack' as const,target:1,ids:[0]},{frame:1,kind:'attack' as const,target:3,ids:[2]}];
+  const commands=[{frame:1,kind:'attack' as const,target:1,ids:[0]},{frame:1,kind:'attack' as const,target:3,ids:[2]},
+    {frame:1,kind:'attack' as const,target:5,ids:[4]}];
   try{
     await gpu.prepareForPlay();cpu.step(commands);gpu.step(commands);
     for(let tick=2;tick<=200;tick++){
@@ -57,6 +59,7 @@ export async function compareSpecialInfantry(renderer:WebGPURenderer){
       if(tick%8===0){const actual=await gpu.snapshot(),expected=cpu.buffers();actual.forEach((buffer,b)=>{for(let i=0;i<buffer.length;i++)if(buffer[i]!==expected[b][i])throw new Error(`Special infantry tick ${tick}, buffer ${b}/${i}: GPU ${buffer[i]}, CPU ${expected[b][i]}`);});}
     }
     if(cpu.units[U.WORDS+U.UOWNER]!==0||cpu.units[U.UHEALTH]!==0||cpu.units[3*U.WORDS+U.UHEALTH]!==0)throw new Error('Capture or C4 did not finish');
+    if(cpu.units[4*U.WORDS+U.UHEALTH]!==25)throw new Error('An engineer entered an allied building after an invalid attack order');
   }finally{gpu.dispose();}
 }
 
