@@ -177,12 +177,14 @@ export function buildScene(mix: MixSet, source: string | Scenario, cloak: CloakS
     scenario,
     // Ported from DISPLAY.CPP, DisplayClass::Read_INI: without a home waypoint the view starts at the
     // top-left of the playable area.
-    home: scenario.waypoints.get(WAYPOINT_HOME) ?? scenario.y * ORIGINAL_MAP_SIZE + scenario.x,
+    home: scenario.waypoints.get(WAYPOINT_HOME) ?? scenario.y * (scenario.mapWidth ?? ORIGINAL_MAP_SIZE) + scenario.x,
   };
 }
 
 /** The tile map of a scenario's terrain. */
 function terrain(mix: MixSet, scenario: Scenario, suffix: string): TileMap {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
+  const mapHeight = scenario.mapHeight ?? ORIGINAL_MAP_SIZE;
   const sets = new Map<number, IconSet | null>();
   const iconSet = (template: number) => {
     if (!sets.has(template)) {
@@ -195,10 +197,10 @@ function terrain(mix: MixSet, scenario: Scenario, suffix: string): TileMap {
 
   const tiles: Uint8Array[] = [];
   const tileIds = new Map<string, number>();
-  const cells = new Uint32Array(ORIGINAL_MAP_SIZE * ORIGINAL_MAP_SIZE).fill(NO_TILE);
+  const cells = new Uint32Array(mapWidth * mapHeight).fill(NO_TILE);
   for (let y = scenario.y; y < scenario.y + scenario.height; y++) {
     for (let x = scenario.x; x < scenario.x + scenario.width; x++) {
-      const cell = y * ORIGINAL_MAP_SIZE + x;
+      const cell = y * mapWidth + x;
       let template = scenario.templates[cell];
       let icon = scenario.icons[cell];
       // Ported from MAP.CPP, MapClass::Read_Binary: an icon the template does not have turns the cell
@@ -245,8 +247,8 @@ function terrain(mix: MixSet, scenario: Scenario, suffix: string): TileMap {
     tileSize: CELL_PIXELS,
     atlas: { width, height: rows * CELL_PIXELS, pixels },
     cells,
-    columns: ORIGINAL_MAP_SIZE,
-    rows: ORIGINAL_MAP_SIZE,
+    columns: mapWidth,
+    rows: mapHeight,
   };
 }
 
@@ -287,6 +289,7 @@ function centred(
  * remap table and the unit shadow.
  */
 function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages, cloak: CloakStage | ReadonlyMap<number, CloakStage>): Drawn[] {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
   const shape = shapeLoader(mix, images);
   const placed: Drawn[] = [];
   for (const unit of scenario.units) {
@@ -296,8 +299,8 @@ function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages, cloak
     const remap = REMAP_NAMES.indexOf(unitRemap(unit.house));
     const dir = facingDir(dirFacing(unit.facing));
     const facing = facingTo32(dir);
-    const cellX = unit.cell % ORIGINAL_MAP_SIZE;
-    const cellY = Math.floor(unit.cell / ORIGINAL_MAP_SIZE);
+    const cellX = unit.cell % mapWidth;
+    const cellY = Math.floor(unit.cell / mapWidth);
     const coordX = cellX * CELL_LEPTONS + 0x80;
     const coordY = cellY * CELL_LEPTONS + 0x80;
     const x = leptonToPixel(coordX);
@@ -338,10 +341,11 @@ function placeUnits(mix: MixSet, scenario: Scenario, images: SpriteImages, cloak
 
 /** Ported from AIRCRAFT.CPP, AircraftClass::Draw_It. Preview aircraft are parked, with idle rotors. */
 function placeAircraft(mix: MixSet, scenario: Scenario, images: SpriteImages): Drawn[] {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
   const shape = shapeLoader(mix, images);
   return (scenario.aircraft ?? []).map((aircraft) => {
-    const x = (aircraft.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12;
-    const y = Math.floor(aircraft.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12;
+    const x = (aircraft.cell % mapWidth) * CELL_PIXELS + 12;
+    const y = Math.floor(aircraft.cell / mapWidth) * CELL_PIXELS + 12;
     const remap = REMAP_NAMES.indexOf(unitRemap(aircraft.house));
     const frame = shape(`${aircraft.type}.SHP`, BODY_SHAPE[facingTo32(aircraft.facing)]);
     const sprites = [{ ...centred(frame, x + 1, y + 2, remap), shadow: false, filter: 0 },
@@ -364,13 +368,14 @@ function placeAircraft(mix: MixSet, scenario: Scenario, images: SpriteImages): D
  * and 4 down and picks the DO_STAND_READY frame for its facing.
  */
 function placeInfantry(mix: MixSet, scenario: Scenario, images: SpriteImages): Drawn[] {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
   const shape = shapeLoader(mix, images);
   return scenario.infantry.map((infantry) => {
     const type = INFANTRY.get(infantry.type.toUpperCase());
     if (!type) throw new Error(`unknown infantry type ${infantry.type}`);
     const [spotX, spotY] = SPOTS[infantry.spot] ?? SPOTS[0];
-    const coordX = (infantry.cell % ORIGINAL_MAP_SIZE) * CELL_LEPTONS + spotX;
-    const coordY = Math.floor(infantry.cell / ORIGINAL_MAP_SIZE) * CELL_LEPTONS + spotY;
+    const coordX = (infantry.cell % mapWidth) * CELL_LEPTONS + spotX;
+    const coordY = Math.floor(infantry.cell / mapWidth) * CELL_LEPTONS + spotY;
     const { frame, jump } = type.standReady;
     const shown = shape(`${type.name}.SHP`, frame + HUMAN_SHAPE[facingTo32(infantry.facing)] * jump);
     const remap = REMAP_NAMES.indexOf(unitRemap(infantry.house));
@@ -382,31 +387,33 @@ function placeInfantry(mix: MixSet, scenario: Scenario, images: SpriteImages): D
 
 /** Ported from CELL.CPP, CellClass::Draw_It, and SDATA.CPP, SmudgeTypeClass::Draw_It. */
 function placeCellImages(mix: MixSet, scenario: Scenario, images: SpriteImages, suffix: string): PendingSprite[] {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
   const { smudges, overlays } = initialCellImages(scenario);
   const shape = shapeLoader(mix, images);
   const remap = REMAP_NAMES.indexOf('none');
   const result: PendingSprite[] = [];
   for (const item of smudges) {
     const shown = shape(`${item.type}.${suffix}`, item.frame);
-    result.push({ image: shown.image, x: (item.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS,
-      y: Math.floor(item.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS, remap, shadow: false });
+    result.push({ image: shown.image, x: (item.cell % mapWidth) * CELL_PIXELS,
+      y: Math.floor(item.cell / mapWidth) * CELL_PIXELS, remap, shadow: false });
   }
   for (const item of overlays) {
     const type = OVERLAYS.get(item.type)!;
     const shown = shape(`${item.type}.${type.theater ? suffix : 'SHP'}`, item.frame);
-    result.push(centred(shown, (item.cell % ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12,
-      Math.floor(item.cell / ORIGINAL_MAP_SIZE) * CELL_PIXELS + 12, remap));
+    result.push(centred(shown, (item.cell % mapWidth) * CELL_PIXELS + 12,
+      Math.floor(item.cell / mapWidth) * CELL_PIXELS + 12, remap));
   }
   return result;
 }
 
 /** Ported from TERRAIN.CPP, Draw_It; TERRAIN.H, Sort_Y/Render_Coord; and TYPE.H, Coord_Fixup. */
 function placeTerrain(mix: MixSet, scenario: Scenario, images: SpriteImages, suffix: string): Drawn[] {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
   const shape = shapeLoader(mix, images);
   return scenario.terrain.map((object) => {
     const type = TERRAIN.get(object.type.toUpperCase());
     if (!type) throw new Error(`unknown terrain type ${object.type}`);
-    const x = object.cell % ORIGINAL_MAP_SIZE, y = Math.floor(object.cell / ORIGINAL_MAP_SIZE);
+    const x = object.cell % mapWidth, y = Math.floor(object.cell / mapWidth);
     const shown = shape(`${type.name}.${suffix}`, 0);
     return {
       key: `terrain:${object.cell}:${type.name}`,
@@ -426,7 +433,7 @@ function placeBuildings(mix: MixSet, scenario: Scenario, images: SpriteImages, s
     if (OVERLAYS.get(type.name)?.wall) continue;
     const file = `${type.name}.${type.theater ? suffix : 'SHP'}`;
     const frame = buildingFrame(building, type, shape.read(file).frames.length);
-    const position = buildingPosition(building, type);
+    const position = buildingPosition(building, type, scenario.mapWidth);
     const x = leptonToPixel(position.centerX), y = leptonToPixel(position.centerY);
     const remap = REMAP_NAMES.indexOf(buildingRemap(building.house));
     const sprites = [centred(shape(file, frame), x, y, remap)];

@@ -14,23 +14,24 @@ export interface CellImage { type: string; cell: number; frame: number }
 const ADJACENT = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
 const DENSITY = [0, 1, 3, 4, 6, 7, 8, 10, 11];
 
-function neighbor(cell: number, dx: number, dy: number): number {
-  const x = cell % ORIGINAL_MAP_SIZE + dx;
-  const y = Math.floor(cell / ORIGINAL_MAP_SIZE) + dy;
-  return x < 0 || y < 0 || x >= ORIGINAL_MAP_SIZE || y >= ORIGINAL_MAP_SIZE ? -1 : y * ORIGINAL_MAP_SIZE + x;
-}
-
 /**
  * Ported from BUILDING.CPP, BuildingClass::Mark; OVERLAY.CPP, OverlayClass::Mark;
  * SMUDGE.CPP, SmudgeClass::Mark/Read_INI; CELL.CPP, Wall_Update/Tiberium_Adjust; and MAP.CPP, Overpass.
  * ScenarioInit makes Is_Generally_Clear true while loading, even underneath other objects.
  */
 export function initialCellImages(scenario: Scenario): { smudges: CellImage[]; overlays: CellImage[] } {
+  const mapWidth = scenario.mapWidth ?? ORIGINAL_MAP_SIZE;
+  const mapHeight = scenario.mapHeight ?? ORIGINAL_MAP_SIZE;
+  const neighbor = (cell: number, dx: number, dy: number): number => {
+    const x = cell % mapWidth + dx;
+    const y = Math.floor(cell / mapWidth) + dy;
+    return x < 0 || y < 0 || x >= mapWidth || y >= mapHeight ? -1 : y * mapWidth + x;
+  };
   const smudges = new Map<number, CellImage>();
   const overlays = new Map<number, CellImage>();
   const trees = new Set<number>();
   const inside = (cell: number) => {
-    const x = cell % ORIGINAL_MAP_SIZE, y = Math.floor(cell / ORIGINAL_MAP_SIZE);
+    const x = cell % mapWidth, y = Math.floor(cell / mapWidth);
     return x >= scenario.x && x < scenario.x + scenario.width && y >= scenario.y && y < scenario.y + scenario.height;
   };
   for (const object of scenario.terrain) {
@@ -80,14 +81,14 @@ export function initialCellImages(scenario: Scenario): { smudges: CellImage[]; o
       image.frame = ADJACENT.reduce((bits, [x, y], i) => bits | (i % 2 === 0
         && overlays.get(neighbor(image.cell, x, y))?.type === image.type ? 1 << (i / 2) : 0), 0);
     } else if (type.tiberium && inside(image.cell)
-      && Math.floor(image.cell / ORIGINAL_MAP_SIZE) < scenario.y + scenario.height - 1) {
+      && Math.floor(image.cell / mapWidth) < scenario.y + scenario.height - 1) {
       image.frame = density(image.cell);
     }
   }
   // The original picks one of twelve equally likely images in Tiberium_Adjust(true).
   // This fixed seed and cell hash replace its global RNG for a repeatable static view (technical art. 16).
   for (const image of overlays.values()) if (OVERLAYS.get(image.type)!.tiberium
-    && inside(image.cell) && Math.floor(image.cell / ORIGINAL_MAP_SIZE) < scenario.y + scenario.height - 1) {
+    && inside(image.cell) && Math.floor(image.cell / mapWidth) < scenario.y + scenario.height - 1) {
     let hash = (image.cell ^ 0x95c0ffee) >>> 0;
     hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d);
     hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b);
@@ -109,10 +110,11 @@ export function buildingFrame(building: PlacedBuilding, type: BuildingType, coun
   return damaged ? (type.simpleDamage ? count - 2 : type.damageOffset) : 0;
 }
 
-/** Ported from BUILDING.CPP, CenterOffset and BuildingClass::Sort_Y (coordinates in leptons). */
-export function buildingPosition(building: PlacedBuilding, type: BuildingType) {
-  const x = (building.cell % ORIGINAL_MAP_SIZE) * 256;
-  const y = Math.floor(building.cell / ORIGINAL_MAP_SIZE) * 256;
+/** Ported from BUILDING.CPP, CenterOffset and BuildingClass::Sort_Y (coordinates in leptons).
+ * mapWidth is the storage stride, not the playable rectangle's width. */
+export function buildingPosition(building: PlacedBuilding, type: BuildingType, mapWidth = ORIGINAL_MAP_SIZE) {
+  const x = (building.cell % mapWidth) * 256;
+  const y = Math.floor(building.cell / mapWidth) * 256;
   const centerX = x + (type.width === 2 ? 255 : type.width * 128);
   const centerY = y + (type.height === 2 ? 255 : type.height * 128);
   return {

@@ -31,15 +31,19 @@ export interface PlacedBuilding {
 export interface PlacedTerrain { type: string; cell: number }
 export interface PlacedSmudge extends PlacedTerrain { frame: number }
 
-/** The original scenario's initial, static map contents. */
+/** A scenario's initial, static map contents. */
 export interface Scenario {
   theater: string;
+  /** Storage dimensions, distinct from the playable rectangle below; omitted axes default to 64.
+   * Cell numbers index row-major storage as y * mapWidth + x. */
+  mapWidth?: number;
+  mapHeight?: number;
   /** The playable area in cells (DisplayClass::Read_INI reads it from [MAP]). */
   x: number;
   y: number;
   width: number;
   height: number;
-  /** Template type and icon for each of the 64 × 64 cells, from the BIN file. */
+  /** Template type and icon for each storage cell; original BIN files contain 64 × 64 cells. */
   templates: Uint8Array;
   icons: Uint8Array;
   units: PlacedUnit[];
@@ -89,6 +93,8 @@ export function readScenario(iniText: string, bin: Uint8Array): Scenario {
 
   return {
     theater: ini.get('MAP', 'Theater') ?? 'DESERT',
+    mapWidth: ORIGINAL_MAP_SIZE,
+    mapHeight: ORIGINAL_MAP_SIZE,
     x: ini.int('MAP', 'X', 1),
     y: ini.int('MAP', 'Y', 1),
     width: ini.int('MAP', 'Width', ORIGINAL_MAP_SIZE - 2),

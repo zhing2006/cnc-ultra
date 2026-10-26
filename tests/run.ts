@@ -25,6 +25,7 @@ import { checkHarvest } from './harvest.ts';
 import { checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignRouting,checkCampaignRendering } from './campaign.ts';
 import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
 import { checkCampaignStartup, checkCampaignOutcome } from './campaign.ts';
+import { checkMapGenerator, checkMapSampling } from './map-generator.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -82,6 +83,8 @@ try {
     [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
     ['Campaign naval movement and first-mission continuation', checkCampaignSimulation],
     ['Original campaign country selection and branching', checkCampaignMap],
+    ['Ultra terrain generation, camera and seeded reload', checkMapGenerator],
+    ['Viewport-sized integer map sampling and displaced pixels', checkMapSampling],
     ['Victory and defeat text follows the tactical viewport',checkCampaignOutcome],
     ['Airstrip and helipad deliveries preserve player orders',checkAirProductionOrders],
     ['Opening movie and faction input do not wait for unrelated assets',checkCampaignStartup],

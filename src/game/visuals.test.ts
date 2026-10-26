@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from 'vitest';
 import { DATA_FILES } from './data-files.ts';
 import { MixFile, MixSet } from './formats/mix.ts';
-import { readScenario } from './formats/scenario.ts';
+import { readScenario, type Scenario } from './formats/scenario.ts';
+import { decodeIconSet } from './formats/icons.ts';
+import { NO_TILE } from '../engine/indexed/pipeline.ts';
 import { BUILDINGS } from './data/buildings.ts';
 import { buildingFrame, buildingPosition, initialCellImages } from './map-visuals.ts';
 import { buildScene } from './scene.ts';
@@ -22,8 +24,15 @@ test('scg08eb retains every terrain object and structure, including overlapping 
   expect(scene.objects.some(object => object.key === 'building:3660:V11')).toBe(true);
 });
 
-test('overlapping objects use the original sort coordinates and building image origins', () => {
-  const scene = buildScene(mix, overlapFixture());
+test.each([false, true])('overlapping objects retain original coordinates with omitted storage dimensions: %s', (omitted) => {
+  const scenario = overlapFixture();
+  expect([scenario.mapWidth, scenario.mapHeight]).toEqual([64, 64]);
+  if (omitted) {
+    delete scenario.mapWidth;
+    delete scenario.mapHeight;
+  }
+  const scene = buildScene(mix, scenario);
+  expect([scene.setup.tiles.columns, scene.setup.tiles.rows, scene.setup.tiles.cells.length]).toEqual([64, 64, 4096]);
   expect(scene.objects.map(object => object.key)).toEqual(OVERLAP_ORDER);
   // The refinery is a 72×72 centered shape; terrain draws from its top-left without SHAPE_CENTER.
   const first = scene.sprites[scene.objects[0].first];
@@ -63,6 +72,113 @@ Theater=Temperate
   expect(smudges.find(image => image.cell === 400)).toEqual({ type: 'CR1', cell: 400, frame: 4 });
   expect(overlays.find(image => image.cell === 650)?.frame).toBe(4); // Three of eight neighbors: _adj[3].
   expect(overlays.find(image => image.cell === 800)?.frame).toBe(6); // East and south; different north wall does not join.
+});
+
+function largeScenario(): Scenario {
+  return {
+    theater: 'TEMPERATE', mapWidth: 512, mapHeight: 256,
+    x: 0, y: 0, width: 512, height: 256,
+    templates: new Uint8Array(512 * 256), icons: new Uint8Array(512 * 256),
+    units: [], infantry: [], aircraft: [], buildings: [], terrain: [], overlays: [], smudges: [],
+    waypoints: new Map(),
+  };
+}
+
+test('a rectangular supplied scene retains far-right and bottom tiles and every object coordinate', () => {
+  const scenario = largeScenario();
+  // The playable rectangle is deliberately smaller than storage, but reaches its bottom-right.
+  Object.assign(scenario, { x: 2, y: 3, width: 510, height: 253 });
+  scenario.icons[3 * 512 + 511] = 1;
+  scenario.icons[255 * 512 + 511] = 2;
+  const unit = { house: 'GoodGuy', strength: 256, facing: 0, mission: 'Guard' };
+  scenario.units = [{ ...unit, type: 'MTNK', cell: 250 * 512 + 500 }];
+  scenario.infantry = [{ ...unit, type: 'E1', cell: 251 * 512 + 501, spot: 4 }];
+  scenario.aircraft = [{ ...unit, type: 'ORCA', cell: 252 * 512 + 502 }];
+  scenario.terrain = [{ type: 'T01', cell: 253 * 512 + 503 }];
+  scenario.buildings = [{ ...unit, type: 'PROC', cell: 250 * 512 + 505 }];
+  scenario.smudges = [{ type: 'SC1', cell: 254 * 512 + 509, frame: 0 }];
+  scenario.overlays = [{ type: 'WOOD', cell: 255 * 512 + 511 }];
+  const scene = buildScene(mix, scenario);
+  const tiles = scene.setup.tiles;
+  expect([tiles.columns, tiles.rows, tiles.cells.length]).toEqual([512, 256, 131072]);
+  expect(scene.home).toBe(3 * 512 + 2);
+  expect(tiles.cells[3 * 512 + 1]).toBe(NO_TILE);
+  expect(tiles.cells[2 * 512 + 511]).toBe(NO_TILE);
+  // First-encounter order: CLEAR1 icons 0, 1, then 2. No 64-column aliasing or lost final row.
+  expect(tiles.cells[3 * 512 + 2]).toBe(0);
+  expect(tiles.cells[3 * 512 + 511]).toBe(1);
+  expect(tiles.cells[255 * 512 + 511]).toBe(2);
+  const clear = decodeIconSet(mix.require('CLEAR1.TEM'));
+  for (const id of [0, 1, 2]) {
+    for (let row = 0; row < 24; row++) {
+      const offset = row * tiles.atlas.width + id * 24;
+      expect([...tiles.atlas.pixels.slice(offset, offset + 24)]).toEqual([...clear.icons[clear.map[id]].slice(row * 24, row * 24 + 24)]);
+    }
+  }
+  const object = (key: string) => scene.objects.find(object => object.key === key)!;
+  const sprite = (key: string, index = 0) => scene.sprites[object(key).first + index];
+  const center = (key: string, index = 0) => {
+    const image = sprite(key, index);
+    return [image.x + Math.floor(image.region.width / 2), image.y + Math.floor(image.region.height / 2)];
+  };
+  // UNIT.CPP: cell center; INFANTRY.CPP: lower-right spot, shifted left 2 and down 4.
+  const tank = `unit:${250 * 512 + 500}:MTNK`;
+  expect(center(tank)).toEqual([500 * 24 + 12, 250 * 24 + 12]);
+  expect(object(tank)).toMatchObject({ sortX: 500 * 256 + 128, sortY: 251 * 256 });
+  const infantry = `infantry:${251 * 512 + 501}:E1`;
+  expect(center(infantry)).toEqual([501 * 24 + 18 - 2, 251 * 24 + 18 + 4]);
+  expect(object(infantry)).toMatchObject({ sortX: 501 * 256 + 192, sortY: 251 * 256 + 192 + 48 });
+  // AIRCRAFT.CPP: parked body at cell center, shadow offset by (1, 2).
+  const aircraft = `aircraft:${252 * 512 + 502}:ORCA`;
+  expect(center(aircraft)).toEqual([502 * 24 + 13, 252 * 24 + 14]);
+  expect(center(aircraft, 1)).toEqual([502 * 24 + 12, 252 * 24 + 12]);
+  const tree = sprite(`terrain:${253 * 512 + 503}:T01`);
+  expect([tree.x, tree.y]).toEqual([503 * 24, 253 * 24]);
+  // BDATA.CPP / BUILDING.CPP: PROC is 3 by 3, with CenterOffset (384, 384) and no Sort_Y bias.
+  const refinery = `building:${250 * 512 + 505}:PROC`;
+  expect(center(refinery)).toEqual([505 * 24 + 36, 250 * 24 + 36]);
+  expect(object(refinery)).toMatchObject({ sortX: 505 * 256 + 384, sortY: 250 * 256 + 384 });
+  expect(buildingPosition(scenario.buildings[0], BUILDINGS.get('PROC')!, 512)).toEqual({
+    centerX: 505 * 256 + 384, centerY: 250 * 256 + 384,
+    sortX: 505 * 256 + 384, sortY: 250 * 256 + 384,
+  });
+  // Cell graphics precede objects. Foundation bibs precede the explicitly placed scorch.
+  const ground = scene.sprites.slice(0, scene.objects[0].first);
+  const scorch = ground[ground.length - 2], wall = ground[ground.length - 1];
+  expect([scorch.x, scorch.y]).toEqual([509 * 24, 254 * 24]);
+  expect([wall.x + Math.floor(wall.region.width / 2), wall.y + Math.floor(wall.region.height / 2)])
+    .toEqual([511 * 24 + 12, 255 * 24 + 12]);
+});
+
+test('rectangular storage neighbors connect at large coordinates without wrapping edges', () => {
+  const scenario = largeScenario();
+  const cell = (x: number, y: number) => y * 512 + x;
+  scenario.overlays = [
+    ...[[511, 100], [511, 101], [510, 100], [0, 101], [0, 0], [0, 255]].map(([x, y]) => ({ type: 'WOOD', cell: cell(x, y) })),
+    ...[[500, 200], [501, 200], [500, 201], [501, 201], [511, 230], [0, 231], [500, 255], [501, 255]]
+      .map(([x, y]) => ({ type: 'TI1', cell: cell(x, y) })),
+  ];
+  // TDATA.CPP: T10 occupies (0,1) and (1,1), so its second spot must not wrap.
+  scenario.terrain = [{ type: 'T10', cell: cell(511, 220) }];
+  scenario.overlays.push({ type: 'TI1', cell: cell(511, 221) }, { type: 'TI1', cell: cell(0, 222) });
+  scenario.smudges = [{ type: 'BIB3', cell: cell(511, 255), frame: 0 }];
+  const { smudges, overlays } = initialCellImages(scenario);
+  const at = (x: number, y: number) => overlays.find(image => image.cell === cell(x, y));
+  expect(at(511, 100)?.frame).toBe(12); // CELL.CPP, Wall_Update: south=4, west=8.
+  expect(at(511, 101)?.frame).toBe(1); // North only.
+  expect(at(510, 100)?.frame).toBe(2); // East only.
+  for (const [x, y] of [[0, 101], [0, 0], [0, 255]]) expect(at(x, y)?.frame).toBe(0);
+  expect(at(500, 200)?.frame).toBe(4); // CELL.CPP, Tiberium_Adjust: _adj[3].
+  expect(at(501, 201)?.frame).toBe(4);
+  expect(at(511, 230)?.frame).toBe(0);
+  expect(at(0, 231)?.frame).toBe(0);
+  // MAP.CPP, Overpass skips the last playable row: keep density at insertion time and TI1.
+  expect(at(500, 255)).toEqual({ type: 'TI1', cell: cell(500, 255), frame: 0 });
+  expect(at(501, 255)).toEqual({ type: 'TI1', cell: cell(501, 255), frame: 1 });
+  expect(at(511, 221)).toBeUndefined();
+  expect(at(0, 222)?.frame).toBe(0);
+  // SMUDGE.CPP: the 2 by 2 bib is clipped at both storage edges, never wrapped.
+  expect(smudges).toEqual([{ type: 'BIB3', cell: cell(511, 255), frame: 0 }]);
 });
 
 test('building damage uses the original half-health threshold, turret and ruin frames', () => {

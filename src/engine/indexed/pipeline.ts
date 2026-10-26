@@ -85,7 +85,7 @@ export interface PaletteSetup {
   indexEffect?: (pixel: Node<'ivec2'>, index: Node<'int'>) => Node<'int'>;
 }
 
-/** The part of the world the view shows: top-left in world pixels and size in image pixels. */
+/** Top-left in world pixels and output size in index pixels; world span also depends on sampleStep. */
 export interface View {
   x: number;
   y: number;
@@ -140,6 +140,8 @@ export class PalettePipeline {
   // Blending reads the alpha the sprite pass writes, so its target needs all four channels.
   private readonly spriteTarget = indexTarget(RGBAFormat);
   private readonly indexTarget = indexTarget(RedFormat);
+  private readonly targets = [this.tileTarget, this.spriteTarget, this.indexTarget];
+  private readonly pixelStep = uniform(1);
   private readonly origin = uniform(new Vector2());
   private readonly size = uniform(new Vector2(1, 1));
   private readonly scale = uniform(1);
@@ -191,7 +193,8 @@ export class PalettePipeline {
     this.lookup = keep(new DataTexture(new Uint32Array(LOOKUP_WIDTH), LOOKUP_WIDTH, 1, RedIntegerFormat, UnsignedIntType));
     this.lookup.needsUpdate = true;
 
-    this.tilePass = new QuadMesh(this.tileMaterial(setup.tiles, tileAtlas));
+    const sampleTile = this.tileSampler(setup.tiles, tileAtlas);
+    this.tilePass = new QuadMesh(this.tileMaterial(sampleTile));
 
     // Three vec4 per sprite: rectangle; atlas position, remap, shadow; filter and displacement flags.
     this.capacity = setup.spriteCapacity;
@@ -206,18 +209,17 @@ export class PalettePipeline {
     this.spriteMesh = new Mesh(this.spriteGeometry, this.spriteMaterial(spriteAtlas, shadowTexture, remapTexture));
     this.spriteMesh.frustumCulled = false;
 
-    this.compositePass = new QuadMesh(this.compositeMaterial(shadowTexture, spriteAtlas, remapTexture, keep));
+    this.compositePass = new QuadMesh(this.compositeMaterial(shadowTexture, spriteAtlas, remapTexture, keep, sampleTile));
     this.presentPass = new QuadMesh(this.presentMaterial(palette));
   }
 
-  private tileMaterial(tiles: TileMap, atlas: DataTexture) {
+  /** Samples original terrain at a world pixel, including displaced pixels between output samples. */
+  private tileSampler(tiles: TileMap, atlas: DataTexture) {
     const attribute = new StorageBufferAttribute(tiles.cells, 1);
     this.buffers.push(attribute);
     const cells = storage(attribute, 'uint', tiles.cells.length).toReadOnly();
     const perRow = Math.floor(tiles.atlas.width / tiles.tileSize);
-    const material = new MeshBasicNodeMaterial();
-    material.fragmentNode = Fn(() => {
-      const pixel = floor(screenCoordinate.xy).add(this.origin);
+    return Fn(([pixel]: [Node<'vec2'>]) => {
       const cellX = int(floor(pixel.x.div(tiles.tileSize)));
       const cellY = int(floor(pixel.y.div(tiles.tileSize)));
       const inside = cellX.greaterThanEqual(0).and(cellY.greaterThanEqual(0))
@@ -232,7 +234,15 @@ export class PalettePipeline {
         const y = int(tile.div(uint(perRow))).mul(tiles.tileSize).add(int(pixel.y).sub(cellY.mul(tiles.tileSize)));
         index.assign(textureLoad(atlas, ivec2(x, y)).r);
       });
-      return vec4(index, 0, 0, 1);
+      return index;
+    });
+  }
+
+  private tileMaterial(sampleTile: (pixel: Node<'vec2'>) => Node<'float'>) {
+    const material = new MeshBasicNodeMaterial();
+    material.fragmentNode = Fn(() => {
+      const pixel = floor(screenCoordinate.xy.mul(this.pixelStep)).add(this.origin);
+      return vec4(sampleTile(pixel), 0, 0, 1);
     })();
     return material;
   }
@@ -264,7 +274,7 @@ export class PalettePipeline {
       return vec4(screen.x.mul(2).sub(1), screen.y.mul(-2).add(1), 0, 1);
     })();
     material.fragmentNode = Fn(() => {
-      const local = floor(screenCoordinate.xy).add(this.origin).sub(flatRect.xy);
+      const local = floor(screenCoordinate.xy.mul(this.pixelStep)).add(this.origin).sub(flatRect.xy);
       const source = loadIndex(atlas, int(flatInfo.x.add(local.x)), int(flatInfo.y.add(local.y)));
       Discard(source.equal(0));
       // A destination-dependent pixel marks the slow path. Later opaque pixels clear that mark.
@@ -277,7 +287,7 @@ export class PalettePipeline {
   }
 
   private compositeMaterial(shadow: DataTexture, atlas: DataTexture, remaps: DataTexture,
-    keep: (texture: DataTexture) => DataTexture) {
+    keep: (texture: DataTexture) => DataTexture, sampleTile: (pixel: Node<'vec2'>) => Node<'float'>) {
     const material = new MeshBasicNodeMaterial();
     const filters = [this.setup.shadowTable, ...(this.setup.filters ?? [])];
     const composition = composeFilters(filters);
@@ -331,8 +341,7 @@ export class PalettePipeline {
           });
         });
         If(found.lessThan(0), () => {
-          const local = pixel.sub(ivec2(this.origin));
-          color.assign(loadIndex(this.tileTarget.texture, local.x, local.y));
+          color.assign(int(sampleTile(pixel.toVec2()).mul(255).round()));
           Break();
         });
         const rect = instances.element(found.mul(3));
@@ -395,7 +404,7 @@ export class PalettePipeline {
             });
           });
           If(found.lessThan(0), () => {
-            if(findBase) color.assign(loadIndex(this.tileTarget.texture,local.x,local.y));
+            if(findBase) color.assign(int(sampleTile(pixel.toVec2()).mul(255).round()));
             Break();
           });
           limit.assign(found);
@@ -457,7 +466,10 @@ export class PalettePipeline {
           index.assign(loadIndex(shadow, index, int(1)));
         });
       });
-      If(sprite.b.greaterThan(0.5), () => { index.assign((resolveBlended ?? resolve)(ivec2(x, y).add(ivec2(this.origin)))); });
+      If(sprite.b.greaterThan(0.5), () => {
+        const world = ivec2(floor(screenCoordinate.xy.mul(this.pixelStep)).add(this.origin));
+        index.assign((resolveBlended ?? resolve)(world));
+      });
       return vec4(float(index).div(255), 0, 0, 1);
     })();
     return material;
@@ -468,9 +480,10 @@ export class PalettePipeline {
     material.fragmentNode = Fn(() => {
       const pixel = floor(screenCoordinate.xy.div(this.scale));
       const sampled = loadIndex(this.indexTarget.texture, int(pixel.x), int(pixel.y));
-      const index = this.setup.indexEffect ? this.setup.indexEffect(ivec2(pixel.add(this.origin)), sampled) : sampled;
+      const world = floor(pixel.add(0.5).mul(this.pixelStep)).add(this.origin);
+      const index = this.setup.indexEffect ? this.setup.indexEffect(ivec2(world), sampled) : sampled;
       const color = vec4(textureLoad(palette, ivec2(index, 0)).rgb, 1);
-      return this.setup.overlay ? this.setup.overlay(pixel.add(this.origin), color) : color;
+      return this.setup.overlay ? this.setup.overlay(world, color) : color;
     })();
     return material;
   }
@@ -547,12 +560,14 @@ export class PalettePipeline {
   }
 
   /** Draws the index image of the view, without presenting it. */
-  private drawIndices(view: View) {
-    for (const target of [this.tileTarget, this.spriteTarget, this.indexTarget]) {
+  private drawIndices(view: View, sampleStep: number) {
+    if (!Number.isSafeInteger(sampleStep) || sampleStep < 1) throw new Error('sampleStep must be a positive integer');
+    for (const target of this.targets) {
       if (target.width !== view.width || target.height !== view.height) target.setSize(view.width, view.height);
     }
     this.origin.value.set(view.x, view.y);
-    this.size.value.set(view.width, view.height);
+    this.size.value.set(view.width * sampleStep, view.height * sampleStep);
+    this.pixelStep.value = sampleStep;
     const previous = this.renderer.getRenderTarget();
     this.renderer.setRenderTarget(this.tileTarget);
     this.tilePass.render(this.renderer);
@@ -569,9 +584,12 @@ export class PalettePipeline {
     this.palette.needsUpdate = true;
   }
 
-  /** Draws the view and presents it on the canvas, each image pixel as scale × scale device pixels. */
-  render(view: View, scale: number) {
-    this.drawIndices(view);
+  /**
+   * Draws each index pixel as scale × scale device pixels. Positive integer sampleStep samples
+   * world pixels at origin + floor((indexPixel + 0.5) * sampleStep), without enlarging the targets.
+   */
+  render(view: View, scale: number, sampleStep = 1) {
+    this.drawIndices(view, sampleStep);
     this.scale.value = scale;
     this.present();
   }
@@ -581,9 +599,9 @@ export class PalettePipeline {
     this.presentPass.render(this.renderer);
   }
 
-  /** Draws the view and reads its index image back, row by row from the top. */
-  async readIndices(view: View): Promise<Uint8Array> {
-    this.drawIndices(view);
+  /** Reads view.width × view.height indices top to bottom, using the same integer sampling as render. */
+  async readIndices(view: View, sampleStep = 1): Promise<Uint8Array> {
+    this.drawIndices(view, sampleStep);
     const { width, height } = view;
     const data = await this.renderer.readRenderTargetPixelsAsync(this.indexTarget, 0, 0, width, height) as Uint8Array;
     // Rows come back padded to a multiple of 256 bytes.
@@ -597,7 +615,7 @@ export class PalettePipeline {
     this.spatial?.dispose();
     this.setup.displacement?.dispose();
     for (const texture of this.textures) texture.dispose();
-    for (const target of [this.tileTarget, this.spriteTarget, this.indexTarget]) target.dispose();
+    for (const target of this.targets) target.dispose();
     for (const mesh of [this.tilePass, this.compositePass, this.presentPass, this.spriteMesh]) {
       (mesh.material as MeshBasicNodeMaterial).dispose();
     }
