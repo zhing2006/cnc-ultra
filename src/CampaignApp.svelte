@@ -143,13 +143,13 @@
         const saved = await pickLoad(); await beginMission(session?.side ?? 'gdi', saved); return;
       }
       if (id === 'save' && session) {
-        const handle = await pickSave(`${session.name.toLowerCase()}.cncu`), bytes = await session.save();
+        const handle = await pickSave(`${session.name.toLowerCase()}.cncz`), bytes = await session.save(!handle.name.toLowerCase().endsWith('.cncu'));
         const stream = await handle.createWritable(); await stream.write(bytes as Uint8Array<ArrayBuffer>); await stream.close(); return;
       }
       if (id === 'delete' && session) {
         const directory = await pickSaveDirectory();
         const names: string[] = [];
-        for await (const [name, handle] of directory.entries()) if (handle.kind === 'file' && name.toLowerCase().endsWith('.cncu')) names.push(name);
+        for await (const [name, handle] of directory.entries()) if (handle.kind === 'file' && /\.cnc[uz]$/i.test(name)) names.push(name);
         names.sort();
         while (names.length) {
           const name = await presentation!.savedFiles(names, palette());

@@ -29,18 +29,21 @@ export async function checkCampaignDevelopmentEntry(session:Session){
 
 export async function checkCampaignEntry(session: Session) {
   await withApp(session, { path: '/', init: () => {
-    const files = { bytes: new Uint8Array(), saveActivated: false, loadActivated: false, deleted: [] as string[] };
+    const files = { bytes: new Uint8Array(), compressed: new Uint8Array(), saveName: '', suggestedName: '', writes: 0,
+      saveActivated: false, loadActivated: false, deleted: [] as string[] };
     (window as any).campaignFiles = files;
-    (window as any).showSaveFilePicker = async () => {
+    (window as any).showSaveFilePicker = async ({ suggestedName }: { suggestedName: string }) => {
       files.saveActivated = navigator.userActivation.isActive;
-      return { createWritable: async () => ({ write: async (bytes: Uint8Array) => { files.bytes = bytes.slice(); }, close: async () => {} }) };
+      files.suggestedName = suggestedName;
+      return { name: files.saveName || suggestedName,
+        createWritable: async () => ({ write: async (bytes: Uint8Array) => { files.bytes = bytes.slice(); files.writes++; }, close: async () => {} }) };
     };
     (window as any).showOpenFilePicker = async () => {
       files.loadActivated = navigator.userActivation.isActive;
       return [{ getFile: async () => ({ arrayBuffer: async () => files.bytes.buffer }) }];
     };
     (window as any).showDirectoryPicker = async () => ({
-      async *entries() { yield ['mission.cncu', { kind: 'file' }]; yield ['notes.txt', { kind: 'file' }]; },
+      async *entries() { yield ['mission.cncu', { kind: 'file' }]; yield ['mission.CNCZ', { kind: 'file' }]; yield ['notes.txt', { kind: 'file' }]; },
       removeEntry: async (name: string) => { files.deleted.push(name); },
     });
   } }, async page => {
@@ -126,10 +129,22 @@ export async function checkCampaignEntry(session: Session) {
       await page.getByRole('button', { name: 'Save Mission', exact: true }).click();
       await page.waitForFunction(() => (window as any).campaignFiles.bytes.length > 0, undefined, { timeout: 30000 });
       assert.equal(await page.evaluate(() => (window as any).campaignFiles.saveActivated), true);
+      assert.equal(await page.evaluate(() => (window as any).campaignFiles.suggestedName), 'scg01ea.cncz');
+      assert.deepEqual(await page.evaluate(() => Array.from((window as any).campaignFiles.bytes.slice(0, 4))), [80, 75, 3, 4]);
+      await page.evaluate(() => {
+        const files = (window as any).campaignFiles;
+        files.compressed = files.bytes.slice(); files.saveName = 'mission.cncu';
+      });
+      await page.getByRole('button', { name: 'Save Mission', exact: true }).click();
+      await page.waitForFunction(() => (window as any).campaignFiles.writes === 2);
+      assert.equal(await page.evaluate(() => new TextDecoder().decode((window as any).campaignFiles.bytes.slice(0, 8))), 'CNCULTRA');
+      await page.evaluate(() => { const files = (window as any).campaignFiles; files.bytes = files.compressed; });
       await page.getByRole('button', { name: 'Delete Mission', exact: true }).click();
       await page.getByRole('button', { name: 'mission.cncu', exact: true }).click();
       await page.getByRole('button', { name: 'Delete', exact: true }).click();
-      assert.deepEqual(await page.evaluate(() => (window as any).campaignFiles.deleted), ['mission.cncu']);
+      await page.getByRole('button', { name: 'mission.CNCZ', exact: true }).click();
+      await page.getByRole('button', { name: 'Delete', exact: true }).click();
+      assert.deepEqual(await page.evaluate(() => (window as any).campaignFiles.deleted), ['mission.cncu', 'mission.CNCZ']);
       await page.getByRole('button', { name: 'Load Mission', exact: true }).click();
       await page.locator('canvas[data-status="playing"]').waitFor({ timeout: 90000 });
       assert.equal(await page.evaluate(() => (window as any).campaignFiles.loadActivated), true);

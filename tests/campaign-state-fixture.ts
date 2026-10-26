@@ -3,7 +3,7 @@ import { loadData } from '../src/game/data-files.ts';
 import { skirmishScene } from '../src/game/skirmish-scene.ts';
 import { startPreparedGame, type Game, type GameState } from '../src/game/game.ts';
 import { EconomyRuntime } from '../src/game/simulation/economy-runtime.ts';
-import { encodeSave, decodeSave } from '../src/game/campaign/save-file.ts';
+import { encodeSaveFile, decodeSaveFile } from '../src/game/campaign/save-file.ts';
 import { DEFAULT_PREFERENCES } from '../src/game/options.ts';
 
 export async function checkSavedSimulation() {
@@ -41,14 +41,14 @@ export async function checkSavedSimulation() {
     await new Promise(resolve => setTimeout(resolve, 150));
     if (runtime!.battle.frame !== saved.frame || !game!.isPaused()) throw new Error('The paused mission advanced');
     const { buffers, ...metadata } = saved;
-    const file = encodeSave({ metadata, buffers });
+    const raw = await encodeSaveFile({ metadata, buffers }, false), file = await encodeSaveFile({ metadata, buffers });
     await advance(135);
     runtime!.choose('NUKE');
     await advance(245);
     const expected = await runtime!.battle.snapshot(), expectedCpu = await runtime!.saveState();
     game!.dispose(); game = undefined;
     await start();
-    const loaded = decodeSave<Omit<GameState, 'buffers'>>(file);
+    const loaded = await decodeSaveFile<Omit<GameState, 'buffers'>>(file);
     game!.loadState({ ...loaded.metadata, buffers: loaded.buffers });
     const restored = await game!.readDebugState();
     if (restored.gameSpeed !== 100 || restored.buildSpeed !== 10 || restored.damageScale !== 500 || runtime!.battle.debugDamageScale.value !== 500) throw new Error('Saved Debug settings were not restored');
@@ -60,6 +60,6 @@ export async function checkSavedSimulation() {
     }
     if (JSON.stringify(actualCpu) !== JSON.stringify(expectedCpu)) throw new Error('Saved CPU economy continuation differs');
     if (!runtime!.buildings.size || !runtime!.queues.items.size) throw new Error('Save journey did not exercise construction and production');
-    return { frame: runtime!.battle.frame, buffers: expected.length, saveBytes: file.length };
+    return { frame: runtime!.battle.frame, buffers: expected.length, saveBytes: file.length, rawBytes: raw.length };
   } finally { game?.dispose(); renderer.dispose(); canvas.remove(); }
 }

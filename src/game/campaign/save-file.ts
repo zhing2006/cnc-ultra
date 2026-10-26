@@ -1,3 +1,5 @@
+import { unzipSave, zipSave } from './save-zip.ts';
+
 /** Versioned snapshots belong to C&C Ultra; original C&C Gold save layouts are not imported. */
 export interface SaveSnapshot<T = unknown> { metadata: T; buffers: Uint8Array[] }
 const magic = new TextEncoder().encode('CNCULTRA');
@@ -31,6 +33,16 @@ export function decodeSave<T>(bytes: Uint8Array): SaveSnapshot<T> {
   return { metadata, buffers };
 }
 
+export async function encodeSaveFile<T>(snapshot: SaveSnapshot<T>, compressed = true): Promise<Uint8Array> {
+  const bytes = encodeSave(snapshot);
+  return compressed ? zipSave(bytes) : bytes;
+}
+
+/** Detect the container by content, including older files and renamed ZIP archives. */
+export async function decodeSaveFile<T>(bytes: Uint8Array): Promise<SaveSnapshot<T>> {
+  return decodeSave<T>(bytes[0] === 0x50 && bytes[1] === 0x4b ? await unzipSave(bytes) : bytes);
+}
+
 interface NativePickers {
   showSaveFilePicker(options: { suggestedName: string }): Promise<FileSystemFileHandle>;
   showOpenFilePicker(options: { multiple: boolean }): Promise<FileSystemFileHandle[]>;
@@ -39,11 +51,11 @@ interface NativePickers {
 
 /** Call directly from the click handler, before any asynchronous GPU work consumes user activation. */
 export function pickSave(name: string) {
-  // Leave native pickers unfiltered so unregistered .cncu files can be opened or overwritten.
+  // Leave native pickers unfiltered so unregistered .cncu/.cncz files can be opened or overwritten.
   return (window as unknown as NativePickers).showSaveFilePicker({ suggestedName: name });
 }
 export async function pickLoad() {
-  // Let decodeSave validate the selected file's contents instead.
+  // Let decodeSaveFile identify and validate the selected file's contents instead.
   const [handle] = await (window as unknown as NativePickers).showOpenFilePicker({ multiple: false });
   return new Uint8Array(await (await handle.getFile()).arrayBuffer());
 }

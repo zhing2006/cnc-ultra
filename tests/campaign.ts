@@ -108,7 +108,8 @@ export async function checkCampaignState(session: Session) {
   await withApp(session, { path: '/tests/fixture.html' }, async page => {
     const result = await page.evaluate(async () => (await import('../tests/campaign-state-fixture.ts')).checkSavedSimulation());
     assert.equal(result.frame, 245);
-    console.log(`Campaign save continuation: ${result.buffers} simulation buffers, ${result.saveBytes} file bytes`);
+    assert(result.saveBytes < result.rawBytes, 'Compression should reduce the saved GPU state');
+    console.log(`Campaign save continuation: ${result.buffers} simulation buffers, ${result.rawBytes} cncu bytes, ${result.saveBytes} cncz bytes`);
   });
 }
 

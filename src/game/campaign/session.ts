@@ -5,7 +5,7 @@ import { campaignScene } from './scene.ts';
 import { CampaignRuntime } from './runtime.ts';
 import type { CampaignAssets, CampaignSide } from './assets.ts';
 import type { CampaignPresentation } from './presentation.ts';
-import { decodeSave, encodeSave } from './save-file.ts';
+import { decodeSaveFile, encodeSaveFile } from './save-file.ts';
 import type { DebugState } from '../debug.ts';
 import { carryCredits } from './progression.ts';
 import { MOVEMENT } from '../data/movement.ts';
@@ -24,7 +24,7 @@ export class CampaignSession {
   private constructor(readonly game: Game, readonly runtime: CampaignRuntime, readonly name: string, readonly side: CampaignSide, readonly briefing: string, readonly carry?: CampaignCarry) {}
   static async start(renderer: Renderer, canvas: HTMLCanvasElement, assets: CampaignAssets, presentation: CampaignPresentation,
     side: CampaignSide, options: { name?: string; saved?: Uint8Array; restart?: boolean; carry?: CampaignCarry; progress(message: string): void | Promise<void>; outcome(winner: number): void; options(): void }) {
-    const saved = options.saved ? decodeSave<CampaignSave>(options.saved) : undefined;
+    const saved = options.saved ? await decodeSaveFile<CampaignSave>(options.saved) : undefined;
     const name = saved?.metadata.name ?? options.name ?? (side === 'gdi' ? 'SCG01EA' : 'SCB01EA');
     side = saved?.metadata.side ?? side;
     if (!/^SC[GB]\d{2}[EW][A-Z]$/i.test(name) || !['gdi', 'nod'].includes(side) || saved && saved.metadata.campaign !== 'original') throw new Error('This is not an original campaign save.');
@@ -67,10 +67,10 @@ export class CampaignSession {
     if(!transitionMusic)presentation.beginMusic(mission.theme);
     return new CampaignSession(game, runtime, name, side, readBriefing(name, new TextDecoder('latin1').decode(ini), new TextDecoder('latin1').decode(data.get('MISSION.INI'))), carry);
   }
-  async save() {
+  async save(compressed = true) {
     const { buffers, ...game } = await this.game.saveState();
     const metadata: CampaignSave = { campaign: 'original', side: this.side, name: this.name, game, rules: this.runtime.saveCampaign(), carry: this.carry };
-    return encodeSave({ metadata, buffers });
+    return encodeSaveFile({ metadata, buffers }, compressed);
   }
   score() {
     const house = this.runtime.houses[0];
