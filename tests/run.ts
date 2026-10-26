@@ -13,7 +13,7 @@ import { checkSimulation } from './simulation.ts';
 import { checkCombat } from './combat.ts';
 import { checkSelectionReady } from './startup.ts';
 import { checkUnits } from './units.ts';
-import { checkEconomy,checkTransport,checkCoordination,checkCompaction } from './economy.ts';
+import { checkEconomy,checkTransport,checkCoordination,checkCompaction,checkFactoryOrders,checkAirProductionOrders } from './economy.ts';
 import { discoverGpus, identifyGpu, launchGpu } from './gpu.ts';
 import { checkMatchFoundations } from './match-foundations.ts';
 import { checkMatchRendering } from './match-rendering.ts';
@@ -79,6 +79,8 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Airstrip and helipad deliveries preserve player orders',checkAirProductionOrders],
+    ['Player orders interrupt factory exits without blocking production',checkFactoryOrders],
     ['Campaign infantry death colors and hovercraft unloading order',checkCampaignRendering],
     ['Campaign threat avoidance and deterministic continuation',checkCampaignRouting],
     ['Worker decoding and bounded campaign music buffers',checkCampaignAudio],

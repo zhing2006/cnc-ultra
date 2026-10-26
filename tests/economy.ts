@@ -6,6 +6,18 @@ import { writeFileSync } from 'node:fs';
 
 const measured=async<T>(name:string,check:()=>Promise<T>)=>{const started=performance.now();try{return await check();}finally{console.log(`M5 ${name}: ${((performance.now()-started)/1000).toFixed(1)}s`);}};
 
+export async function checkFactoryOrders(session: Session) {
+  await withApp(session, { path: '/tests/fixture.html' }, async page => {
+    assert(await page.evaluate(async () => (await import('../tests/factory-orders-fixture.ts')).compareFactoryOrders()));
+  });
+}
+
+export async function checkAirProductionOrders(session: Session) {
+  await withApp(session, { path: '/tests/fixture.html' }, async page => {
+    assert(await page.evaluate(async () => (await import('../tests/factory-orders-fixture.ts')).compareAirProductionOrders()));
+  });
+}
+
 export async function checkEconomy(session:Session) {
   await withApp(session,{path:'/tests/fixture.html',init:observeStartup},async page=>{
     assert.equal(await measured('Tiberium and flight',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareTiberium())),192);

@@ -27,8 +27,11 @@ export function stepServices(battle:CpuCombat,state:Int32Array,money:Int32Array)
   const clear=(cell:number,id:number,infantry=false)=>cell>=0&&cell<battle.setup.grid.edges.length&&battle.setup.passable?.[cell]&&
     (infantry?Array.from(m.occupancy.subarray(cell*5,cell*5+5)).some(v=>v===0||v===id+1):Array.from(m.occupancy.subarray(cell*5,cell*5+5)).every(v=>v===0||v===id+1));
   const force=(id:number,track:number,cell:number)=>{
+    const ordered=(u[id*U.WORDS+U.UFLAGS]&U.PLAYER_ORDER)!==0&&state[SERVICE_BASE+id*SERVICE_WORDS+SMODE]>=10;
+    const goal=m.goals[id];
     const at=id*U.WORDS;u[at+U.UDEST]=cell;u[at+U.UTRACK]=track;u[at+U.UTRACK_STEP]=0;u[at+U.UACCUM]=0;u[at+U.USPEED]=u[at+U.UKIND]?255:128;
-    u[at+U.UHEAD_X]=cell%width*256+128;u[at+U.UHEAD_Y]=Math.trunc(cell/width)*256+128;m.goals[id]=-1;m.pathGoals[id]=-1;
+    // DRIVE.CPP Force_Track changes HeadTo without replacing the player's NavCom.
+    u[at+U.UHEAD_X]=cell%width*256+128;u[at+U.UHEAD_Y]=Math.trunc(cell/width)*256+128;m.goals[id]=ordered?goal:-1;m.pathGoals[id]=-1;
   };
   const toward=(id:number,target:number)=>{
     const cell=u[id*U.WORDS+U.UCELL],dx=Math.sign(target%width-cell%width),dy=Math.sign(Math.trunc(target/width)-Math.trunc(cell/width));
@@ -84,7 +87,7 @@ export function stepServices(battle:CpuCombat,state:Int32Array,money:Int32Array)
         u[b+U.UDOOR]=Math.min(10,Math.trunc(state[p+STIMER]/2));
         const exit=u[b+U.UCELL]+width-1;
         if(state[p+STIMER]>=28&&Array.from(m.occupancy.subarray(exit*5,exit*5+5)).every(owner=>!owner||owner===id+1||owner===parent+1)){
-          force(id,66,exit);c[id*C.CWORDS+C.CMISSION]=C.MOVE;state[p+SMODE]=11;
+          force(id,66,exit);if(!(u[at+U.UFLAGS]&U.PLAYER_ORDER))c[id*C.CWORDS+C.CMISSION]=C.MOVE;state[p+SMODE]=11;
         }
       }else if(name==='PROC'){force(id,65,u[b+U.UCELL]+width-1);state[p+SMODE]=11;}
       else{
@@ -100,13 +103,15 @@ export function stepServices(battle:CpuCombat,state:Int32Array,money:Int32Array)
           if(first>=0){m.goals[id]=first;m.pathGoals[id]=U.DIRECT_STEP;c[id*C.CWORDS+C.CMISSION]=C.MOVE;state[p+SEXIT]=exit;state[p+SMODE]=11;}
         }
       }
-    }else if(mode===11&&u[at+U.UDEST]<0&&(name==='WEAP'||name==='PROC'||m.goals[id]<0)){
+    }else if(mode===11&&u[at+U.UDEST]<0&&(name==='WEAP'||name==='PROC'||m.goals[id]<0||(u[at+U.UFLAGS]&U.PLAYER_ORDER))){
       if(name==='WEAP'&&!battle.setup.passable?.[u[at+U.UCELL]]){
         const exit=FACTORY_EXITS.WEAP.map(([x,y])=>u[b+U.UORIGIN]+y*width+x).find(cell=>clear(cell,id)&&Math.abs(cell%width-u[at+U.UCELL]%width)<=1&&Math.abs(Math.trunc(cell/width)-Math.trunc(u[at+U.UCELL]/width))<=1);
         if(exit!==undefined){const dx=exit%width-u[at+U.UCELL]%width,dy=Math.trunc(exit/width)-Math.trunc(u[at+U.UCELL]/width),dir=dy<0?(dx<0?7:dx>0?1:0):dy>0?(dx<0?5:dx>0?3:4):dx<0?6:2;force(id,dir*9,exit);}
-      }else if((name==='PYLE'||name==='HAND')&&u[at+U.UCELL]!==state[p+SEXIT]){m.goals[id]=state[p+SEXIT];m.pathGoals[id]=-1;
+      }else if((name==='PYLE'||name==='HAND')&&!(u[at+U.UFLAGS]&U.PLAYER_ORDER)&&u[at+U.UCELL]!==state[p+SEXIT]){m.goals[id]=state[p+SEXIT];m.pathGoals[id]=-1;
       }else{
-        if(name==='WEAP'&&m.goals[id]<0)scatterFromExit(id);
+        // EVENT.CPP MEGAMISSION replaces NavCom; Per_Cell_Process releases the
+        // exit contact on arrival rather than restoring the old factory destination.
+        if(name==='WEAP'&&m.goals[id]<0&&!(u[at+U.UFLAGS]&U.PLAYER_ORDER))scatterFromExit(id);
         u[at+U.UENTER]=0;state[p+SMODE]=name==='WEAP'?12:0;state[p+STIMER]=0;if(name!=='WEAP')state[p+SFACILITY]=0;
       }
     }else if(mode===12){if(++state[p+STIMER]%2===0)u[b+U.UDOOR]=Math.max(0,u[b+U.UDOOR]-1);if(!u[b+U.UDOOR])state[p+SFACILITY]=state[p+SMODE]=0;

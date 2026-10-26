@@ -68,8 +68,10 @@ export class GpuServices {
       });return allowed.notEqual(0);
     },{name:'factoryInfantryStep',type:'bool',inputs:[{name:'cell',type:'int'},{name:'actor_id',type:'int'}]});
     const force=(id:I,track:I,cell:I)=>{
+      const goal=goals.element(id).toVar(),ordered=unit(id,U.UFLAGS).bitAnd(U.PLAYER_ORDER).notEqual(0).and(stateAt(id,SMODE).greaterThanEqual(10));
       unit(id,U.UDEST).assign(cell);unit(id,U.UTRACK).assign(track);unit(id,U.UTRACK_STEP).assign(0);unit(id,U.UACCUM).assign(0);unit(id,U.USPEED).assign(select(unit(id,U.UKIND).notEqual(0),int(255),int(128)));
-      unit(id,U.UHEAD_X).assign(cell.mod(width).mul(256).add(128));unit(id,U.UHEAD_Y).assign(cell.div(width).mul(256).add(128));goals.element(id).assign(-1);paths.element(id).assign(-1);
+      // DRIVE.CPP Force_Track preserves a separately assigned NavCom.
+      unit(id,U.UHEAD_X).assign(cell.mod(width).mul(256).add(128));unit(id,U.UHEAD_Y).assign(cell.div(width).mul(256).add(128));goals.element(id).assign(select(ordered,goal,int(-1)));paths.element(id).assign(-1);
     };
     const toward=(id:I,target:I)=>{
       const cell=unit(id,U.UCELL),dx=int(select(target.mod(width).equal(cell.mod(width)),int(0),select(target.mod(width).greaterThan(cell.mod(width)),int(1),int(-1)))).toVar();
@@ -125,7 +127,7 @@ export class GpuServices {
             If(stateAt(id,STIMER).greaterThanEqual(28),()=>{
               const exit=unit(parent,U.UCELL).add(width-1).toVar(),available=int(1).toVar();
               Loop(5,({i})=>{const owner=occupancy.element(exit.mul(5).add(i));If(owner.notEqual(uint(0)).and(owner.notEqual(uint(id.add(1)))).and(owner.notEqual(uint(parent.add(1)))),()=>{available.assign(0);});});
-              If(available.notEqual(0),()=>{force(id,int(66),exit);c.element(id.mul(C.CWORDS).add(C.CMISSION)).assign(C.MOVE);stateAt(id,SMODE).assign(11);});
+              If(available.notEqual(0),()=>{force(id,int(66),exit);If(unit(id,U.UFLAGS).bitAnd(U.PLAYER_ORDER).equal(0),()=>{c.element(id.mul(C.CWORDS).add(C.CMISSION)).assign(C.MOVE);});stateAt(id,SMODE).assign(11);});
             });
           }).ElseIf(name.equal(movementType('PROC')),()=>{force(id,int(65),unit(parent,U.UCELL).add(width-1));stateAt(id,SMODE).assign(11);})
             .Else(()=>{
@@ -144,7 +146,7 @@ export class GpuServices {
                 If(first.greaterThanEqual(0),()=>{goals.element(id).assign(first);paths.element(id).assign(U.DIRECT_STEP);c.element(id.mul(C.CWORDS).add(C.CMISSION)).assign(C.MOVE);stateAt(id,SEXIT).assign(exit);stateAt(id,SMODE).assign(11);});
               });
             });
-        }).ElseIf(mode.equal(11).and(unit(id,U.UDEST).lessThan(0)).and(name.equal(movementType('WEAP')).or(name.equal(movementType('PROC'))).or(goals.element(id).lessThan(0))),()=>{
+        }).ElseIf(mode.equal(11).and(unit(id,U.UDEST).lessThan(0)).and(name.equal(movementType('WEAP')).or(name.equal(movementType('PROC'))).or(goals.element(id).lessThan(0)).or(unit(id,U.UFLAGS).bitAnd(U.PLAYER_ORDER).notEqual(0))),()=>{
           If(name.equal(movementType('WEAP')).and(data.element(unit(id,U.UCELL).add(open)).equal(0)),()=>{
             const exit=int(-1).toVar();Loop(FACTORY_EXITS.WEAP.length,({i})=>{
               const at=i.mul(2).add(starts[2]+1),cell=unit(parent,U.UORIGIN).add(data.element(at)).add(data.element(at.add(1)).mul(width));
@@ -155,9 +157,9 @@ export class GpuServices {
               const dir=select(dy.lessThan(0),select(dx.lessThan(0),int(7),select(dx.greaterThan(0),int(1),int(0))),select(dy.greaterThan(0),select(dx.lessThan(0),int(5),select(dx.greaterThan(0),int(3),int(4))),select(dx.lessThan(0),int(6),int(2))));
               force(id,dir.mul(9),exit);
             });
-          }).ElseIf(name.equal(movementType('PYLE')).or(name.equal(movementType('HAND'))).and(unit(id,U.UCELL).notEqual(stateAt(id,SEXIT))),()=>{goals.element(id).assign(stateAt(id,SEXIT));paths.element(id).assign(-1);})
+          }).ElseIf(name.equal(movementType('PYLE')).or(name.equal(movementType('HAND'))).and(unit(id,U.UFLAGS).bitAnd(U.PLAYER_ORDER).equal(0)).and(unit(id,U.UCELL).notEqual(stateAt(id,SEXIT))),()=>{goals.element(id).assign(stateAt(id,SEXIT));paths.element(id).assign(-1);})
             .Else(()=>{
-              If(name.equal(movementType('WEAP')).and(goals.element(id).lessThan(0)),()=>{
+              If(name.equal(movementType('WEAP')).and(goals.element(id).lessThan(0)).and(unit(id,U.UFLAGS).bitAnd(U.PLAYER_ORDER).equal(0)),()=>{
                 const cell=unit(id,U.UCELL).toVar(),facing=unit(id,U.UFACE).add(16).bitAnd(255).shiftRight(5),goal=int(-1).toVar();
                 const bounds=battle.setup.bounds??{x:0,y:0,width,height:battle.setup.grid.height};
                 Loop(8,({i})=>{
