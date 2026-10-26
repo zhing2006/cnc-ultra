@@ -493,8 +493,9 @@ export class CpuCombat {
         }
         s[c + C.CMISSION] = this.movement.goals[id]>=0 ? C.MOVE : this.idleMission(id);
       }
+      // UNIT.CPP / INFANTRY.CPP Enter_Idle_Mode: a retained TarCom takes priority on arrival.
       if (s[c + C.CMISSION] === C.MOVE && this.movement.goals[id] < 0)
-        s[c + C.CMISSION] = this.idleMission(id);
+        s[c + C.CMISSION] = target !== -1 ? C.ATTACK : this.idleMission(id);
       if (s[c + C.CSCAN])
         s[c + C.CSCAN]--;
       // FOOT.CPP Mission_Guard_Area keeps an archive position and scans from there.
@@ -510,10 +511,13 @@ export class CpuCombat {
       if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] === C.GUARD && target !== -1 &&
         !this.inRange(id, target) && !this.inRange(id, target, 1))
         target = -1;
-      if (s[c + C.CSCAN] === 0 && s[c + C.CMISSION] !== C.MOVE && ![C.SLEEP,C.STICKY,C.AMBUSH].includes(s[c+C.CMISSION])) {
+      // FOOT.CPP Mission_Move: computer ground units retain a valid TarCom
+      // while travelling, and search THREAT_RANGE every TICKS_PER_SECOND + 3.
+      const moveScan = s[c+C.CMISSION] === C.MOVE && u[at+U.UOWNER] !== this.humanOwner && u[at+U.UDOMAIN] === 0;
+      if (s[c + C.CSCAN] === 0 && (s[c + C.CMISSION] !== C.MOVE || moveScan) && ![C.SLEEP,C.STICKY,C.AMBUSH].includes(s[c+C.CMISSION])) {
         const searching=target===-1;
         if (searching) target = this.findTarget(id);
-        s[c + C.CSCAN] = s[c+C.CMISSION]===C.GUARD_AREA&&searching&&target!==-1?1:s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
+        s[c + C.CSCAN] = moveScan ? 18 : s[c+C.CMISSION]===C.GUARD_AREA&&searching&&target!==-1?1:s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
         if(target===-1&&(s[c+C.CMISSION]===C.GUARD||s[c+C.CMISSION]===C.HUNT))this.randomAnimate(id);
       }
       if([9,10].includes(s[c+C.CACTION])&&(target!==-1||this.movement.goals[id]>=0||u[at+U.UDEST]>=0))s[c+C.CACTION]=0;

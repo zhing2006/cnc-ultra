@@ -707,7 +707,8 @@ export class GpuCombat {
           });
           state(id,C.CMISSION).assign(select(goals.element(id).greaterThanEqual(int(0)),int(C.MOVE),idleMission(id)));
         });
-        If(state(id, C.CMISSION).equal(int(C.MOVE)).and(goals.element(id).lessThan(int(0))), () => { state(id, C.CMISSION).assign(idleMission(id)); });
+        // UNIT.CPP / INFANTRY.CPP Enter_Idle_Mode preserves a valid TarCom on arrival.
+        If(state(id, C.CMISSION).equal(int(C.MOVE)).and(goals.element(id).lessThan(int(0))), () => { state(id, C.CMISSION).assign(select(target.notEqual(int(-1)), int(C.ATTACK), idleMission(id))); });
         state(id, C.CSCAN).assign(intMax(int(0), state(id, C.CSCAN).sub(1)));
         If(state(id,C.CMISSION).equal(int(C.GUARD_AREA)).and(state(id,C.CSCAN).equal(int(0))),()=>{
           If(state(id,C.CGUARD_CELL).equal(int(0)),()=>{state(id,C.CGUARD_CELL).assign(unit(id,U.UCELL).add(1));});
@@ -718,7 +719,9 @@ export class GpuCombat {
             target.assign(-1);goals.element(id).assign(home);paths.element(id).assign(-1);
           });
         });
-        If(state(id, C.CSCAN).equal(int(0)).and(state(id, C.CMISSION).notEqual(int(C.MOVE))).and(state(id,C.CMISSION).notEqual(C.SLEEP)).and(state(id,C.CMISSION).notEqual(C.STICKY)).and(state(id,C.CMISSION).notEqual(C.AMBUSH)), () => {
+        // FOOT.CPP Mission_Move: retain TarCom and scan only computer ground units every 18 ticks.
+        const moveScan = state(id,C.CMISSION).equal(C.MOVE).and(unit(id,U.UOWNER).notEqual(this.humanOwner)).and(unit(id,U.UDOMAIN).equal(0)).toVar();
+        If(state(id, C.CSCAN).equal(int(0)).and(state(id, C.CMISSION).notEqual(int(C.MOVE)).or(moveScan)).and(state(id,C.CMISSION).notEqual(C.SLEEP)).and(state(id,C.CMISSION).notEqual(C.STICKY)).and(state(id,C.CMISSION).notEqual(C.AMBUSH)), () => {
           const searching=target.equal(int(-1)).toVar();
           If(state(id, C.CMISSION).equal(int(C.GUARD)).and(target.notEqual(int(-1))), () => {
             If(inRange(id, target).not().and(inRange(id, target, int(1)).not()), () => { target.assign(-1); });
@@ -727,8 +730,8 @@ export class GpuCombat {
             If(state(id, C.CMISSION).equal(int(C.HUNT)), () => { target.assign(hunt(id)); })
               .Else(() => { target.assign(scan(id)); });
           });
-          state(id, C.CSCAN).assign(select(state(id,C.CMISSION).equal(int(C.GUARD_AREA)).and(searching).and(target.notEqual(int(-1))),int(1),
-            select(state(id, C.CMISSION).equal(int(C.HUNT)), int(20), pick(id, 50, int(5), true).add(15))));
+          state(id, C.CSCAN).assign(select(moveScan,int(18),select(state(id,C.CMISSION).equal(int(C.GUARD_AREA)).and(searching).and(target.notEqual(int(-1))),int(1),
+            select(state(id, C.CMISSION).equal(int(C.HUNT)), int(20), pick(id, 50, int(5), true).add(15)))));
           If(target.equal(-1).and(state(id,C.CMISSION).equal(C.GUARD).or(state(id,C.CMISSION).equal(C.HUNT))),()=>{randomAnimate(id);});
         });
         If(state(id,C.CACTION).equal(9).or(state(id,C.CACTION).equal(10)).and(target.notEqual(-1).or(goals.element(id).greaterThanEqual(0)).or(unit(id,U.UDEST).greaterThanEqual(0))),()=>{state(id,C.CACTION).assign(0);});

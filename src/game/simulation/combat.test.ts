@@ -9,11 +9,65 @@ import { randomWord } from '../../engine/simulation/fixed.ts';
 import { backlineScenario } from '../../../tests/backline-scenario.ts';
 import { obstructionScenario, buildingObstructionScenario } from '../../../tests/obstruction-scenario.ts';
 import { deathAnimation, deathVoice, soundGain } from './combat-effects.ts';
+import { movingCombatScenario } from '../../../tests/moving-combat-scenario.ts';
 export function combatFixture(): C.CombatSetup {
   return { grid: gridEdges(16, 12, new Uint8Array(192).fill(1), true), land: new Uint8Array(192), seed: 0x1995,
     units: [{ cell: 66, type: movementType('MTNK'), facing: 64 }, { cell: 70, type: movementType('MTNK'), facing: 192, owner: 1 }] };
 }
 describe('original ground combat', () => {
+  it.each(['MTNK','E1'])('lets a computer %s acquire targets on its route without replacing the move', name => {
+    const {setup,goal}=movingCombatScenario(name,1),battle=new CpuCombat(setup);
+    battle.step([{frame:1,kind:'move',ids:[0],target:goal}]);
+    let firstTarget=-1,shots=0;
+    while(battle.frame<1600){
+      battle.step();
+      if(firstTarget<0&&battle.state[C.CTARGET]>=0)firstTarget=battle.frame;
+      if(battle.state[C.CLAST_FIRE]===battle.frame){
+        shots++;
+        if(name==='MTNK')expect(battle.units[U.UDEST]).toBeGreaterThanOrEqual(0);
+        else expect(battle.units[U.UDEST]).toBe(-1);
+      }
+      // FOOT.CPP Mission_Move keeps NavCom while acquiring and destroying TarCom.
+      if(battle.state[C.CMISSION]===C.MOVE&&battle.units[U.UCELL]!==goal)expect(battle.movement.goals[0]).toBe(goal);
+    }
+    // FOOT.CPP Mission_Move retries THREAT_RANGE every TICKS_PER_SECOND + 3.
+    expect(firstTarget).toBeGreaterThanOrEqual(2);expect((firstTarget-2)%18).toBe(0);
+    expect(shots).toBeGreaterThanOrEqual(2);
+    expect(battle.units[U.WORDS+U.UHEALTH]).toBeLessThanOrEqual(0);
+    expect(battle.units[2*U.WORDS+U.UHEALTH]).toBeLessThanOrEqual(0);
+    expect(battle.units[U.UCELL]).toBe(goal);
+  });
+  it.each(['MTNK','E1'])('keeps a player %s on its move without acquiring nearby targets',name=>{
+    const {setup,goal}=movingCombatScenario(name,0),battle=new CpuCombat(setup);
+    battle.step([{frame:1,kind:'move',ids:[0],target:goal}]);
+    while(battle.frame<1600){
+      battle.step();
+      // FOOT.CPP Mission_Move searches only for non-human houses.
+      if(battle.state[C.CMISSION]===C.MOVE){
+        expect(battle.state[C.CTARGET]).toBe(-1);expect(battle.state[C.CLAST_FIRE]).toBe(-1);
+      }
+    }
+    expect(battle.units[U.UCELL]).toBe(goal);
+    expect(battle.units[U.WORDS+U.UHEALTH]).toBe(1);
+    expect(battle.units[2*U.WORDS+U.UHEALTH]).toBe(1);
+  });
+  it.each(['FTNK','MSAM'])('keeps a moving %s target and attacks it after arrival',name=>{
+    const {setup,goal}=movingCombatScenario(name,1),battle=new CpuCombat(setup);
+    battle.step([{frame:1,kind:'move',ids:[0],target:goal}]);battle.step();
+    expect(battle.state[C.CSCAN]).toBe(18);
+    while(battle.state[C.CTARGET]<0&&battle.frame<150)battle.step();
+    expect(battle.state[C.CTARGET]).toBe(1);
+    while(battle.movement.goals[0]===goal&&battle.frame<1200){
+      battle.step();
+      // Mission_Move keeps a legal TarCom even after it leaves weapon range.
+      expect(battle.state[C.CTARGET]).toBe(1);
+      expect(battle.state[C.CLAST_FIRE]).toBe(-1);
+    }
+    expect(battle.units[U.UCELL]).toBe(goal);battle.step();
+    // UNIT.CPP Enter_Idle_Mode selects ATTACK when TarCom is still legal.
+    expect(battle.state[C.CMISSION]).toBe(C.ATTACK);
+    expect(battle.state[C.CTARGET]).toBe(1);
+  });
   it.each([['E1','MTNK'],['MTNK','MTNK'],['E1','E1']])('lets %s destroy a hostile %s obstruction and resume its move order', (name,blocker) => {
     const battle=new CpuCombat(obstructionScenario(name,blocker));
     // Isolate path obstruction handling from retaliation against an incoming shot.

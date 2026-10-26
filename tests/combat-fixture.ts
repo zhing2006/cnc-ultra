@@ -16,11 +16,13 @@ import { GpuSelection } from '../src/game/simulation/selection.ts';
 import { verifyCombatComposition } from './combat-composition.ts';
 import { verifyCombatAudio } from './combat-audio.ts';
 import { combatHotspots } from './combat-performance.ts';
+import { compareMovingCombat } from './moving-combat-fixture.ts';
 export async function compareCombat(beforePerformance: () => Promise<void> = () => Promise.resolve(), acceptance=false) {
   const renderer = new WebGPURenderer();
   await renderer.init();
   try {
     await verifyCombatComposition(renderer);
+    await compareMovingCombat(renderer);
     const regressions = await compareCombatWorld(renderer);
     const demo = combatScene(await loadData(false, true));
     const marchCpu = new CpuCombat(demo.setup), marchGpu = new GpuCombat(renderer, demo.setup);
