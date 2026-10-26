@@ -32,18 +32,19 @@ export function decodeSave<T>(bytes: Uint8Array): SaveSnapshot<T> {
 }
 
 interface NativePickers {
-  showSaveFilePicker(options: { suggestedName: string; types: { description: string; accept: Record<string, string[]> }[] }): Promise<FileSystemFileHandle>;
-  showOpenFilePicker(options: { multiple: boolean; types: { description: string; accept: Record<string, string[]> }[] }): Promise<FileSystemFileHandle[]>;
+  showSaveFilePicker(options: { suggestedName: string }): Promise<FileSystemFileHandle>;
+  showOpenFilePicker(options: { multiple: boolean }): Promise<FileSystemFileHandle[]>;
   showDirectoryPicker(options: { mode: 'readwrite' }): Promise<FileSystemDirectoryHandle>;
 }
-const types = [{ description: 'C&C Ultra saved mission', accept: { 'application/octet-stream': ['.cncu'] } }];
 
 /** Call directly from the click handler, before any asynchronous GPU work consumes user activation. */
 export function pickSave(name: string) {
-  return (window as unknown as NativePickers).showSaveFilePicker({ suggestedName: name, types });
+  // Leave native pickers unfiltered so unregistered .cncu files can be opened or overwritten.
+  return (window as unknown as NativePickers).showSaveFilePicker({ suggestedName: name });
 }
 export async function pickLoad() {
-  const [handle] = await (window as unknown as NativePickers).showOpenFilePicker({ multiple: false, types });
+  // Let decodeSave validate the selected file's contents instead.
+  const [handle] = await (window as unknown as NativePickers).showOpenFilePicker({ multiple: false });
   return new Uint8Array(await (await handle.getFile()).arrayBuffer());
 }
 
