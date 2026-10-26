@@ -58,6 +58,8 @@ export function stepTransport(battle:CpuCombat,air:Int32Array,t:Int32Array,pendi
     if(parent>=0&&u[parent*U.WORDS+U.UHEALTH]<=0){u[at+U.UHEALTH]=0;u[at+U.UATTACHED]=0;}
     if(u[at+U.UHEALTH]<=0)continue;
     const command=pending[id*2];
+    // EVENT.CPP, Execute (MEGAMISSION): boarding and unloading are player orders too.
+    if((command===5||command===6)&&u[at+U.UDOMAIN]===0)u[at+U.UFLAGS]|=U.PLAYER_ORDER;
     if(command===0||command===1){u[at+U.UENTER]=0;if(t[p+TMODE]===5||u[at+U.UTYPE]===movementType('APC'))t[p+TMODE]=0;}
     if(command===5){if(u[at+U.UKIND])t[p+TLAST]=-1;u[at+U.UENTER]=pending[id*2+1]+1;pending[id*2]=-1;c[id*C.CWORDS+C.CTARGET]=-1;c[id*C.CWORDS+C.CMISSION]=C.MOVE;}
     if((command===6||command===SCRIPT_UNLOAD)&&(u[at+U.UTYPE]===movementType('TRAN')||u[at+U.UTYPE]===movementType('APC'))){

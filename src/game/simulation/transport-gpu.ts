@@ -102,6 +102,8 @@ export class GpuTransport {
       const parent=unit(id,U.UATTACHED).sub(1).toVar();If(parent.greaterThanEqual(0),()=>{If(unit(parent,U.UHEALTH).lessThanEqual(0),()=>{unit(id,U.UHEALTH).assign(0);unit(id,U.UATTACHED).assign(0);});});
       If(unit(id,U.UHEALTH).lessThanEqual(0),()=>{Continue();});
       const command=pending.element(id.mul(2)).toVar();
+      // EVENT.CPP, Execute (MEGAMISSION): scripted unloads retain their team orders.
+      If(command.equal(5).or(command.equal(6)).and(unit(id,U.UDOMAIN).equal(0)),()=>{unit(id,U.UFLAGS).bitOrAssign(U.PLAYER_ORDER);});
       If(command.equal(0).or(command.equal(1)),()=>{unit(id,U.UENTER).assign(0);If(stateAt(id,TMODE).equal(5).or(unit(id,U.UTYPE).equal(movementType('APC'))),()=>{stateAt(id,TMODE).assign(0);});});
       If(command.equal(5),()=>{If(unit(id,U.UKIND).notEqual(0),()=>{stateAt(id,TLAST).assign(-1);});unit(id,U.UENTER).assign(pending.element(id.mul(2).add(1)).add(1));pending.element(id.mul(2)).assign(-1);combat(id,C.CTARGET).assign(-1);combat(id,C.CMISSION).assign(C.MOVE);});
       If(command.equal(6).or(command.equal(SCRIPT_UNLOAD)).and(isCarrier(id)),()=>{
