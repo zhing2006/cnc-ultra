@@ -4,9 +4,11 @@ import { withApp, withInput, type Session } from './browser.ts';
 
 export async function checkCampaignRendering(session: Session) {
   await withApp(session, { path: '/tests/fixture.html' }, async page => {
-    const result = await page.evaluate(async () => (await import('../tests/campaign-rendering-fixture.ts')).campaignRendering());
-    for (const image of result.screenshots) await writeFile(`test-results/${image.name}.png`, Buffer.from(image.data, 'base64'));
-    assert.deepEqual(result.failures, []);
+    for (const delivery of ['infantry', 'vehicle'] as const) {
+      const result = await page.evaluate(async delivery => (await import('../tests/campaign-rendering-fixture.ts')).campaignRendering(delivery), delivery);
+      for (const image of result.screenshots) await writeFile(`test-results/${image.name}.png`, Buffer.from(image.data, 'base64'));
+      assert.deepEqual(result.failures, [], `${delivery} transport rendering`);
+    }
   });
 }
 

@@ -166,7 +166,14 @@ export class BuildingView {
               sprites.element(index.mul(3).add(2)).assign(vec4(0));
             });
           });
-          If(units.element(at.add(U.UATTACHED)).notEqual(0),()=>{sprites.element(index.mul(3)).assign(vec4(0));});
+          If(units.element(at.add(U.UATTACHED)).notEqual(0),()=>{
+            if(world.setup.campaignLevel!==undefined&&scene.animation!.frames.has('LST')){
+              // UNIT.CPP Draw_It: preserve deck cargo for HovercraftView to move
+              // into the hull's draw group after all body/turret/cloak projection.
+              const parent=units.element(at.add(U.UATTACHED)).sub(1);
+              If(units.element(parent.mul(U.WORDS).add(U.UTYPE)).notEqual(movementType('LST')),()=>{sprites.element(index.mul(3)).assign(vec4(0));});
+            }else sprites.element(index.mul(3)).assign(vec4(0));
+          });
         });
       });
     })().compute(layout.count));

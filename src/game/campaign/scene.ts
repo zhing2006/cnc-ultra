@@ -76,11 +76,13 @@ export function campaignScene(mix: MixSet, mission: CampaignScenario, seed = 0x1
   scene.sprites.splice(first, 0, ...Array.from({ length: cells * 3 }, () => ({ ...blank })));
   for (const object of scene.objects) object.first += cells * 3;
   const state = initialUnits(setup), region = scene.animation!.frames.get('MTNK')![0];
+  // UNIT.CPP Draw_It: a hovercraft draws up to five infantry after its hull.
+  const parts = extra.has('LST') ? 6 : 4;
   for (let id = 0; id < capacity; id++) {
     const first = scene.sprites.length, type = MOVEMENT[units[id].type], building = BUILDINGS.get(type.name);
-    for (let part = 0; part < 4; part++) scene.sprites.push({ ...blank, region, remap: 0, shadow: true });
+    for (let part = 0; part < parts; part++) scene.sprites.push(part < 4 ? { ...blank, region, remap: 0, shadow: true } : { ...blank });
     const offset = building ? type.name === 'FIX' ? -384 : type.name === 'PYLE' || type.name === 'PROC' ? 0 : Math.trunc(building.height * 256 / 3) : type.infantry ? 48 : 128;
-    scene.objects.push({ key: `live:${id}`, first, count: 4, sortX: state[id * WORDS + UX] + (type.name === 'FIX' ? -384 : 0), sortY: state[id * WORDS + UY] + offset });
+    scene.objects.push({ key: `live:${id}`, first, count: parts, sortX: state[id * WORDS + UX] + (type.name === 'FIX' ? -384 : 0), sortY: state[id * WORDS + UY] + offset });
   }
   const ordered = scene.objects.map((object, index) => ({ object, index, sprites: scene.sprites.slice(object.first, object.first + object.count) }))
     .sort((a, b) => a.object.sortY - b.object.sortY || a.object.sortX - b.object.sortX || a.index - b.index);

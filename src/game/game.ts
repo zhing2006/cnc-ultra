@@ -30,6 +30,7 @@ import { UnitsView } from './simulation/units-view.ts';
 import { UnitVoices } from './voices.ts';
 import { GpuCombat } from './simulation/combat-gpu.ts';
 import { CombatView, combatExtraSprites } from './simulation/combat-view.ts';
+import { HovercraftView } from './simulation/hovercraft-view.ts';
 import { CombatAudio } from './simulation/combat-audio.ts';
 import { MOVEMENT } from './data/movement.ts';
 import { GpuAircraft } from './simulation/aircraft-gpu.ts';
@@ -181,7 +182,8 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   const buildingView=economy&&ground&&ore?new BuildingView(economy,ground,pipeline,ore):undefined;
   const superView=economy&&combatView?new SuperView(economy,pipeline,scene,combatView.count+effectCapacity):undefined;
   const cloakView=battle&&ground&&perspective&&ground.layout.slots>=3?new CloakView(battle,ground,pipeline,perspective):undefined;
-  buildingView?.update();aircraftView?.update();buildingEffects?.update();superView?.update();cloakView?.update();
+  const hovercraftView=battle&&ground&&combatSetup?.setup.campaignLevel!==undefined&&scene.animation?.frames.has('LST')?new HovercraftView(battle,ground,pipeline):undefined;
+  buildingView?.update();aircraftView?.update();buildingEffects?.update();superView?.update();cloakView?.update();hovercraftView?.update();
   if(ground)pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
   const battleSystems=battle?{battle,economy,ore,transport,services,harvest,aircraft,airOperations,opposingSight,buildingEffects}:undefined;
   const saveBuffers = [...new Set([
@@ -428,7 +430,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     }
     if (!presentation.draw(time)) return;
     if (spritesDirty && ground) {
-      ground.updateSprites(false); combatView?.update(false); buildingView?.update(); aircraftView?.update(); buildingEffects?.update();superView?.update();cloakView?.update();
+      ground.updateSprites(false); combatView?.update(false); buildingView?.update(); aircraftView?.update(); buildingEffects?.update();superView?.update();cloakView?.update();hovercraftView?.update();
       pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
       spritesDirty = false;
     }
@@ -535,6 +537,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       input.dispose();
       document.removeEventListener('visibilitychange', visibility);
       checksum?.dispose();
+      hovercraftView?.dispose();
       ground?.dispose();
       aircraftView?.dispose();aircraft?.dispose();
       airOperations?.dispose();
