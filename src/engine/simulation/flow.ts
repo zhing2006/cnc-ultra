@@ -260,7 +260,9 @@ export class GpuFlowFields {
               const cell = word.mul(int(32)).add(int(trailingZeros(bits))).toVar();
               bits.assign(bits.bitAnd(bits.sub(uint(1))));
               const x = cell.mod(int(grid.width)), y = cell.div(int(grid.width));
-              const allowed=policy?policy.allows(cell,meta.element(at)):int(1).equal(1);
+              // Keep the shared predicate outside directional branches. TSL can otherwise
+              // cache it in a skipped branch, leaving edge-cell neighbors unreachable.
+              const allowed=(policy?policy.allows(cell,meta.element(at)):int(1).equal(int(1))).toVar();
               for (let dir = 0; dir < 8; dir++) {
                 const [dx, dy] = DIRECTIONS[dir], xx = x.add(int(dx)), yy = y.add(int(dy));
                 If(xx.greaterThanEqual(int(0)).and(yy.greaterThanEqual(int(0))).and(xx.lessThan(int(grid.width))).and(yy.lessThan(int(grid.height))), () => {
