@@ -96,7 +96,7 @@
     if (!session || !presentation || outcomeStarted) return;
     outcomeStarted = true;
     const current = session;
-    await presentation.outcome(winner === 0, palette());
+    await presentation.outcome(winner === 0, palette(), current.game.tacticalView(), current.game.drawBackground);
     const speech = await presentation.sound.play(winner === 0 ? 'ACCOM1' : 'FAIL1');
     await new Promise(resolve => setTimeout(resolve, Math.max(3000, (speech?.buffer?.duration ?? 0) * 1000)));
     await presentation.playMovie(winner === 0 ? current.runtime.mission.movies.win : current.runtime.mission.movies.lose, current.side);

@@ -80,13 +80,19 @@ export class IndexedScreen {
     (this.foreground.image.data as Uint8Array).set(pixels);this.foreground.needsUpdate=true;
     this.hasForeground.value=1;this.dirty=true;
   }
-  draw(width: number, height: number) {
-    if (!this.dirty && width === this.lastWidth && height === this.lastHeight) return;
-    this.lastWidth = width; this.lastHeight = height; this.dirty = false;
+  /** Without an explicit placement, fit and center the display in the canvas. */
+  draw(width: number, height: number, placement?: { x: number; y: number; scale: number }, background?: () => void) {
     const fit = Math.min(width / this.width, height / this.height);
-    this.scale.value = fit >= 1 ? Math.floor(fit) : fit;
-    this.origin.value.set(Math.floor((width - this.width * this.scale.value) / 2), Math.floor((height - this.height * this.scale.value) / 2));
+    const scale = placement?.scale ?? (fit >= 1 ? Math.floor(fit) : fit);
+    const x = placement?.x ?? Math.floor((width - this.width * scale) / 2);
+    const y = placement?.y ?? Math.floor((height - this.height * scale) / 2);
+    if (!this.dirty && width === this.lastWidth && height === this.lastHeight
+      && x === this.origin.value.x && y === this.origin.value.y && scale === this.scale.value) return;
+    this.lastWidth = width; this.lastHeight = height; this.dirty = false;
+    this.scale.value = scale; this.origin.value.set(x, y);
     this.renderer.setRenderTarget(null);
+    // Canvas contents from a previously presented frame cannot be used as a backdrop.
+    background?.();
     const clear = this.renderer.autoClear;
     if (this.overlay.value) this.renderer.autoClear = false;
     this.quad.render(this.renderer);

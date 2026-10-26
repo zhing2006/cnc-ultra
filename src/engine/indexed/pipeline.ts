@@ -573,6 +573,11 @@ export class PalettePipeline {
   render(view: View, scale: number) {
     this.drawIndices(view);
     this.scale.value = scale;
+    this.present();
+  }
+
+  /** Presents the retained view, including overlays, without rebuilding its index image. */
+  present() {
     this.presentPass.render(this.renderer);
   }
 

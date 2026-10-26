@@ -77,6 +77,10 @@ export interface Game {
   setPreferences(preferences: GamePreferences): void;
   canDebug(): boolean;
   isPaused(): boolean;
+  /** Visible battlefield in original pixels, excluding the sidebar and tabs. */
+  tacticalView(): { x: number; y: number; width: number; height: number; scale: number };
+  /** Draw the retained battlefield and interface beneath a paused presentation. */
+  drawBackground(): void;
   readDebugState(): Promise<DebugState>;
   applyDebugState(value: DebugState): void;
   saveState(): Promise<GameState>;
@@ -475,6 +479,11 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     setPerspective(value) { perspective?.setPerspective(value);spritesDirty=true; },
     setPaused(value) { paused = value || economy?.outcome!==undefined; input.enabled=!paused&&!nuclearFlash; syncPlayback(); if (!value) renderer.setFrame(drawFrame); },
     isPaused() { return paused; },
+    tacticalView() {
+      const top = sidebar ? 16 : 0;
+      return { x: 0, y: top, width: view.width - (sidebar?.width ?? 0), height: view.height - top, scale };
+    },
+    drawBackground() { pipeline.present(); },
     canDebug() { return !released && !nuclearFlash && !!economy && controlledOwner !== null && economy.outcome === undefined; },
     async readDebugState() {
       if (!economy || controlledOwner === null || !paused || released) throw new Error('Pause a playable mission before opening Debug');

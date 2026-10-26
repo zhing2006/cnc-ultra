@@ -2,6 +2,16 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { withApp, withInput, type Session } from './browser.ts';
 
+export async function checkCampaignOutcome(session: Session) {
+  await withApp(session, { path: '/tests/fixture.html' }, async page => {
+    for (const check of ['campaignOutcome', 'campaignOutcomeBackground'] as const) {
+      const result = await page.evaluate(async check => (await import('../tests/campaign-outcome-fixture.ts'))[check](), check);
+      for (const image of result.screenshots) await writeFile(`test-results/${image.name}.png`, Buffer.from(image.data, 'base64'));
+      assert.deepEqual(result.failures, []);
+    }
+  });
+}
+
 export async function checkCampaignStartup(session: Session) {
   await withApp(session, { path: '/tests/fixture.html' }, async page => {
     assert.deepEqual(await page.evaluate(async () => (await import('../tests/campaign-startup-fixture.ts')).campaignStartup()), []);

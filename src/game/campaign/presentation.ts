@@ -9,6 +9,7 @@ import { decodeFont } from '../formats/font.ts';
 import { CampaignMusic, resolveTheme } from './music.ts';
 import { drawControls, type ControlsPage } from './controls.ts';
 import type { GamePreferences } from '../options.ts';
+import type { Game } from '../game.ts';
 
 export interface CampaignCallbacks {
   buttons(buttons: readonly MenuButton[]): void;
@@ -184,12 +185,12 @@ export class CampaignPresentation {
     this.callbacks.buttons(result.buttons); return result.sliders;
   }
   /** SCENARIO.CPP Do_Win/Do_Lose use the original VCR font, centered on the tactical view. */
-  async outcome(won: boolean, palette: Uint8Array) {
+  async outcome(won: boolean, palette: Uint8Array, view: ReturnType<Game['tacticalView']>, background: () => void) {
     await this.interfaceReady;
     const font = decodeFont(await this.assets.bytes('VCR.FNT'));
     this.ui.pixels.fill(255);
     for (const [index, label] of ['MISSION', won ? 'ACCOMPLISHED' : 'FAILED'].entries()) {
-      let x = 240 - Math.trunc(Array.from(label).reduce((sum, ch) => sum + font.glyphs[ch.charCodeAt(0)].width, 0) / 2);
+      let x = 320 - Math.trunc(Array.from(label).reduce((sum, ch) => sum + font.glyphs[ch.charCodeAt(0)].width, 0) / 2);
       const y = 168 + index * 30;
       for (const ch of label) {
         const glyph = font.glyphs[ch.charCodeAt(0)];
@@ -198,7 +199,15 @@ export class CampaignPresentation {
         x += glyph.width;
       }
     }
-    this.screen.setOverlay(true); this.screen.set(this.ui.pixels, palette, 640, 400); this.showScreen();
+    this.screen.setOverlay(true); this.screen.set(this.ui.pixels, palette, 640, 400);
+    // SCENARIO.CPP Do_Win/Do_Lose: center on the tactical view, with the
+    // first line 32 pixels above its midpoint and the next line 30 pixels lower.
+    const placement = {
+      x: (view.x + Math.trunc(view.width / 2) - 320) * view.scale,
+      y: (view.y + Math.trunc(view.height / 2) - 200) * view.scale,
+      scale: view.scale,
+    };
+    this.renderer.setFrame((width, height) => this.screen.draw(width, height, placement, background));
     this.callbacks.status('outcome'); this.callbacks.buttons([]);
   }
   async score(side: CampaignSide, values: import('./score.ts').ScoreValues) {

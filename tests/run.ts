@@ -27,7 +27,7 @@ import { checkComputeBatch } from './compute-batch.ts';
 import { checkCampaignAssets, checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignTheaters,checkCampaignRouting,checkCampaignRendering } from './campaign.ts';
 import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
 import { checkDebug } from './debug.ts';
-import { checkCampaignStartup } from './campaign.ts';
+import { checkCampaignStartup, checkCampaignOutcome } from './campaign.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
@@ -80,6 +80,7 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Victory and defeat text follows the tactical viewport',checkCampaignOutcome],
     ['Airstrip and helipad deliveries preserve player orders',checkAirProductionOrders],
     ['Opening movie and faction input do not wait for unrelated assets',checkCampaignStartup],
     ['Player orders interrupt factory exits without blocking production',checkFactoryOrders],
