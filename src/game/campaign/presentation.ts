@@ -129,7 +129,7 @@ export class CampaignPresentation {
     this.clearTimers(); this.callbacks.status('options');
     this.paintFocus=id=>{
       this.ui.pixels.fill(255); this.ui.dialog(96, 100, 448, 200);this.ui.caption('Options',96,100,448,2);
-      for(const button of buttons)this.ui.box(button,button.id===id);
+      for(const button of buttons)this.ui.box(button,button.id===id,false,true);
       this.screen.setOverlay(true);this.screen.set(this.ui.pixels,palette,640,400);
     };this.paintFocus('resume');
     this.showScreen(); this.callbacks.buttons(buttons);
@@ -147,7 +147,7 @@ export class CampaignPresentation {
       x: choices.length === 1 ? Math.trunc(320 - buttonWidth / 2) : index === 0 ? x + 20 : index === choices.length - 1 ? x + width - buttonWidth - 20 : Math.trunc(320 - buttonWidth / 2),
       y: y + height - 30, width: buttonWidth, height: 20 }));
     const background=this.ui.pixels.slice();
-    this.paintFocus=id=>{this.ui.pixels.set(background);for(const button of buttons)this.ui.box(button,button.id===id);this.screen.setOverlay(true);this.screen.set(this.ui.pixels,palette,640,400);};
+    this.paintFocus=id=>{this.ui.pixels.set(background);for(const button of buttons)this.ui.box(button,button.id===id,false,true);this.screen.setOverlay(true);this.screen.set(this.ui.pixels,palette,640,400);};
     this.paintFocus(buttons[0].id);this.showScreen();this.callbacks.buttons(buttons);
     return new Promise<string>(resolve => { this.dialogSelection = id => { this.dialogSelection = undefined; this.callbacks.buttons([]); resolve(id); }; });
   }
@@ -166,7 +166,7 @@ export class CampaignPresentation {
         buttons.push({ id: 'message:previous', label: '<', x: 100, y: 330, width: 40, height: 18, disabled: page === 0 },
           { id: 'message:cancel', label: 'Cancel', x: 245, y: 330, width: 150, height: 18 },
           { id: 'message:next', label: '>', x: 500, y: 330, width: 40, height: 18, disabled: (page + 1) * 10 >= names.length });
-        for (const button of buttons) this.ui.box(button, false);
+        for (const button of buttons) this.ui.box(button, false, false, true);
         this.screen.setOverlay(true); this.screen.set(this.ui.pixels, palette, 640, 400); this.showScreen(); this.callbacks.buttons(buttons);
       };
       this.dialogSelection = id => {

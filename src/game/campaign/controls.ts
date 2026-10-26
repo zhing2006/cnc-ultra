@@ -53,9 +53,9 @@ export function drawControls(ui: OriginalInterface, page: ControlsPage, settings
     for (let y = 0; y < item.height; y++) ui.pixels.fill(y === 0 ? 12 : y === item.height - 1 ? 14 : 0,
       (item.y + y) * 640 + item.x, (item.y + y) * 640 + item.x + item.width);
     const width=Math.max(4,Math.trunc(item.width*item.thumb/item.range+0.5));
-    ui.box({ id: '', label: '', x: item.x + Math.min(item.width-width,Math.trunc(item.value*item.width/item.range+0.5)), y: item.y, width, height: item.height }, false);
+    ui.box({ id: '', label: '', x: item.x + Math.min(item.width-width,Math.trunc(item.value*item.width/item.range+0.5)), y: item.y, width, height: item.height }, false, false, true);
     for(const direction of [-1,1]){const icon=direction<0?'BTN-MINS.SHP':'BTN-PLUS.SHP',size=ui.iconSize(icon);buttons.push({id:`slider:${item.id}:${direction}`,label:`${direction<0?'Decrease':'Increase'} ${item.label}`,x:direction<0?item.x-6:item.x+item.width+2,y:item.y,...size,icon});}
   }
-  for (const item of buttons)if(!item.id.startsWith('track:'))ui.box(item,item.id===focus);
+  for (const item of buttons)if(!item.id.startsWith('track:'))ui.box(item,item.id===focus,false,true);
   return { buttons, sliders };
 }

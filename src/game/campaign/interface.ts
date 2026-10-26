@@ -54,12 +54,12 @@ export class OriginalInterface {
       cursor += glyph.width - 1;
     }
   }
-  /** DIALOG.CPP, Draw_Box and CONQUER.CPP, CC_Texture_Fill. */
-  box(button: MenuButton, focused: boolean, pressed = false) {
+  /** DIALOG.CPP, Draw_Box selects BTEXTURE's frame with InMainLoop before CC_Texture_Fill. */
+  box(button: MenuButton, focused: boolean, pressed = false, inGame = false) {
     if(button.icon&&this.icons.has(button.icon)){this.icon(button.icon,pressed?1:0,button.x,button.y);return;}
     const { x, y, width, height } = button, texture = this.texture;
     for (let dy = 0; dy < height; dy++) for (let dx = 0; dx < width; dx++) {
-      let color = button.disabled ? 12 : texture.frames[0][(dy % texture.height) * texture.width + dx % texture.width];
+      let color = button.disabled ? 12 : texture.frames[inGame ? 1 : 0][(dy % texture.height) * texture.width + dx % texture.width];
       if (dy === height - 1 || dx === width - 1) color = pressed ? 14 : 12;
       if (dy === 0 || dx === 0) color = pressed ? 12 : 14;
       if (dx === 0 && dy === height - 1 || dx === width - 1 && dy === 0) color = 13;
