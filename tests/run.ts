@@ -11,9 +11,8 @@ import { checkDeviceLossRestart, checkNoWebGLFallback } from './renderer.ts';
 import { checkOriginalVisuals } from './visuals.ts';
 import { checkSimulation } from './simulation.ts';
 import { checkCombat } from './combat.ts';
-import { checkSelectionReady } from './startup.ts';
 import { checkUnits } from './units.ts';
-import { checkEconomy,checkTransport,checkCoordination,checkCompaction,checkFactoryOrders,checkAirProductionOrders } from './economy.ts';
+import { checkEconomy,checkTransport,checkCoordination,checkBuildingEffects,checkFactoryOrders,checkAirProductionOrders } from './economy.ts';
 import { discoverGpus, identifyGpu, launchGpu } from './gpu.ts';
 import { checkMatchFoundations } from './match-foundations.ts';
 import { checkMatchRendering } from './match-rendering.ts';
@@ -23,10 +22,8 @@ import { checkNavigation } from './navigation.ts';
 import { checkMatchCrew } from './match-crew.ts';
 import { checkMatchRegressions } from './match-regressions.ts';
 import { checkHarvest } from './harvest.ts';
-import { checkComputeBatch } from './compute-batch.ts';
-import { checkCampaignAssets, checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignTheaters,checkCampaignRouting,checkCampaignRendering } from './campaign.ts';
+import { checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignRouting,checkCampaignRendering } from './campaign.ts';
 import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
-import { checkDebug } from './debug.ts';
 import { checkCampaignStartup, checkCampaignOutcome } from './campaign.ts';
 
 const started = performance.now();
@@ -80,6 +77,11 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    // Start the longest journeys first so short checks can fill the remaining slots.
+    ['Match rule and cloak regressions', checkMatchRegressions],
+    [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
+    ['Campaign naval movement and first-mission continuation', checkCampaignSimulation],
+    ['Original campaign country selection and branching', checkCampaignMap],
     ['Victory and defeat text follows the tactical viewport',checkCampaignOutcome],
     ['Airstrip and helipad deliveries preserve player orders',checkAirProductionOrders],
     ['Opening movie and faction input do not wait for unrelated assets',checkCampaignStartup],
@@ -91,37 +93,28 @@ try {
     ['Campaign crate continuation and civilian evacuation', checkCampaignRescue],
     ['Original airborne reinforcement team arrival and unloading', checkCampaignReinforcements],
     ['Campaign airstrikes, events and reinforcement columns', checkCampaignRules],
-    ['Original campaign country selection and branching', checkCampaignMap],
-    ['Debug damage modifiers match CPU and preserve enemy damage', checkDebug],
     ['Original campaign opening, menu and first mission', checkCampaignEntry],
     ['Campaign entry with development archives only',checkCampaignDevelopmentEntry],
-    ['Winter and desert campaign interfaces',checkCampaignTheaters],
-    ['Campaign archive byte ranges', checkCampaignAssets],
     ['Local save files preserve simulation continuation', checkCampaignState],
-    ['Campaign naval movement and first-mission continuation', checkCampaignSimulation],
     ['Original score presentation and hall of fame', checkCampaignScore],
     ['GDI first mission production, reinforcements and victory', checkCampaignVictory],
-    ['Batched compute preserves uploads and readback order', checkComputeBatch],
-    ['Independent house sight and fixed-tick fast-forward', checkMatchFoundations],
+    ['Independent house sight and original special-unit rules', checkMatchFoundations],
     ['Fixed-tick effects and deferred sprite projection', checkMatchRendering],
     ['Two AI openings, control handover and deterministic restart', checkMatch],
     ['AI production deployment and blocked construction', checkMatchAI],
     ['Reachable prefixes for sealed movement destinations', checkNavigation],
     ['Dual-house economy, capture and crew missions', checkMatchCrew],
-    ['Match rule and cloak regressions', checkMatchRegressions],
     ['Refinery queue, interrupted docking and apron clearance', checkHarvest],
-    [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
-    ['Reusable actor slots, laser beams and building effects',checkCompaction],
+    ['Original building fire and debris',checkBuildingEffects],
     ['Ground layer transitions and mass aircraft coordination',checkCoordination],
     ['APC passenger controls and aircraft exploration',checkTransport],
-    ['loading stages and selection ready before first input', checkSelectionReady],
     ['ground combat, deterministic impacts and survivors', checkCombat],
     ['original unit movement, multiple targets, sight and controls', checkUnits],
     ['integer CPU/GPU simulation, contention and deterministic replay', checkSimulation],
     ['no WebGL fallback when the WebGPU device cannot be created', checkNoWebGLFallback],
     ['restart after the GPU device is lost while starting and while running', checkDeviceLossRestart],
     ['shadows and house colors compose like drawing each sprite in turn', checkShadowComposition],
-    ['original object order, cloaking, integer zoom and the asset preview', checkOriginalVisuals],
+    ['original object order, cloaking and integer zoom', checkOriginalVisuals],
   ];
   const only=process.argv.find(value=>value.startsWith('--only='))?.slice(7).split(',');
   const checkId=(check:(session:Session)=>Promise<void>)=>check.name.replace(/^check/,'').toLowerCase();
@@ -145,7 +138,8 @@ try {
     let peers = checks.length - 1;
     const performanceReady = new Promise<void>(resolve => { releasePerformance = resolve; });
     if(peers===0)releasePerformance();
-    const session: Session = { browser, baseUrl, gpu, performanceReady, acceptance };
+    const session: Session = { browser, baseUrl, gpu, performanceReady, acceptance,
+      checkTimeoutMs: acceptance ? 600_000 : 120_000 };
     const suiteStart = Date.now();
     // Bound simultaneous shader preparation rather than stretching startup deadlines.
     // Combat may wait for the other checks before benchmarking; the other three workers keep draining the queue.

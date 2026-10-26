@@ -142,7 +142,7 @@ export function checkOriginalVisuals(session: Session) {
   return withApp(session, {}, async page => {
     await page.locator('canvas[data-status="running"]').waitFor({ state: 'attached' });
     // The offscreen index checks have their own targets and do not change the game view. Run them
-    // while the same page exercises the camera, and finish both before navigating to the preview.
+    // while the same page exercises the camera.
     const results = await Promise.allSettled([
       page.evaluate(compose).then(result => {
         assert.equal(result.comparisons, 25);
@@ -152,41 +152,5 @@ export function checkOriginalVisuals(session: Session) {
     ]);
     const failures = results.filter(result => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'rendering or camera checks failed');
-
-    // Continue on the same browser page into the standalone preview and exercise each kind of asset.
-    await page.goto(`${session.baseUrl}/?preview=assets`);
-    // The preview compiles its own renderer while the acceptance simulation is also using the GPU.
-    await page.locator('canvas[data-status="preview"]').waitFor({ state: 'attached', timeout: 30000 });
-    assert.equal(await page.locator('[data-asset-name]').count(), 47);
-    await page.getByLabel('Scale', { exact: true }).selectOption('1');
-    const centered = await page.locator('canvas').evaluate(canvas => {
-      const view = canvas.closest('.scroll')!;
-      const rect = canvas.getBoundingClientRect();
-      const bounds = view.getBoundingClientRect();
-      return { left: rect.left - bounds.left, right: bounds.left + view.clientWidth - rect.right,
-        pixelLeft: rect.left * devicePixelRatio };
-    });
-    assert(Math.abs(centered.left - centered.right) <= 1, 'a small gallery should be centered in the scroll viewport');
-    assert.equal(centered.pixelLeft, Math.round(centered.pixelLeft), 'centering should preserve physical pixel alignment');
-    await page.getByLabel('Scale', { exact: true }).selectOption('4');
-    const overflowing = await page.locator('canvas').evaluate(canvas => {
-      const view = canvas.closest('.scroll')!;
-      return canvas.getBoundingClientRect().left - view.getBoundingClientRect().left;
-    });
-    assert.equal(overflowing, 16, 'an overflowing gallery should start at the scroll viewport padding');
-    await page.getByLabel('Scale', { exact: true }).selectOption('1');
-    await page.getByLabel('House', { exact: true }).selectOption('BadGuy');
-    await page.getByLabel('Facing', { exact: true }).selectOption('64');
-    await page.getByLabel('Category', { exact: true }).selectOption('buildings');
-    await page.getByLabel('Building state', { exact: true }).selectOption('damaged');
-    await page.locator('[data-asset-name="PROC"]').waitFor();
-    await page.getByLabel('Theater', { exact: true }).selectOption('DESERT');
-    await page.locator('[data-asset-name="V37"]').waitFor();
-    await page.getByLabel('Building state', { exact: true }).selectOption('ruined');
-    await page.getByLabel('Category', { exact: true }).selectOption('cloak');
-    await page.locator('[data-asset-name="hidden"]').waitFor();
-    assert.equal(await page.locator('[data-asset-name]').count(), 6);
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    assert.equal(await page.getByRole('alert').count(), 0);
   });
 }

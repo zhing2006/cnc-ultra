@@ -18,6 +18,8 @@ export interface Session {
   gpu?: GpuEnvironment;
   /** Full milestone journeys and GPU cost measurements run only in acceptance. */
   acceptance?: boolean;
+  /** The suite bounds checks; standalone diagnostic runs choose their own duration. */
+  checkTimeoutMs?: number;
   /** Performance samples wait until other checks stop using the GPU. */
   performanceReady?: Promise<void>;
 }
@@ -52,6 +54,10 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
   // An animation-loop error can stop a fixture before its completion promise
   // settles. Report it immediately instead of waiting forever for another tick.
   void pageFailed.catch(()=>{});
+  // Locator deadlines do not cover page.evaluate or a fixture waiting for a lost tick.
+  const timeoutMs = session.checkTimeoutMs;
+  const timeout = timeoutMs === undefined ? undefined
+    : setTimeout(() => failPage(new Error(`Browser check exceeded ${timeoutMs / 1000}s`)), timeoutMs);
   const record=(message:string)=>{
     errors.push(message);
     if(!(options.expectedErrors??[]).some(pattern=>pattern.test(message)))failPage(new Error(message));
@@ -63,8 +69,10 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
   });
   try {
     if (options.init) await page.addInitScript(options.init);
-    await page.goto(`${session.baseUrl}${options.path ?? '/?render=map'}`);
-    await Promise.race([check(page),pageFailed]);
+    await Promise.race([
+      page.goto(`${session.baseUrl}${options.path ?? '/?render=map'}`).then(() => check(page)),
+      pageFailed,
+    ]);
   } catch(error) {
     console.error('Browser failure state:', await page.evaluate(() => ({
       url: location.href, hidden: document.hidden,
@@ -75,6 +83,7 @@ export async function withApp(session: Session, options: AppOptions, check: (pag
     if(unexpected.length)throw new AggregateError([error,...unexpected.map(text=>new Error(text))],'Browser check and page errors');
     throw error;
   } finally {
+    clearTimeout(timeout);
     await page.close();
   }
   const expected = options.expectedErrors ?? [];

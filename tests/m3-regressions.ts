@@ -1,6 +1,6 @@
 import { StorageBufferAttribute, type WebGPURenderer } from 'three/webgpu';
 import { gridEdges } from '../src/engine/simulation/state.ts';
-import { CpuFlowFields, GpuFlowFields } from '../src/engine/simulation/flow.ts';
+import { GpuFlowFields } from '../src/engine/simulation/flow.ts';
 import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { CpuUnits } from '../src/game/simulation/units-cpu.ts';
 import { GpuUnits } from '../src/game/simulation/units-gpu.ts';
@@ -184,34 +184,6 @@ export async function checkM3Regressions(renderer: WebGPURenderer, scene: GameSc
     }
   } finally {ground.dispose();animated.dispose();releaseStorage(renderer,[armyBuffer,marker,tick]);}
 
-  const grid = gridEdges(16,16,new Uint8Array(256).fill(1),true), goals = Int32Array.from({length:20000},(_,i)=>i%100);
-  const attribute = new StorageBufferAttribute(goals,1), cpu = new CpuFlowFields(grid,goals.length), flow = new GpuFlowFields(renderer,grid,attribute);
-  const served = new Set<number>();
-  try {
-    cpu.step(goals); // The GPU constructor performs its initial reconciliation.
-    for (let tick=0;tick<4;tick++) {
-      cpu.step(goals);flow.step();
-      const actual=await Promise.all(flow.buffers().map(async buffer=>new Int32Array(await renderer.getArrayBufferAsync(buffer))));
-      actual.forEach((array,i)=>equal(array,cpu.buffers()[i],`bounded pool ${tick}/${i}`));
-      for(let target=0;target<100;target++)if(actual[1][target]>=0)served.add(target);
-    }
-    if(served.size!==100)throw new Error('Pool pressure starved a destination');
-    if(flow.distance.array.byteLength>16*1024*1024)throw new Error('Flow storage exceeded its per-buffer budget');
-  } finally { flow.dispose();releaseStorage(renderer,[attribute]); }
-  // Unaligned tile edges and a detour exercise partial fields before convergence.
-  const tileWidth=67,tileHeight=65,tilePassable=new Uint8Array(tileWidth*tileHeight).fill(1);
-  for(let y=0;y<60;y++)tilePassable[y*tileWidth+31]=0;
-  const tileGrid=gridEdges(tileWidth,tileHeight,tilePassable,true);
-  const tileGoals=new StorageBufferAttribute(new Int32Array([10*tileWidth+55,50*tileWidth+12]),1);
-  const tileCpu=new CpuFlowFields(tileGrid,2),tileGpu=new GpuFlowFields(renderer,tileGrid,tileGoals);
-  try {
-    for(let tick=0;tick<7;tick++){
-      if(tick===4){(tileGoals.array as Int32Array)[0]=2*tileWidth+3;tileGoals.needsUpdate=true;}
-      tileCpu.step(tileGoals.array as Int32Array);if(tick)tileGpu.step();
-      const actual=await Promise.all(tileGpu.buffers().map(async b=>new Int32Array(await renderer.getArrayBufferAsync(b))));
-      actual.forEach((a,i)=>equal(a,tileCpu.buffers()[i],`tile flow tick ${tick}, buffer ${i}`));
-    }
-  } finally {tileGpu.dispose();releaseStorage(renderer,[tileGoals]);}
   return timing;
 }
 

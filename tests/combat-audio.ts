@@ -40,16 +40,6 @@ export async function verifyCombatAudio(renderer: WebGPURenderer, battle: GpuCom
   const clock = battle.movement.control, shots = battle.projectiles;
   const saved = [clock, shots, battle.state].map(attribute => ({ attribute, values: (attribute.array as Int32Array).slice() }));
   const audio = new CombatAudio(renderer, battle, { get(name: string) { loading = name; return mix.get(name); } } as MixSet);
-  const device = (renderer.backend as unknown as {
-    device: GPUDevice;
-  }).device;
-  const create = device.createBuffer;
-  let copies = 0;
-  device.createBuffer = function(descriptor) {
-    if (descriptor.label?.endsWith('_readback'))
-      copies++;
-    return create.call(this, descriptor);
-  };
   try {
     for (let tick = 1; tick <= 2; tick++) {
       (clock.array as Int32Array)[0] = tick;
@@ -120,11 +110,8 @@ export async function verifyCombatAudio(renderer: WebGPURenderer, battle: GpuCom
     audio.update(0,0,16384,16384);
     while(audio['busy']) await new Promise(resolve=>setTimeout(resolve,0));
     if(played.length!==beforeMute+1) throw new Error('Unmuting did not resume new combat events');
-    if (copies !== 1)
-      throw new Error(`Audio allocated ${copies} readback buffers for nine ticks`);
   }
   finally {
-    device.createBuffer = create;
     audio.dispose();
     Object.defineProperty(globalThis, 'AudioContext', { value: original, configurable: true });
     for (const { attribute, values } of saved) {

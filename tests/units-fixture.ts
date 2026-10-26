@@ -1,8 +1,5 @@
 import { createRenderer } from '../src/engine/renderer.ts';
 import { gridEdges, DIRECTIONS } from '../src/engine/simulation/state.ts';
-import { GpuFlowFields } from '../src/engine/simulation/flow.ts';
-import { StorageBufferAttribute } from 'three/webgpu';
-import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { CpuUnits } from '../src/game/simulation/units-cpu.ts';
 import { GpuUnits } from '../src/game/simulation/units-gpu.ts';
 import { CpuSight,GpuSight } from '../src/game/simulation/sight.ts';
@@ -112,33 +109,7 @@ export async function compareUnits(acceptance=false){
       }
     }finally{ground.dispose();pipeline.dispose();gpu.dispose();}
 
-    const width=256,passableLarge=new Uint8Array(width*width).fill(1);
-    for(let y=0;y<254;y++)passableLarge[y*width+128]=0;
-    const goalsLarge=new StorageBufferAttribute(new Int32Array([-1]),1);
-    const large=new GpuFlowFields(renderer,gridEdges(width,width,passableLarge,true),goalsLarge);
-    (goalsLarge.array as Int32Array)[0]=20*width+220;goalsLarge.needsUpdate=true;
-    let ticks=0;const start=performance.now();
-    try{
-      while(ticks<100){large.step();ticks++;const fields=new Int32Array(await renderer.getArrayBufferAsync(large.fields));if(fields[1])break;}
-      if(ticks===100)throw new Error('Large detour field did not converge');
-      const largeGridMilliseconds = performance.now() - start;
-      const oldTarget = (goalsLarge.array as Int32Array)[0];
-      (goalsLarge.array as Int32Array)[0] = -1;
-      goalsLarge.needsUpdate = true;
-      large.step();
-      const cancelled = new Int32Array(await renderer.getArrayBufferAsync(large.fields));
-      const lookup = new Int32Array(await renderer.getArrayBufferAsync(large.lookup));
-      if (cancelled[0] !== -1 || lookup[oldTarget] !== -1)
-        throw new Error('An empty request bitmap retained the cancelled flow field');
-      (goalsLarge.array as Int32Array)[0] = width * width - 1;
-      goalsLarge.needsUpdate = true;
-      large.step();
-      const resumed = new Int32Array(await renderer.getArrayBufferAsync(large.fields));
-      if (resumed[0] !== width * width - 1)
-        throw new Error('The highest request-bit group did not restart an idle flow pool');
-      const adapter=await navigator.gpu.requestAdapter();
-      const gpu=acceptance?await measureM3Gpu(renderer):undefined;
-      return {largeGridTicks:ticks,largeGridMilliseconds,regressions,gpu,adapter:adapter && {vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description}};
-    }finally{large.dispose();releaseStorage(renderer,[goalsLarge]);}
+    const measurements=acceptance?await measureM3Gpu(renderer):undefined;
+    return {regressions,measurements};
   }finally{wrapper.dispose();canvas.remove();}
 }

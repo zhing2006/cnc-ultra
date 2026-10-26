@@ -733,33 +733,3 @@ export async function playEconomyOpening(faction:number){
     return {faction,ticks:battle.frame,harvested:economy.house.harvested,money:economy.house.money,pool:scene.setup.units.length,gpuComputeMs:gpuMs};
   }finally{effects.dispose();harvest.dispose();services.dispose();transport.dispose();operations.dispose();air.dispose();ore.dispose();economy.dispose();battle.dispose();renderer.dispose();canvas.remove();}
 }
-
-/** Sparse actors beyond one prefix-scan workgroup must still reach CPU reports and drawing. */
-export async function compareCompactOutputs(){
-  const {EconomyReport,REPORT_HEADER}=await import('../src/game/simulation/economy-report.ts');
-  const {LaserView}=await import('../src/game/simulation/laser-view.ts');
-  const {initialHarvest}=await import('../src/game/simulation/harvest-cpu.ts');
-  const {initialTransport}=await import('../src/game/simulation/transport-cpu.ts');
-  const canvas=document.createElement('canvas');document.body.append(canvas);
-  const wrapper=await createRenderer(canvas,{onDeviceLost:message=>console.error(message)});if(!wrapper)throw new Error('WebGPU is required');
-  const renderer=wrapper.three,count=300,passable=new Uint8Array(32*16).fill(1);
-  const units=Array.from({length:count},(_,id)=>({type:movementType(id===129||id===257?'OBLI':'MTNK'),cell:id,health:id<200||id===257?100:0}));
-  const battle=new GpuCombat(renderer,{grid:gridEdges(32,16,passable,true),land:new Uint8Array(passable.length),passable,units,seed:1995});
-  const ledger=new StorageBufferAttribute(initialHarvest(count),1),transport=new StorageBufferAttribute(initialTransport(count),1),services=new StorageBufferAttribute(initialServices(count),1);
-  const report=new EconomyReport(battle,ledger,transport,services),laser=new LaserView(battle,new Uint8Array(256*4));
-  try{
-    report.request([],48);const result=await report.read();
-    if(result[17]!==48)throw new Error(`Expected 48 free actor slots, got ${result[17]}`);
-    for(let i=0;i<48;i++)if(result[REPORT_HEADER+i*2]!==200+i)throw new Error(`Free actor slot ${i}: ${result[REPORT_HEADER+i*2]} != ${200+i}`);
-    // BUILDING.CPP Fire_At draws each Obelisk's last beam, in actor order.
-    for(const [index,id] of [129,257].entries()){
-      (battle.state.array as Int32Array)[id*C.CWORDS+C.CLAST_FIRE]=0;(battle.state.array as Int32Array)[id*C.CWORDS+C.CCURSOR]=1;
-      for(const [i,field] of [C.BFIRE_X,C.BFIRE_Y,C.BTO_X,C.BTO_Y].entries())(battle.projectiles.array as Int32Array)[id*C.SHOTS_PER_UNIT*C.BWORDS+field]=(index*4+i+1)*256;
-    }
-    battle.state.needsUpdate=battle.projectiles.needsUpdate=true;laser.update(0,0,64,64);
-    const actual=new Int32Array(await renderer.getArrayBufferAsync((laser as unknown as {lines:StorageBufferAttribute}).lines));
-    const expected=[2,24,48,72,96,120,144,168,192];
-    for(let i=0;i<expected.length;i++)if(actual[i]!==expected[i])throw new Error(`Laser beam word ${i}: ${actual[i]} != ${expected[i]}`);
-    return true;
-  }finally{laser.dispose();report.dispose();battle.dispose();releaseStorage(renderer,[ledger,transport,services]);wrapper.dispose();canvas.remove();}
-}

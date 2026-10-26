@@ -1,4 +1,5 @@
 import { gridEdges } from '../src/engine/simulation/state.ts';
+import { batchCompute } from '../src/engine/compute-batch.ts';
 import { BUILDINGS } from '../src/game/data/buildings.ts';
 import { MOVEMENT, movementType } from '../src/game/data/movement.ts';
 import { CpuCombat } from '../src/game/simulation/combat-cpu.ts';
@@ -53,10 +54,15 @@ export async function compareFactoryOrders() {
         if (id !== 1) applyLifecycle(cpu, (lifecycle.commands.array as Int32Array).slice());
         lifecycle.flush();
       };
-      const advance = (orders: (U.UnitCommand | C.AttackCommand)[] = []) => { step(orders); service.step(0); gpu.step(orders); };
+      const advance = (orders: (U.UnitCommand | C.AttackCommand)[] = []) => {
+        step(orders);
+        batchCompute(renderer, () => { service.step(0); gpu.step(orders); });
+      };
       const compare = async () => {
-        for (const [buffer, expected] of [[gpu.units, cpu.units], [gpu.state, cpu.state], [service.state, services], [gpu.movement.goals, cpu.movement.goals]] as const) {
-          const actual = new Int32Array(await renderer.getArrayBufferAsync(buffer));
+        const pairs = [[gpu.units, cpu.units], [gpu.state, cpu.state], [service.state, services], [gpu.movement.goals, cpu.movement.goals]] as const;
+        const snapshots = await Promise.all(pairs.map(async ([buffer]) => new Int32Array(await renderer.getArrayBufferAsync(buffer))));
+        for (const [index, [, expected]] of pairs.entries()) {
+          const actual = snapshots[index];
           const word = actual.findIndex((value, i) => value !== expected[i]);
           if (word >= 0) throw new Error(`${name}/${timing} tick ${cpu.frame}, word ${word}: ${actual[word]} != ${expected[word]}`);
         }
@@ -65,14 +71,24 @@ export async function compareFactoryOrders() {
         await gpu.prepareForPlay(); create(1); advance();
         if (timing === 'moving') for (let tick = 0; tick < 100 && cpu.units[U.WORDS + U.UDEST] < 0; tick++) advance();
         advance([{ frame: cpu.frame + 1, kind: 'move', target, ids: [1] }]);
-        for (let tick = 0; tick < 800; tick++) { advance(); if (tick % 100 === 0) await compare(); }
+        await compare();
+        for (let tick = 0; tick < 800; tick++) {
+          advance();
+          if (cpu.units[U.WORDS + U.UCELL] === target && cpu.units[U.WORDS + U.UENTER] === 0
+            && cpu.units[U.WORDS + U.UDEST] < 0) break;
+        }
         await compare();
         if (cpu.units[U.WORDS + U.UCELL] !== target || cpu.units[U.WORDS + U.UENTER] !== 0) throw new Error(`${name}/${timing} did not retain the player's destination`);
         report.request([0], 0);
         const facts = await report.read();
         if (facts[report.header + 4] !== 0) throw new Error(`${name}/${timing} still reports its factory busy and would leave production Ready`);
         create(2);
-        for (let tick = 0; tick < 250; tick++) advance();
+        for (let tick = 0; tick < 250; tick++) {
+          advance();
+          if (cpu.units[2 * U.WORDS + U.UENTER] === 0) break;
+        }
+        // Allow the first unit's next mission to run after the factory releases another unit.
+        for (let tick = 0; tick < 40; tick++) advance();
         await compare();
         if (cpu.units[2 * U.WORDS + U.UHEALTH] <= 0 || cpu.units[2 * U.WORDS + U.UENTER] !== 0) throw new Error(`${name}/${timing} cannot release the next produced unit`);
         if (cpu.units[U.WORDS + U.UCELL] !== target) throw new Error(`${name}/${timing} sent the first unit back to its factory`);
@@ -133,14 +149,22 @@ export async function compareAirProductionOrders() {
             ? [{ frame: cpu.frame + 1, kind: 'move', target, ids: [2] }] : [];
           commanded ||= orders.length > 0;
           stepTransport(cpu, air.state, transportState, pending, playable); ops.before(); air.step(); cpu.step(orders); ops.after();
-          gpu.movement.beginOccupancyEdits(); transport.step(); gpuOps.before(); flight.step(); gpu.movement.endOccupancyEdits(); gpu.step(orders); gpuOps.after();
-          if (tick % 100 === 0 || tick === 899) for (const [label, buffer, expected] of [
-            ['units', gpu.units, cpu.units], ['combat', gpu.state, cpu.state], ['aircraft', flight.state, air.state], ['transport', transport.state, transportState], ['goals', gpu.movement.goals, cpu.movement.goals],
-          ] as const) {
-            const actual = new Int32Array(await wrapper.three.getArrayBufferAsync(buffer));
-            const word = actual.findIndex((value, i) => value !== expected[i]);
-            if (word >= 0) throw new Error(`${delivery} tick ${tick}, ${label} word ${word}: ${actual[word]} != ${expected[word]}`);
+          batchCompute(wrapper.three, () => {
+            gpu.movement.beginOccupancyEdits(); transport.step(); gpuOps.before(); flight.step(); gpu.movement.endOccupancyEdits(); gpu.step(orders); gpuOps.after();
+          });
+          const arrived = commanded && cpu.units[2 * U.WORDS + U.UCELL] === target && cpu.units[2 * U.WORDS + U.UENTER] === 0
+            && cpu.units[2 * U.WORDS + U.UATTACHED] === 0 && cpu.movement.goals[2] < 0;
+          if (tick % 100 === 0 || tick === 899 || arrived) {
+            const pairs = [
+              ['units', gpu.units, cpu.units], ['combat', gpu.state, cpu.state], ['aircraft', flight.state, air.state], ['transport', transport.state, transportState], ['goals', gpu.movement.goals, cpu.movement.goals],
+            ] as const;
+            const snapshots = await Promise.all(pairs.map(async ([, buffer]) => new Int32Array(await wrapper.three.getArrayBufferAsync(buffer))));
+            for (const [index, [label, , expected]] of pairs.entries()) {
+              const actual = snapshots[index], word = actual.findIndex((value, i) => value !== expected[i]);
+              if (word >= 0) throw new Error(`${delivery} tick ${tick}, ${label} word ${word}: ${actual[word]} != ${expected[word]}`);
+            }
           }
+          if (arrived) break;
         }
         if (!commanded || cpu.units[2 * U.WORDS + U.UCELL] !== target || cpu.units[2 * U.WORDS + U.UENTER] !== 0
           || cpu.units[2 * U.WORDS + U.UATTACHED] !== 0 || cpu.movement.goals[2] >= 0) throw new Error(`${delivery} replaced the player's destination or retained a factory contact`);

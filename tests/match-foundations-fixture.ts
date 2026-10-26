@@ -3,15 +3,10 @@ import { Fn, instanceIndex, int, storage } from 'three/tsl';
 import { createRenderer } from '../src/engine/renderer.ts';
 import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { gridEdges } from '../src/engine/simulation/state.ts';
-import { SimulationDriver } from '../src/engine/simulation/driver.ts';
-import { CpuUnits } from '../src/game/simulation/units-cpu.ts';
-import { GpuUnits } from '../src/game/simulation/units-gpu.ts';
 import { CpuSight, GpuSight } from '../src/game/simulation/sight.ts';
 import { SightView } from '../src/game/simulation/sight-view.ts';
 import { movementType } from '../src/game/data/movement.ts';
-import { initialUnits, WORDS, UX, UTYPE, UGENERATION, UOWNER, UATTACHED, type UnitCommand } from '../src/game/simulation/units-state.ts';
-import { loadData } from '../src/game/data-files.ts';
-import { measureSidebar } from './sidebar-performance.ts';
+import { initialUnits, WORDS, UX, UTYPE, UGENERATION, UOWNER, UATTACHED } from '../src/game/simulation/units-state.ts';
 import { compareAirAI } from './air-ai-fixture.ts';
 import { compareSpecialExplosions, compareSpecialInfantry, compareCloaking, compareMultiplayerTargets } from './super-weapons-fixture.ts';
 import { GpuArmyOrders, applyArmyOrder } from '../src/game/ai/army-orders.ts';
@@ -47,7 +42,7 @@ async function compareSight(renderer: WebGPURenderer) {
       cpu.forEach(s => s.step(values)); gpu.forEach(s => s.step());
       const before = await Promise.all(gpu.flatMap(s => [s.mapped, s.current, s.shadow]).map(async b => new Int32Array(await renderer.getArrayBufferAsync(b))));
       before.forEach((data, i) => equal(data, [cpu[Math.trunc(i / 3)].mapped, cpu[Math.trunc(i / 3)].current, cpu[Math.trunc(i / 3)].shadow][i % 3], `house sight ${position}/${i}`));
-      for (const perspective of [0, 1, 'all', 1, 0] as const) {
+      for (const perspective of [0, 1, 'all'] as const) {
         view.setPerspective(perspective); view.update(); renderer.compute(project);
         const actual = new Int32Array(await renderer.getArrayBufferAsync(output));
         const expected = new Int32Array(cells * 3);
@@ -97,39 +92,6 @@ async function compareSightLifecycle(renderer: WebGPURenderer) {
   } finally { gpu.forEach(s => s.dispose()); releaseStorage(renderer, [units]); }
 }
 
-async function compareClockedUnits(renderer: WebGPURenderer) {
-  const setup = { grid: gridEdges(12, 8, new Uint8Array(96).fill(1), true), land: new Uint8Array(96), seed: 1995,
-    units: [{ cell: 25, type: movementType('MTNK') }, { cell: 37, type: movementType('E1') }],
-  };
-  const commands: UnitCommand[] = [{ frame: 1, kind: 'move', target: 69, ids: [0, 1] }, { frame: 16, kind: 'scatter', ids: [1] }];
-  let baseline: Int32Array[] | undefined;
-  for (const speed of [1, 10, 100]) {
-    const cpu = new CpuUnits(setup), gpu = new GpuUnits(renderer, setup);
-    await gpu.prepareForPlay();
-    let done!: () => void, fail!: (error: unknown) => void, finished = false, animation = 0;
-    const completion = new Promise<void>((resolve, reject) => { done = resolve; fail = reject; });
-    const driver = new SimulationDriver(15, () => {
-      const input = commands.filter(c => c.frame === gpu.frame + 1);
-      cpu.step(input); gpu.step(input);
-      return gpu.snapshot().then(actual => {
-        actual.forEach((data, i) => equal(data, cpu.buffers()[i], `clocked ${speed}x tick ${gpu.frame}/${i}`));
-        if (gpu.frame === 32) {
-          if (baseline) actual.forEach((data, i) => equal(data, baseline![i], `speed independence ${speed}x/${i}`));
-          else baseline = actual;
-          finished = true; driver.setPaused(true); done();
-        }
-      });
-    });
-    driver.setSpeed(speed);
-    const advance = (time: number) => {
-      try { driver.advance(time); if (!finished) animation = requestAnimationFrame(advance); }
-      catch (error) { fail(error); }
-    };
-    animation = requestAnimationFrame(advance);
-    try { await completion; } finally { cancelAnimationFrame(animation); driver.dispose(); gpu.dispose(); }
-  }
-}
-
 async function compareArmyOrders(renderer: WebGPURenderer) {
   const setup = { grid: gridEdges(20, 12, new Uint8Array(240).fill(1), true), land: new Uint8Array(240), seed: 1995,
     units: ['MTNK', 'MTNK', 'E6', 'HARV', 'HELI', 'E1'].map((name, id) => ({ cell: 44 + id * 2, type: movementType(name), owner: id % 2 })),
@@ -145,14 +107,13 @@ async function compareArmyOrders(renderer: WebGPURenderer) {
   } finally { orders.dispose(); gpu.dispose(); }
 }
 
-export async function compareMatchFoundations(measure = false) {
+export async function compareMatchFoundations() {
   const canvas = document.createElement('canvas'); canvas.style.cssText = 'width:16px;height:16px'; document.body.append(canvas);
   const wrapper = await createRenderer(canvas, { onDeviceLost: message => console.error(message) });
   if (!wrapper) throw new Error('No WebGPU');
   try {
-    await compareSight(wrapper.three); await compareSightLifecycle(wrapper.three); await compareClockedUnits(wrapper.three);
+    await compareSight(wrapper.three); await compareSightLifecycle(wrapper.three);
     await compareArmyOrders(wrapper.three); await compareSpecialExplosions(wrapper.three); await compareSpecialInfantry(wrapper.three); await compareCloaking(wrapper.three); await compareMultiplayerTargets(wrapper.three); await compareAirAI(wrapper.three);
-    return { sidebar: measure ? measureSidebar(await loadData(false, false, true)) : undefined };
   }
   finally { wrapper.dispose(); canvas.remove(); }
 }

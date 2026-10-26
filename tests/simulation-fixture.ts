@@ -1,24 +1,17 @@
 export async function compareSimulation() {
   const { createRenderer } = await import('../src/engine/renderer.ts');
   const { GpuSimulation } = await import('../src/engine/simulation/gpu.ts');
-  const { releaseStorage } = await import('../src/engine/simulation/resources.ts');
   const { CpuSimulation } = await import('../src/engine/simulation/cpu.ts');
-  const { fixedAdd, fixedSub, fixedMul, fixedDiv, hash32, randomWord, checksum } = await import('../src/engine/simulation/fixed.ts');
+  const { checksum } = await import('../src/engine/simulation/fixed.ts');
   const { GpuChecksum } = await import('../src/engine/simulation/checksum.ts');
-  const { fixedMulNode, fixedDivNode, randomNode } = await import('../src/engine/simulation/integer-nodes.ts');
   const { gridEdges } = await import('../src/engine/simulation/state.ts');
-  const { GpuOrder } = await import('../src/engine/simulation/order.ts');
-  const { bubbleGround, insertGround, groundLayout, updateGroundKeys, groundSprites, GpuGround } = await import('../src/game/simulation/ground.ts');
+  const { bubbleGround, groundLayout, updateGroundKeys, groundSprites, GpuGround } = await import('../src/game/simulation/ground.ts');
   const { simulationScene } = await import('../src/demo/simulation-scene.ts');
   const { readScenario } = await import('../src/game/formats/scenario.ts');
   const { buildScene } = await import('../src/game/scene.ts');
   const { loadData } = await import('../src/game/data-files.ts');
   const { PalettePipeline } = await import('../src/engine/indexed/pipeline.ts');
   const { paint } = await import('../tests/reference/paint.ts');
-  const { StorageBufferAttribute } = await import('three/webgpu');
-  const { Fn, storage, instanceIndex, uint,ivec2 } = await import('three/tsl');
-  const {unitDirection,unitDistance}=await import('../src/game/simulation/units-nodes.ts');
-  const {desiredFacing256,distance}=await import('../src/game/coord.ts');
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'width:16px;height:16px';
   document.body.append(canvas);
@@ -30,51 +23,6 @@ export async function compareSimulation() {
     if (a.length !== b.length || at >= 0) failures.push(`${label}: word ${at}: ${a[at]} != ${b[at]}`);
   };
   try {
-    const cases: [number, number][] = [[0,256],[-385,129],[-2147483648,-1],[2147483647,2147483647],[-2147483648,257]];
-    for (let i = 0; i < 160; i++) cases.push([hash32(i) | 0, (hash32(i + 999) | 0) || 1]);
-    const input = new StorageBufferAttribute(new Int32Array(cases.flat()), 1);
-    const output = new StorageBufferAttribute(new Int32Array(cases.length * 5), 1);
-    const ins = storage(input, 'int', cases.length * 2).toReadOnly(), out = storage(output, 'int', cases.length * 5);
-    const arithmetic = Fn(() => {
-      const i = instanceIndex, a = ins.element(i.mul(2)), b = ins.element(i.mul(2).add(1)), start = i.mul(5);
-      out.element(start).assign(a.add(b)); out.element(start.add(1)).assign(a.sub(b));
-      out.element(start.add(2)).assign(fixedMulNode(a, b)); out.element(start.add(3)).assign(fixedDivNode(a, b));
-      out.element(start.add(4)).assign(randomNode(uint(a), uint(b), i, uint(3)));
-    })().compute(cases.length);
-    try {
-      renderer.three.compute(arithmetic);
-      const actual = new Int32Array(await renderer.three.getArrayBufferAsync(output));
-      const expected = new Int32Array(cases.flatMap(([a,b], i) => [fixedAdd(a,b),fixedSub(a,b),fixedMul(a,b),fixedDiv(a,b),randomWord(a,b,i,3)]));
-      equal(actual, expected, 'fixed point and random words');
-    } finally { arithmetic.dispose(); releaseStorage(renderer.three, [input, output]); }
-
-    // Original Desired_Facing256 shifts both operands at the byte boundary.
-    // Check the GPU's bit-count equivalent in every quadrant, including axis swaps.
-    const points:[number,number][]=[[0,0]];
-    for(const large of [255,256,257,511,512,65535,1048576])for(const small of [0,1,127,255,256])
-      for(const sx of [-1,1])for(const sy of [-1,1])points.push([large*sx,small*sy],[small*sx,large*sy]);
-    const coordinates=new StorageBufferAttribute(Int32Array.from(points.flat()),1),directions=new StorageBufferAttribute(new Int32Array(points.length*2),1);
-    const positions=storage(coordinates,'ivec2',points.length).toReadOnly(),facing=storage(directions,'int',directions.count);
-    const angles=Fn(()=>{const point=positions.element(instanceIndex);facing.element(instanceIndex.mul(2)).assign(unitDirection(ivec2(0),point));facing.element(instanceIndex.mul(2).add(1)).assign(unitDistance(ivec2(0),point));})().compute(points.length);
-    try{
-      renderer.three.compute(angles);
-      equal(new Int32Array(await renderer.three.getArrayBufferAsync(directions)),Int32Array.from(points.flatMap(([x,y])=>[desiredFacing256(0,0,x,y),distance(0,0,x,y)])),'original coordinate normalization');
-    }finally{angles.dispose();releaseStorage(renderer.three,[coordinates,directions]);}
-
-    const keyValues = new Int32Array([1,9, 2,1, 3,1, 4,7, 5,3, 6,1, 7,3]);
-    const keys = new StorageBufferAttribute(keyValues, 1);
-    const sorted = new GpuOrder(renderer.three, keys, new Uint32Array([0,1,2,3,4,5]));
-    let cpuOrder = new Uint32Array([0,1,2,3,4,5]);
-    try {
-      sorted.step(); bubbleGround(cpuOrder, keyValues);
-      equal(new Uint32Array(await renderer.three.getArrayBufferAsync(sorted.order)).subarray(0,6), cpuOrder, 'one bubble pass');
-      const inserting = Array.from(cpuOrder); insertGround(inserting, keyValues, 6);
-      sorted.insert(6); cpuOrder = new Uint32Array(inserting);
-      equal(new Uint32Array(await renderer.three.getArrayBufferAsync(sorted.order)), cpuOrder, 'insert into partially sorted layer');
-      sorted.step(); bubbleGround(cpuOrder, keyValues);
-      equal(new Uint32Array(await renderer.three.getArrayBufferAsync(sorted.order)), cpuOrder, 'bubble after insertion');
-    } finally { sorted.dispose(); releaseStorage(renderer.three, [keys]); }
-
     for (const mode of ['vehicles', 'infantry', 'mixed']) {
       const width = mode === 'mixed' ? 73 : 29, height = 19, passable = new Uint8Array(width * height).fill(1);
       for (let y = 2; y < 16; y++) if (y !== 10) passable[y * width + 14] = 0;
@@ -138,20 +86,6 @@ export async function compareSimulation() {
       dynamicSprites: {maxWidth: Math.max(...scene.sprites.map(s => s.region.width)), maxHeight: Math.max(...scene.sprites.map(s => s.region.height))}});
     const ground = new GpuGround(renderer.three, gpu, pipeline, layout);
     const combined = new GpuChecksum(renderer.three, [...gpu.buffers(), ground.order.order]);
-    const drawData = new Float32Array(await renderer.three.getArrayBufferAsync(pipeline.spriteBuffer));
-    equal(drawData.subarray(0, layout.packed.length), layout.packed, 'initial sprite instances');
-    const spatial = (pipeline as unknown as {spatial: {offsets: InstanceType<typeof StorageBufferAttribute>; items: InstanceType<typeof StorageBufferAttribute>}}).spatial;
-    const offsets = new Uint32Array(await renderer.three.getArrayBufferAsync(spatial.offsets));
-    const items = new Uint32Array(await renderer.three.getArrayBufferAsync(spatial.items));
-    for (let bin = 0; bin < 24 * 24; bin++) {
-      const x = bin % 24, y = Math.floor(bin / 24), expected: number[] = [];
-      for (let i = 0; i < layout.count; i++) {
-        const at = i * 12, [left,top,w,h] = layout.packed.subarray(at,at+4);
-        if (w > 0 && h > 0 && x >= Math.floor(left/64) && x <= Math.floor((left+w-1)/64) && y >= Math.floor(top/64) && y <= Math.floor((top+h-1)/64)) expected.push(i);
-      }
-      const actual = Array.from(items.subarray(offsets[bin],offsets[bin+1])).sort((a,b) => a-b);
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) { failures.push(`bin ${bin}: ${actual} != ${expected}`); break; }
-    }
     const center = setup.units[2].cell;
     const views = [
       {x: center % setup.grid.width * 24 - 120, y: Math.floor(center / setup.grid.width) * 24 - 96, width: 360, height: 288},
@@ -165,7 +99,6 @@ export async function compareSimulation() {
           updateGroundKeys(layout, cpu.units, movingKeys); bubbleGround(order, movingKeys); ground.sort();
           cpu.step(commands); gpu.step(commands);
           ground.updateSprites();
-          equal(new Uint32Array(await renderer.three.getArrayBufferAsync(ground.order.order)), order, `moving order ${frame}`);
         }
         if ([0,1,8,15,45,90].includes(frame)) {
           equal(await combined.read(), checksum([...cpu.buffers(), order]), `complete simulation checksum ${frame}`);

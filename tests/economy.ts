@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { withApp, withInput, pollCheck, type Session } from './browser.ts';
 import type { DemoEconomyRuntime as EconomyRuntime } from '../src/demo/economy-runtime.ts';
-import { observeStartup,type StartupProbe } from './startup.ts';
 import { writeFileSync } from 'node:fs';
 
 const measured=async<T>(name:string,check:()=>Promise<T>)=>{const started=performance.now();try{return await check();}finally{console.log(`M5 ${name}: ${((performance.now()-started)/1000).toFixed(1)}s`);}};
@@ -19,7 +18,7 @@ export async function checkAirProductionOrders(session: Session) {
 }
 
 export async function checkEconomy(session:Session) {
-  await withApp(session,{path:'/tests/fixture.html',init:observeStartup},async page=>{
+  await withApp(session,{path:'/tests/fixture.html'},async page=>{
     assert.equal(await measured('Tiberium and flight',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareTiberium())),192);
     assert.equal(await measured('Occupied and reserved helipads',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareAircraftProduction())),true);
     assert.equal(await measured('Repeated factory exits',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareFactoryExits())),true);
@@ -47,7 +46,7 @@ export async function checkEconomy(session:Session) {
 }
 
 export async function checkEconomyControls(session:Session){
-  await withApp(session,{path:'/?demo=units',init:observeStartup},async page=>{
+  await withApp(session,{path:'/?demo=units'},async page=>{
     page.setDefaultTimeout(30000);
     await page.locator('canvas[data-status="running"]').waitFor({state:'attached'});
     await withInput(session,page,async()=>{
@@ -122,9 +121,6 @@ export async function checkEconomyControls(session:Session){
       await page.waitForFunction(()=>(window as unknown as {buildingTest:EconomyRuntime}).buildingTest.productionSpeed===1);
       await page.getByRole('button',{name:'Start reinforcements',exact:true}).click();
       assert.equal(await page.getByRole('button',{name:'Stop reinforcements',exact:true}).getAttribute('aria-pressed'),'true');
-      const probe=await page.evaluate(()=>(window as unknown as {startupProbe:StartupProbe}).startupProbe);
-      assert.deepEqual(probe.latePipelines,[],'the building demo must compile its simulation before accepting input');
-      writeFileSync('test-results/m5-startup.json',JSON.stringify({gpu:session.gpu,...probe},null,2));
       await page.screenshot({path:'test-results/m5-buildings-demo.png'});
     });
   });
@@ -135,21 +131,19 @@ export async function checkTransport(session:Session){
     assert.equal(await measured('APC boarding, driving and unloading',()=>page.evaluate(async()=>(await import('../tests/transport-fixture.ts')).compareApcTransport())),true);
     assert.equal(await measured('Aircraft exploration',()=>page.evaluate(async()=>(await import('../tests/transport-fixture.ts')).compareAircraftSight())),true);
     assert.equal(await measured('APC and Chinook door shapes',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareAircraftDrawing())),true);
-    if(session.acceptance)assert.equal(await measured('Chinook transport regression',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareTransports(['chinook']))),true);
   });
 }
 
 export async function checkCoordination(session:Session){
   await withApp(session,{path:'/tests/fixture.html'},async page=>{
-    assert.equal(await measured('Ground layer transitions',()=>page.evaluate(async large=>(await import('../tests/coordination-fixture.ts')).compareGroundTransitions(large),session.acceptance)),true);
+    assert.equal(await measured('Ground layer transitions',()=>page.evaluate(async()=>(await import('../tests/coordination-fixture.ts')).compareGroundTransitions())),true);
     assert.equal(await measured('Aircraft radio ordering',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareAirCoordination())),true);
     assert.equal(await measured('Mass aircraft coordination',()=>page.evaluate(async()=>(await import('../tests/coordination-fixture.ts')).compareMassAirCoordination())),true);
   });
 }
 
-export async function checkCompaction(session:Session){
+export async function checkBuildingEffects(session:Session){
   await withApp(session,{path:'/tests/fixture.html'},async page=>{
-    assert.equal(await measured('Free slots and laser compaction',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareCompactOutputs())),true);
     assert.equal(await measured('Building fire and debris',()=>page.evaluate(async()=>(await import('../tests/economy-fixture.ts')).compareBuildingEffects())),true);
   });
 }

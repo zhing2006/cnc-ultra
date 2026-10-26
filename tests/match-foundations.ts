@@ -1,16 +1,10 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { withApp, type Session } from './browser.ts';
 
 export async function checkMatchFoundations(session: Session) {
   await withApp(session, { path: '/tests/fixture.html' }, async page => {
-    const result = await page.evaluate(async measure => (await import('../tests/match-foundations-fixture.ts')).compareMatchFoundations(measure), !!session.acceptance);
-    if (result.sidebar) {
-      const measured = { gpu: session.gpu, browser: session.browser.version(), ...result };
-      console.log(`M6 sidebar CPU measurement: ${JSON.stringify(measured)}`);
-      writeFileSync('test-results/m6-review-measurement.json', JSON.stringify(measured, null, 2));
-    }
+    await page.evaluate(async () => (await import('../tests/match-foundations-fixture.ts')).compareMatchFoundations());
   });
 }
 

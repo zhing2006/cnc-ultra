@@ -166,7 +166,7 @@ AMD 的数据是集成显卡上的功能与压力测量，不代表达到 60 FPS
 
 CPU profiler 记录了十个逻辑帧。可见热点包括 Three.js 的绑定更新、管线设置和命令提交，以及侧边栏的像素复制。绘制索引的重复重建已经合并；运输、采矿和飞行之间的占位刷新仍保留，因为后续系统会读取前一系统刚更新的占位。
 
-复测命令：`node tests/economy-performance.ts --drawing --counts=20000 --label=review3-after`。完整更新的原始数据为 `test-results/m5-performance-review2-before-20k.json` 和 `test-results/m5-performance-review3-after.json`，包含分系统 GPU 耗时、派发计数、绘制准备时间和整个测试场景的准备时间。CPU profile 为 `test-results/m5-cpu-review3-after-nvidia.cpuprofile` 和 `test-results/m5-cpu-review3-after-amd.cpuprofile`。独立重排测量使用 `node tests/reinsert-performance.ts --label=after`，改前、改后数据为 `test-results/m5-reinsert-before.json` 和 `test-results/m5-reinsert-after.json`。
+复测命令：`node tests/economy-performance.ts --drawing --counts=20000 --label=review3-after`。完整更新的原始数据为 `test-results/m5-performance-review2-before-20k.json` 和 `test-results/m5-performance-review3-after.json`，包含分系统 GPU 耗时、派发计数、绘制准备时间和整个测试场景的准备时间。CPU profile 为 `test-results/m5-cpu-review3-after-nvidia.cpuprofile` 和 `test-results/m5-cpu-review3-after-amd.cpuprofile`。独立重排的改前、改后测量数据为 `test-results/m5-reinsert-before.json` 和 `test-results/m5-reinsert-after.json`。
 
 ## 核对记录
 

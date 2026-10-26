@@ -68,9 +68,11 @@ export async function checkMatchRegressions() {
         for (let tick = 0; tick < (scenario.ticks ?? 1); tick++) {
           if (scenario.resolveOnly) { cpu.resolveStep(); gpu.syncUploads(); gpu.resolveStep(); }
           else { cpu.step(); gpu.step(); }
-          for (const [buffer, expected] of [[gpu.units, cpu.units], [gpu.state, cpu.state], [gpu.projectiles, cpu.projectiles],
-            [gpu.movement.goals, cpu.movement.goals], [gpu.movement.pathGoals, cpu.movement.pathGoals], [gpu.sight.mapped, cpu.sight.mapped]] as const) {
-            const actual = new Int32Array(await wrapper.three.getArrayBufferAsync(buffer));
+          const pairs = [[gpu.units, cpu.units], [gpu.state, cpu.state], [gpu.projectiles, cpu.projectiles],
+            [gpu.movement.goals, cpu.movement.goals], [gpu.movement.pathGoals, cpu.movement.pathGoals], [gpu.sight.mapped, cpu.sight.mapped]] as const;
+          const snapshots = await Promise.all(pairs.map(async ([buffer]) => new Int32Array(await wrapper.three.getArrayBufferAsync(buffer))));
+          for (const [index, [, expected]] of pairs.entries()) {
+            const actual = snapshots[index];
             const word = actual.findIndex((value, i) => value !== expected[i]);
             if (word >= 0) throw new Error(`tick ${tick + 1}, word ${word}: GPU ${actual[word]}, CPU ${expected[word]}`);
           }

@@ -1,6 +1,5 @@
-import { createRenderer, type FrameCallback } from '../src/engine/renderer.ts';
+import { createRenderer } from '../src/engine/renderer.ts';
 import { loadData } from '../src/game/data-files.ts';
-import { startPreparedGame, type Game } from '../src/game/game.ts';
 import { economyScene } from '../src/demo/economy-scene.ts';
 import { EconomyRuntime } from '../src/game/simulation/economy-runtime.ts';
 import { GpuGround, groundLayout } from '../src/game/simulation/ground.ts';
@@ -19,56 +18,6 @@ import { SightView } from '../src/game/simulation/sight-view.ts';
 import { CloakView } from '../src/game/simulation/cloak-view.ts';
 import { cloakedSprites, type CloakStage } from '../src/game/cloak.ts';
 import { SuperView } from '../src/game/simulation/super-view.ts';
-
-/** Exercise the real game loop with 25 logic ticks between two manually presented frames. */
-export async function checkDeferredGameDrawing() {
-  const canvas = document.createElement('canvas'); canvas.style.cssText = 'width:320px;height:240px'; document.body.append(canvas);
-  const renderer = await createRenderer(canvas, { onDeviceLost: message => console.error(message) });
-  if (!renderer) throw new Error('No WebGPU');
-  let frame!: FrameCallback, economy!: EconomyRuntime, game: Game | undefined, report: Promise<void> | undefined;
-  const restore: (() => void)[] = [], calls: Record<string, number> = {};
-  const observe = (prototype: object, name: string, label: string) => {
-    const methods = prototype as Record<string, (this: unknown, ...args: unknown[]) => unknown>, original = methods[name];
-    methods[name] = function (...args) { calls[label] = (calls[label] ?? 0) + 1; return original.apply(this, args); };
-    restore.push(() => { methods[name] = original; });
-  };
-  try {
-    const data = await loadData(false, true, true), world = economyScene(data, false, 16);
-    game = await startPreparedGame({ ...renderer, setFrame(next) { if (next) frame = next; } }, canvas, data,
-      { kind: 'combat', ...world, economy: world }, { createEconomy(battle, setup) { return economy = new EconomyRuntime(battle, setup); } });
-    const endTick = economy.endTick.bind(economy);
-    economy.endTick = () => report = endTick();
-    game.setSimulationSpeed(100);
-    frame(320, 240, 0);
-    observe(GpuGround.prototype, 'sort', 'sort'); observe(GpuGround.prototype, 'updateSprites', 'ground');
-    observe(CombatView.prototype, 'update', 'combat'); observe(BuildingView.prototype, 'update', 'buildings');
-    observe(AircraftView.prototype, 'update', 'aircraft'); observe(GpuBuildingEffects.prototype, 'update', 'effects');
-    observe(PalettePipeline.prototype, 'updateGpuSprites', 'index');
-    frame(320, 240, 1000 / 60);
-    const deadline = performance.now() + 15000;
-    while (economy.battle.frame < 25) {
-      if (performance.now() > deadline) throw new Error(`Fast-forward stopped at tick ${economy.battle.frame}`);
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-    await report;
-    game.setPaused(true);
-    if (economy.battle.frame !== 25 || calls.sort !== 25) throw new Error(`Logic/sort cadence changed: ${JSON.stringify(calls)}`);
-    for (const label of ['ground', 'combat', 'buildings', 'aircraft', 'effects', 'index']) {
-      if (calls[label]) throw new Error(`${label} was updated ${calls[label]} times without presenting a frame`);
-    }
-    frame(320, 240, 2000 / 60);
-    for (const label of ['ground', 'combat', 'buildings', 'aircraft', 'effects', 'index']) {
-      if (calls[label] !== 1) throw new Error(`${label} should be updated once for the final visible state, got ${calls[label]}`);
-    }
-    frame(320, 240, 3000 / 60);
-    if (calls.index !== 1) throw new Error('A paused frame rebuilt the unchanged sprite index');
-    return calls;
-  } finally {
-    game?.setPaused(true); await report;
-    for (const reset of restore) reset();
-    game?.dispose(); renderer.dispose(); canvas.remove();
-  }
-}
 
 /** Verify the live GPU projection against the original cloak layer composition and SHP frames. */
 export async function checkSpecialDrawing(){

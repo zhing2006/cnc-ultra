@@ -7,7 +7,7 @@ export async function checkUnits(session:Session){
     page.setDefaultTimeout(15000);
     const measured=await page.evaluate(async acceptance=> (await import('../tests/units-fixture.ts')).compareUnits(acceptance),!!session.acceptance);
     console.log(`M3 environment: Chromium ${session.browser.version()}, ${JSON.stringify(measured)}`);
-    writeFileSync('test-results/m3-measurement.json',JSON.stringify({browser:session.browser.version(),...measured},null,2));
+    writeFileSync('test-results/m3-measurement.json',JSON.stringify({browser:session.browser.version(),gpu:session.gpu,...measured},null,2));
     await page.goto(`${session.baseUrl}/?demo=units`);
     await page.locator('canvas[data-status="running"]').waitFor({state:'attached',timeout:30000});
     await withInput(session,page,async()=>{

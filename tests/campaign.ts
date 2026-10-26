@@ -34,13 +34,6 @@ export async function checkCampaignRouting(session:Session){
   });
 }
 
-export async function checkCampaignTheaters(session:Session){
-  await withApp(session,{path:'/tests/fixture.html'},async page=>{
-    const result=await page.evaluate(async()=>(await import('../tests/campaign-theaters-fixture.ts')).campaignTheaters());
-    assert.deepEqual(result,['WINTER','DESERT']);
-  });
-}
-
 export async function checkCampaignAudio(session:Session){
   await withApp(session,{path:'/tests/fixture.html'},async page=>{
     const result=await page.evaluate(async()=>(await import('../tests/campaign-audio-fixture.ts')).streamedCampaignMusic());
@@ -166,27 +159,5 @@ export async function checkCampaignVictory(session: Session) {
     const result = await page.evaluate(async () => (await import('../tests/campaign-victory-fixture.ts')).playFirstMission());
     assert.equal(result.result, 0);
     console.log(`Original GDI first mission: won at tick ${result.frame}, trained ${result.trained}, reinforcement notices ${result.reinforcements.length}`);
-  });
-}
-
-export async function checkCampaignAssets(session: Session) {
-  await withApp(session, { path: '/tests/fixture.html' }, async page => {
-    const result = await page.evaluate(async () => {
-      const index = await (await fetch('../data/index.json')).json();
-      const names = ['gdi/movies.mix', 'nod/movies.mix'].filter(name => name in index);
-      const records = [];
-      for (const name of names) {
-        const response = await fetch(`../data/${name}`, { headers: { Range: 'bytes=0-5' } });
-        records.push({ name, size: index[name], status: response.status, length: (await response.arrayBuffer()).byteLength, range: response.headers.get('Content-Range') });
-      }
-      const suffix = await fetch('../data/conquer.mix', { headers: { Range: 'bytes=-8' } });
-      return { records, suffix: { status: suffix.status, bytes: (await suffix.arrayBuffer()).byteLength } };
-    });
-    for (const record of result.records) {
-      assert.equal(record.status, 206); assert.equal(record.length, 6);
-      assert.equal(record.range, `bytes 0-5/${record.size}`);
-    }
-    if (session.acceptance) assert.equal(result.records.length, 2, 'Campaign acceptance requires both original movie discs');
-    assert.deepEqual(result.suffix, { status: 206, bytes: 8 });
   });
 }

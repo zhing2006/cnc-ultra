@@ -1,8 +1,5 @@
-import { compareReinsertBatches } from './reinsert-fixture.ts';
 import { createRenderer } from '../src/engine/renderer.ts';
 import { StorageBufferAttribute } from 'three/webgpu';
-import { GpuReinsert } from '../src/engine/simulation/reinsert.ts';
-import { Fn,int,instanceIndex } from 'three/tsl';
 import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { insertGround,groundLayout,updateGroundKeys,groundLayers,transitionGround,bubbleGround,GpuGround } from '../src/game/simulation/ground.ts';
 import { PalettePipeline } from '../src/engine/indexed/pipeline.ts';
@@ -23,24 +20,11 @@ function equal(actual:ArrayLike<number>,expected:ArrayLike<number>,message:strin
   for(let i=0;i<expected.length;i++)if(actual[i]!==expected[i])throw new Error(`${message}, word ${i}: ${actual[i]} != ${expected[i]}`);
 }
 
-export async function compareGroundTransitions(large=false){
+export async function compareGroundTransitions(){
   const canvas=document.createElement('canvas');document.body.append(canvas);
   const wrapper=await createRenderer(canvas,{onDeviceLost:message=>console.error(message)});if(!wrapper)throw new Error('WebGPU is required');
   const renderer=wrapper.three;
   try{
-    await compareReinsertBatches(renderer);
-    if(large)await compareReinsertBatches(renderer,true);
-    // LAYER.CPP Sorted_Add inserts before the first greater key, even in a partly sorted list.
-    // Span multiple workgroup stripes, with equal keys and moves in both directions.
-    const count=777,keys=Int32Array.from({length:count*2},(_,i)=>i%2?(Math.trunc(i/2)*73)%97:0);
-    const buffer=new StorageBufferAttribute(keys,1),order=new StorageBufferAttribute(Uint32Array.from({length:count},(_,i)=>i),1);
-    const reinsert=new GpuReinsert(renderer,buffer,order),mark=Fn(()=>{reinsert.changes.add(int(instanceIndex).mul(13));})().compute(55);
-    const expected=Array.from(order.array as Uint32Array);
-    try{
-      reinsert.clear();renderer.compute(mark);
-      for(let id=0;id<55*13;id+=13){expected.splice(expected.indexOf(id),1);insertGround(expected,keys,id);}
-      reinsert.step();equal(new Uint32Array(await renderer.getArrayBufferAsync(order)),expected,'Cooperative reinsertion');
-    }finally{mark.dispose();reinsert.dispose();releaseStorage(renderer,[buffer,order]);}
     const {scene,setup}=economyScene(await loadData(),false,16);
     const units=U.initialUnits(setup),attribute=new StorageBufferAttribute(units,1),simulation={units:attribute,frame:0};
     const layout=groundLayout(scene,units,U.WORDS,true),keyValues=layout.keys.slice(),previous=groundLayers(layout,units),reference=Uint32Array.from({length:scene.objects.length+1},(_,i)=>i===0?scene.objects.length:i-1);

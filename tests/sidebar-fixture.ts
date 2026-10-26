@@ -13,6 +13,7 @@ export function sidebarEconomy() {
     get available() { return available.map(name => PRODUCTION.get(name)!); },
     get radar() { return house.power >= house.drain; },
     scene: { scene: {
+      scenario: { theater: 'TEMPERATE' },
       setup: { palette: new Uint8Array(1024), spriteAtlas: { pixels: new Uint8Array(1), width: 1 } },
       cursors: { normal: { hotX: 0, hotY: 0, region: { x: 0, y: 0, width: 1, height: 1 } } },
     } },
