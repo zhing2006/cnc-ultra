@@ -1,6 +1,7 @@
 import { releaseStorage } from '../src/engine/simulation/resources.ts';
 import { createRenderer } from '../src/engine/renderer.ts';
 import { StorageBufferAttribute } from 'three/webgpu';
+import { Fn, int } from 'three/tsl';
 import { CpuTiberium, type TiberiumSetup } from '../src/game/simulation/tiberium-cpu.ts';
 import { GpuTiberium } from '../src/game/simulation/tiberium-gpu.ts';
 import { CpuUnits } from '../src/game/simulation/units-cpu.ts';
@@ -184,6 +185,7 @@ export async function compareRefineryQueue(){
   const ore=new GpuTiberium(wrapper.three,{width,height,amount,variants:new Int32Array(cells),clear:playable,blossom:new Int32Array(cells),playable,seed:1995});
   const harvest=new GpuHarvest({battle:gpu,visuals,miningState,scene:{...source,setup,playable,buildable:playable,basePassable:passable,baseLand:setup.land}},ore);
   const context={battle:cpu,ore:amount,state,buildings:visuals.array as Int32Array,playable,passable};
+  const yieldHarvester=Fn(()=>{gpu.movement.scattering.move(int(2));})().compute(1);
   try{
     for(let frame=1;frame<=16;frame++){
       stepHarvest(context);
@@ -208,7 +210,8 @@ export async function compareRefineryQueue(){
     for(let frame=1;frame<=1400;frame++){
       if(frame===2){
         cpu.movement.scatter(2);
-        gpu.movement.applyCommands([{frame:gpu.frame,kind:'scatter',ids:[2]}]);
+        // Exercise the automatic Scatter path used by apron clearance, preserving the mission.
+        wrapper.three.compute(yieldHarvester);
       }
       stepHarvest(context);
       if(frame===2&&(state[p+HMODE]!==3||state[p+HREF]!==0))throw new Error('Automatic yielding discarded refinery contact');
@@ -245,7 +248,7 @@ export async function compareRefineryQueue(){
     }
     if(state[0]<250||amount[124]>=36)throw new Error('Harvester did not leave the cleared apron and resume mining');
     return true;
-  }finally{harvest.dispose();ore.dispose();gpu.dispose();releaseStorage(wrapper.three,[visuals,miningState]);wrapper.dispose();canvas.remove();}
+  }finally{yieldHarvester.dispose();harvest.dispose();ore.dispose();gpu.dispose();releaseStorage(wrapper.three,[visuals,miningState]);wrapper.dispose();canvas.remove();}
 }
 
 /** MAP.CPP Explosion_Damage: accumulate simultaneous ground hits; airborne impacts leave ore intact. */
