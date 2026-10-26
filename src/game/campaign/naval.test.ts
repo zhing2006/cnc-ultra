@@ -18,6 +18,21 @@ export function navalFixture(passengers: string[]) {
 }
 
 describe('Original beach delivery', () => {
+  it('releases the hovercraft draw tether when its vehicle reaches land before the next mission poll', () => {
+    const { map, setup } = navalFixture(['JEEP']);
+    const battle = new CpuCombat(setup), state = new Int32Array(setup.units.length * NAVAL_WORDS);
+    for (let tick = 0; tick < 400; tick++) {
+      stepNaval(battle, state, map); battle.movement.occupy(); battle.step();
+      if (state[0] === 3 && battle.units[U.WORDS + U.UCELL] !== battle.units[U.UCELL] && battle.units[U.WORDS + U.UDEST] < 0) break;
+    }
+    expect(state[0]).toBe(3);
+    expect(battle.frame).toBeLessThan(state[2]);
+    // UNIT.CPP Per_Cell_Process -> TECHNO.CPP RADIO_UNLOADED clears the tether
+    // on arrival. The next ground sort must not wait for Mission_Unload's timer.
+    stepNaval(battle, state, map);
+    expect(battle.units[U.UFLAGS] & U.HOVER_TETHERED).toBe(0);
+    expect(battle.units[U.WORDS + U.UFLAGS] & U.UNLOADING).toBe(0);
+  });
   it('waits for a blocker in the adjacent return column before leaving the beach', () => {
     const { map, setup } = navalFixture(['JEEP']);
     const blocker = setup.units.length;

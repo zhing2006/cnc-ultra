@@ -85,11 +85,13 @@ export function stepNaval(battle: CpuCombat, state: Int32Array, map: NavalMap) {
       }
       state[p + PHASE] = 3;
     }
-    if (state[p + PHASE] === 3 && battle.frame >= state[p + POLL]) {
+    if (state[p + PHASE] === 3) {
       const tether = state[p + TETHER] - 1;
       if (tether >= 0 && u[tether * U.WORDS + U.UHEALTH] > 0 && (u[tether * U.WORDS + U.UDEST] >= 0 || u[tether * U.WORDS + U.UCELL] === cell)) continue;
+      // UNIT/INFANTRY.CPP Per_Cell_Process -> TECHNO.CPP RADIO_UNLOADED:
+      // the next ground sort sees the released contact even before the mission poll.
       u[at + U.UFLAGS] &= ~U.HOVER_TETHERED;
-      if (occupied(cell)) continue;
+      if (battle.frame < state[p + POLL] || occupied(cell)) continue;
       state[p + PHASE] = 4; state[p + POLL] = battle.frame + 15;
     }
     if (state[p + PHASE] === 4 && battle.frame >= state[p + POLL]) {
@@ -222,7 +224,7 @@ export class GpuNaval {
                 const passenger = tether.mul(U.WORDS);
                 If(u.element(passenger.add(U.UHEALTH)).greaterThan(int(0)).and(u.element(passenger.add(U.UDEST)).greaterThanEqual(int(0)).or(u.element(passenger.add(U.UCELL)).equal(cell))), () => { waiting.assign(1); });
               });
-              If(s.element(p.add(PHASE)).equal(int(3)).and(clock.element(0).greaterThanEqual(s.element(p.add(POLL)))).and(waiting.equal(int(0))), () => {
+              If(s.element(p.add(PHASE)).equal(int(3)).and(waiting.equal(int(0))), () => {
                 u.element(at.add(U.UFLAGS)).bitAndAssign(~U.HOVER_TETHERED);
               });
               If(s.element(p.add(PHASE)).equal(int(3)).and(clock.element(0).greaterThanEqual(s.element(p.add(POLL)))).and(occupied(cell).not()).and(waiting.equal(int(0))), () => {
