@@ -59,6 +59,8 @@ export const UOBSTRUCTION=49, UOBSTRUCTION_GOAL=50;
 /** Automatic Scatter NavCom, cell + 1. It changes the route without replacing a harvesting mission. */
 export const USCATTER_GOAL=51;
 export const UFLAGS=52, TECHNICIAN=1, LOANER=2, PLAYER_ORDER=4;
+/** UNIT.CPP / FOOT.CPP: hovercraft contact and passengers still leaving the deck. */
+export const UNLOADING=8, HOVER_TETHERED=16;
 /** A caller has already planned the adjacent goal; do not allocate a whole-map flow field. */
 export const DIRECT_STEP = -2;
 export interface UnitPlacement {

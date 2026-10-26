@@ -24,7 +24,7 @@ import { checkMatchCrew } from './match-crew.ts';
 import { checkMatchRegressions } from './match-regressions.ts';
 import { checkHarvest } from './harvest.ts';
 import { checkComputeBatch } from './compute-batch.ts';
-import { checkCampaignAssets, checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignTheaters,checkCampaignRouting } from './campaign.ts';
+import { checkCampaignAssets, checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkCampaignVictory, checkCampaignRules, checkCampaignMap, checkCampaignReinforcements, checkCampaignRescue, checkCampaignAI, checkCampaignAudio,checkCampaignTheaters,checkCampaignRouting,checkCampaignRendering } from './campaign.ts';
 import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
 import { checkDebug } from './debug.ts';
 
@@ -79,6 +79,7 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
+    ['Campaign hovercraft unloading order',checkCampaignRendering],
     ['Campaign threat avoidance and deterministic continuation',checkCampaignRouting],
     ['Worker decoding and bounded campaign music buffers',checkCampaignAudio],
     ['Original campaign base rebuilding and reserve production', checkCampaignAI],

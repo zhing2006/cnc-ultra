@@ -177,6 +177,8 @@ export class CpuUnits {
   private arrive(id: number) {
     const u = this.units;
     const at = id * S.WORDS;
+    // Ported from FOOT.CPP, Per_Cell_Process: the first arrival ends unloading.
+    u[at + S.UFLAGS] &= ~S.UNLOADING;
     u[at] = u[at + S.UHEAD_X];
     u[at + 1] = u[at + S.UHEAD_Y];
     u[at + S.UCELL] = u[at + S.UDEST];

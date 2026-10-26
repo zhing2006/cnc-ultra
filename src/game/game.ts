@@ -171,7 +171,8 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     } : unitView?.draw ?? flow!.draw }),
     ...(unitView && { indexEffect: unitView.indexEffect }) });
   const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, combatSetup ? scene : undefined,
-    selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined);
+    selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined,
+    combatSetup?.setup.campaignLevel!==undefined);
   if(economy&&ground)economy.onSceneryVisibility=(sprite,visible)=>ground.setStaticSpriteVisible(sprite,visible);
   const combatView = battle && ground && combatSetup && new CombatView(renderer.three, battle, ground, pipeline, scene, combatSetup.decalStart,!!economy);
   const buildingEffects=economy&&combatView?new GpuBuildingEffects(economy.battle,scene.animation!.frames,combatView.smudges):undefined;

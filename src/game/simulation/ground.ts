@@ -1,6 +1,6 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { StorageBufferAttribute,Vector2, type WebGPURenderer, type ComputeNode, type Node } from 'three/webgpu';
-import { Fn, If, instanceIndex, int, storage, vec4,select,uniformArray,uniform } from 'three/tsl';
+import { Fn, If, instanceIndex, int, storage, vec4,select,uniformArray,uniform,atomicStore,atomicMax } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { GpuReinsert } from '../../engine/simulation/reinsert.ts';
 import { GpuOrder } from '../../engine/simulation/order.ts';
@@ -13,7 +13,7 @@ import { leptonToPixel } from '../coord.ts';
 import { BODY_SHAPE, HUMAN_SHAPE, facingTo32, turretAdjust } from '../coord.ts';
 import { MOVEMENT,movementType } from '../data/movement.ts';
 import { UNITS } from '../data/units.ts';
-import { UTYPE, UFACE, UDEST, UWALK, UDOMAIN, UALTITUDE,UHEALTH,UGENERATION,UDOOR,UENTER,UCELL,UKIND,UATTACHED } from './units-state.ts';
+import { UTYPE, UFACE, UDEST, UWALK, UDOMAIN, UALTITUDE,UHEALTH,UGENERATION,UDOOR,UENTER,UCELL,UKIND,UATTACHED,UFLAGS,UNLOADING,HOVER_TETHERED } from './units-state.ts';
 import { BUILDINGS } from '../data/buildings.ts';
 
 /** Ported from LAYER.CPP, LayerClass::Sort, and OBJECT.H, comparison operators. */
@@ -69,7 +69,8 @@ export function updateGroundKeys(layout: ReturnType<typeof groundLayout>, units:
       if(units[p+UDOMAIN]===1){keys[id*2]=units[p];keys[id*2+1]=units[p+1]+128+(units[p+UALTITUDE]>=16||type.name==='C17'||type.name==='A10'?1<<24:0);}
       else if(!b){
         const carrier=units[p+UENTER]-1,tethered=type.infantry&&carrier>=0&&units[carrier*layout.stride+UTYPE]===movementType('APC')&&units[p+UDEST]===units[carrier*layout.stride+UCELL];
-        keys[id*2]=units[p];keys[id*2+1]=units[p+1]+(tethered?256:type.infantry?48:128);
+        const hover=type.name==='LST'&&(units[p+UFLAGS]&HOVER_TETHERED)!==0;
+        keys[id*2]=units[p];keys[id*2+1]=units[p+1]+(hover?-128:type.infantry?(tethered||(units[p+UFLAGS]&UNLOADING)?256:48):128);
       }
       else if(b){keys[id*2]=units[p]+(type.name==='FIX'?-384:0);keys[id*2+1]=units[p+1]+(type.name==='FIX'?-384:type.name==='PYLE'||type.name==='PROC'?0:Math.trunc(b.height*256/3));}
     }
@@ -86,11 +87,16 @@ export function groundLayers(layout:ReturnType<typeof groundLayout>,units:Int32A
 }
 export function transitionGround(layout:ReturnType<typeof groundLayout>,units:Int32Array,keys:Int32Array,order:Uint32Array,previous:Int32Array){
   const current=groundLayers(layout,units),list=Array.from(order);
+  let unloading=false;
   for(let id=0;id<current.length;id++)if(current[id]!==previous[id]){
     previous[id]=current[id];
-    if(current[id]>=0&&(current[id]&2)){list.splice(list.indexOf(id),1);insertGround(list,keys,id);}
+    if(current[id]>=0&&(current[id]&2)){
+      unloading ||= (units[layout.bindings[id*5]*layout.stride+UFLAGS]&UNLOADING)!==0;
+      list.splice(list.indexOf(id),1);insertGround(list,keys,id);
+    }
   }
   order.set(list);
+  return unloading;
 }
 
 /** CPU drawing reference; production animation uses GpuGround. */
@@ -129,18 +135,28 @@ export class GpuGround {
   private readonly spritePass;
   private readonly changes?: GpuReinsert;
   private readonly flashSpritePass?: ComputeNode;
+  private readonly clearUnloadSort?: ComputeNode;
   private readonly source: StorageBufferAttribute;
   constructor(private readonly renderer: WebGPURenderer, private readonly simulation: Pick<GpuSimulation,'units'|'frame'>,
     private readonly pipeline: PalettePipeline, readonly layout: ReturnType<typeof groundLayout>, private readonly scene?: GameScene,
-    flashSource?: {state:StorageBufferAttribute;offset:number;clock:StorageBufferAttribute}) {
+    flashSource?: {state:StorageBufferAttribute;offset:number;clock:StorageBufferAttribute}, hovercraftUnloading=false) {
     const count = layout.keys.length / 2;
     this.keys = new StorageBufferAttribute(layout.keys.slice(), 1);
     const bindings = new StorageBufferAttribute(layout.bindings, 1), source = new StorageBufferAttribute(layout.packed, 4);
     this.source=source;
     this.bindings=bindings;
     this.attributes = [this.keys, bindings, source];
+    const unloadSort = hovercraftUnloading && scene?.animation?.frames.has('LST') ? new StorageBufferAttribute(new Int32Array(1), 1) : undefined;
+    const unload = unloadSort && storage(unloadSort, 'int', 1).toAtomic();
+    if (unloadSort && unload) {
+      this.attributes.push(unloadSort);
+      this.clearUnloadSort = Fn(() => { atomicStore(unload.element(0), int(0)); })().compute(1);
+    }
+    // Ported from UNIT.CPP, Unload_Hovercraft_Process: three ground-layer sweeps
+    // settle all newly detached passengers before their first visible frame.
     this.order = new GpuOrder(renderer, this.keys, Uint32Array.from({length: count}, (_,i) =>
-      layout.flashId < 0 ? i : i === 0 ? layout.flashId : i - 1));
+      layout.flashId < 0 ? i : i === 0 ? layout.flashId : i - 1),
+      unloadSort ? { condition: storage(unloadSort, 'int', 1).toReadOnly().element(0).notEqual(0), count: 2 } : undefined);
     const key = storage(this.keys, 'int', count * 2);
     const meta = storage(bindings, 'int', layout.bindings.length).toReadOnly();
     const units = storage(simulation.units, 'int', simulation.units.count).toReadOnly();
@@ -168,6 +184,13 @@ export class GpuGround {
         }).ElseIf(units.element(unit.mul(layout.stride).add(UDOMAIN)).equal(0),()=>{
           const at=unit.mul(layout.stride),foot=units.element(at.add(UKIND)),carrier=units.element(at.add(UENTER)).sub(1);
           x.assign(units.element(at));y.assign(units.element(at.add(1)).add(select(foot.notEqual(0),int(48),int(128))));
+          // Ported from UNIT.CPP / FOOT.CPP, Sort_Y: keep the deck behind its passengers.
+          If(units.element(at.add(UTYPE)).equal(movementType('LST')).and(units.element(at.add(UFLAGS)).bitAnd(HOVER_TETHERED).notEqual(0)),()=>{
+            y.assign(units.element(at.add(1)).sub(128));
+          });
+          If(foot.notEqual(0).and(units.element(at.add(UFLAGS)).bitAnd(UNLOADING).notEqual(0)),()=>{
+            y.assign(units.element(at.add(1)).add(256));
+          });
           If(foot.notEqual(0).and(carrier.greaterThanEqual(0)),()=>{
             If(units.element(carrier.mul(layout.stride).add(UTYPE)).equal(movementType('APC')).and(units.element(at.add(UDEST)).equal(units.element(carrier.mul(layout.stride).add(UCELL)))),()=>{y.assign(units.element(at.add(1)).add(256));});
           });
@@ -186,7 +209,13 @@ export class GpuGround {
           const at=unit.mul(layout.stride),alive=units.element(at.add(UHEALTH)).greaterThan(0).and(units.element(at.add(UATTACHED)).equal(0)),type=units.element(at.add(UTYPE));
           const top=units.element(at.add(UDOMAIN)).equal(1).and(units.element(at.add(UALTITUDE)).greaterThanEqual(16).or(type.equal(movementType('C17'))).or(type.equal(movementType('A10'))));
           const state=units.element(at.add(UGENERATION)).mul(4).add(int(alive).mul(2)).add(int(top));
-          If(seen!.element(id).notEqual(state),()=>{seen!.element(id).assign(state);If(alive,()=>{changed.assign(1);});});
+          If(seen!.element(id).notEqual(state),()=>{
+            seen!.element(id).assign(state);
+            If(alive,()=>{
+              changed.assign(1);
+              if(unload)If(units.element(at.add(UFLAGS)).bitAnd(UNLOADING).notEqual(0),()=>{atomicMax(unload.element(0),int(1));});
+            });
+          });
         });
         if(flash)If(unit.equal(-2).and(flash.element(2).greaterThanEqual(0)).and(seen.element(id).notEqual(flash.element(3))),()=>{
           seen!.element(id).assign(flash.element(3));changed.assign(1);
@@ -278,8 +307,8 @@ export class GpuGround {
     this.sort();
     this.updateSprites();
   }
-  /** One bubble pass using the positions before this tick's simulation update. */
-  sort() { this.changes?.clear();this.renderer.compute(this.keyPass);this.changes?.step();this.order.step(); }
+  /** Sort before movement, including the immediate extra sweeps when hovercraft cargo unloads. */
+  sort() { this.changes?.clear();if(this.clearUnloadSort)this.renderer.compute(this.clearUnloadSort);this.renderer.compute(this.keyPass);this.changes?.step();this.order.step(); }
   transitionLayers(){if(this.changes){this.changes.clear();this.renderer.compute(this.keyPass);this.changes.step();}}
   /** CELL.CPP Goodie_Check removes a collected crate from the static ground layer. */
   setStaticSpriteVisible(index:number,visible:boolean){
@@ -291,5 +320,5 @@ export class GpuGround {
   updateSprites(rebuildIndex=true) {
     this.renderer.compute(this.spritePass); if(this.flashSpritePass)this.renderer.compute(this.flashSpritePass); if(rebuildIndex)this.pipeline.updateGpuSprites(this.layout.count); this.pipeline.setFrame(this.simulation.frame);
   }
-  dispose() { this.keyPass.dispose();this.changes?.dispose(); this.flashSpritePass?.dispose(); this.spritePass.dispose(); this.order.dispose(); releaseStorage(this.renderer, this.attributes); }
+  dispose() { this.keyPass.dispose();this.changes?.dispose(); this.clearUnloadSort?.dispose(); this.flashSpritePass?.dispose(); this.spritePass.dispose(); this.order.dispose(); releaseStorage(this.renderer, this.attributes); }
 }

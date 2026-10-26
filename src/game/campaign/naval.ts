@@ -75,7 +75,10 @@ export function stepNaval(battle: CpuCombat, state: Int32Array, map: NavalMap) {
         u[pp + U.UATTACHED] = 0; u[pp + U.UCELL] = cell;
         const x = slot ? 64 + ((slot - 1) % 2) * 128 : 128, y = slot ? 64 + Math.trunc((slot - 1) / 2) * 128 : 128;
         u[pp + U.UX] = cell % width * 256 + x; u[pp + U.UY] = Math.trunc(cell / width) * 256 + y;
-        if (slot < 2) state[p + TETHER] = passenger + 1;
+        // Ported from UNIT.CPP, Unload_Hovercraft_Process: the second passenger
+        // holds the hovercraft while all passengers use their unloading sort coordinates.
+        u[pp + U.UFLAGS] |= U.UNLOADING;
+        if (slot < 2) { state[p + TETHER] = passenger + 1; u[at + U.UFLAGS] |= U.HOVER_TETHERED; }
         u[pp + U.USLOT] = u[pp + U.UDSLOT] = slot++; u[pp + U.UFACE] = u[pp + U.UDESIRED] = 0;
         u[pp + U.UDEST] = -1; u[pp + U.USPEED] = 128; m.goals[passenger] = north; m.pathGoals[passenger] = U.DIRECT_STEP;
         c[passenger * CWORDS + CMISSION] = MOVE;
@@ -85,6 +88,7 @@ export function stepNaval(battle: CpuCombat, state: Int32Array, map: NavalMap) {
     if (state[p + PHASE] === 3 && battle.frame >= state[p + POLL]) {
       const tether = state[p + TETHER] - 1;
       if (tether >= 0 && u[tether * U.WORDS + U.UHEALTH] > 0 && (u[tether * U.WORDS + U.UDEST] >= 0 || u[tether * U.WORDS + U.UCELL] === cell)) continue;
+      u[at + U.UFLAGS] &= ~U.HOVER_TETHERED;
       if (occupied(cell)) continue;
       state[p + PHASE] = 4; state[p + POLL] = battle.frame + 15;
     }
@@ -204,7 +208,8 @@ export class GpuNaval {
                       const x = int(128).toVar(), y = int(128).toVar();
                       If(slot.greaterThan(int(0)), () => { x.assign(slot.sub(1).mod(2).mul(128).add(64)); y.assign(slot.sub(1).div(2).mul(128).add(64)); });
                       u.element(pp.add(U.UX)).assign(cell.mod(width).mul(256).add(x)); u.element(pp.add(U.UY)).assign(cell.div(width).mul(256).add(y));
-                      If(slot.lessThan(int(2)), () => { s.element(p.add(TETHER)).assign(passenger.add(1)); });
+                      u.element(pp.add(U.UFLAGS)).bitOrAssign(U.UNLOADING);
+                      If(slot.lessThan(int(2)), () => { s.element(p.add(TETHER)).assign(passenger.add(1)); u.element(at.add(U.UFLAGS)).bitOrAssign(U.HOVER_TETHERED); });
                       u.element(pp.add(U.USLOT)).assign(slot); u.element(pp.add(U.UDSLOT)).assign(slot); slot.addAssign(1);
                       u.element(pp.add(U.UFACE)).assign(0); u.element(pp.add(U.UDESIRED)).assign(0); u.element(pp.add(U.UDEST)).assign(-1); u.element(pp.add(U.USPEED)).assign(128);
                       goals.element(passenger).assign(north); paths.element(passenger).assign(U.DIRECT_STEP); c.element(passenger.mul(CWORDS).add(CMISSION)).assign(MOVE);
@@ -216,6 +221,9 @@ export class GpuNaval {
               If(tether.greaterThanEqual(int(0)), () => {
                 const passenger = tether.mul(U.WORDS);
                 If(u.element(passenger.add(U.UHEALTH)).greaterThan(int(0)).and(u.element(passenger.add(U.UDEST)).greaterThanEqual(int(0)).or(u.element(passenger.add(U.UCELL)).equal(cell))), () => { waiting.assign(1); });
+              });
+              If(s.element(p.add(PHASE)).equal(int(3)).and(clock.element(0).greaterThanEqual(s.element(p.add(POLL)))).and(waiting.equal(int(0))), () => {
+                u.element(at.add(U.UFLAGS)).bitAndAssign(~U.HOVER_TETHERED);
               });
               If(s.element(p.add(PHASE)).equal(int(3)).and(clock.element(0).greaterThanEqual(s.element(p.add(POLL)))).and(occupied(cell).not()).and(waiting.equal(int(0))), () => {
                 s.element(p.add(PHASE)).assign(4); s.element(p.add(POLL)).assign(clock.element(0).add(15));

@@ -10,10 +10,12 @@ export class GpuOrder {
   readonly order: StorageBufferAttribute;
   private readonly attributes: StorageBufferAttribute[];
   private readonly sweep: ComputeNode[] = [];
+  private readonly extraSweep: ComputeNode[] = [];
   private readonly insertion: ComputeNode[];
   private readonly size;
   private readonly incoming = uniform(0, 'uint');
-  constructor(private readonly renderer: WebGPURenderer, keys: StorageBufferAttribute, initial: Uint32Array) {
+  constructor(private readonly renderer: WebGPURenderer, keys: StorageBufferAttribute, initial: Uint32Array,
+    private readonly extra?: { condition: Node<'bool'>; count: number }) {
     const capacity = keys.count / 2;
     this.size = uniform(initial.length, 'uint');
     const values = new Uint32Array(capacity); values.set(initial);
@@ -64,6 +66,9 @@ export class GpuOrder {
       If(instanceIndex.lessThan(this.size), () => { order.element(instanceIndex).assign(result.element(instanceIndex)); });
     })().compute(capacity);
     this.sweep.push(copy);
+    if (extra) for (const pass of this.sweep) {
+      this.extraSweep.push(Fn(() => { If(extra.condition, () => pass.computeNode); })().compute(capacity));
+    }
     this.insertion = [
       Fn(() => { atomicStore(place.element(0), this.size); })().compute(1),
       Fn(() => {
@@ -81,7 +86,10 @@ export class GpuOrder {
       })().compute(capacity),
     ];
   }
-  step() { this.renderer.compute(this.sweep); }
+  step() {
+    this.renderer.compute(this.sweep);
+    if (this.extra) for (let i = 0; i < this.extra.count; i++) this.renderer.compute(this.extraSweep);
+  }
   insert(id: number) {
     if (this.size.value >= this.order.count) throw new Error('Ground layer capacity exceeded');
     this.incoming.value = id;
@@ -90,7 +98,7 @@ export class GpuOrder {
     this.renderer.compute(this.sweep[this.sweep.length - 1]);
   }
   dispose() {
-    for (const kernel of [...this.sweep, ...this.insertion]) kernel.dispose();
+    for (const kernel of [...this.sweep, ...this.extraSweep, ...this.insertion]) kernel.dispose();
     releaseStorage(this.renderer, this.attributes);
   }
 }

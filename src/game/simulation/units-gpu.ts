@@ -342,6 +342,8 @@ export class GpuUnits {
       });
     };
     const arrive = (id: I, at: I) => {
+      // Ported from FOOT.CPP, Per_Cell_Process: the first arrival ends unloading.
+      u.element(at.add(S.UFLAGS)).bitAndAssign(~S.UNLOADING);
       u.element(at).assign(u.element(at.add(int(S.UHEAD_X))));
       u.element(at.add(int(1))).assign(u.element(at.add(int(S.UHEAD_Y))));
       u.element(at.add(int(S.UCELL))).assign(u.element(at.add(int(S.UDEST))));
