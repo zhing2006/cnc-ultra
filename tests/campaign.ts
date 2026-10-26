@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { withApp, withInput, type Session } from './browser.ts';
 
+export async function checkCampaignStartup(session: Session) {
+  await withApp(session, { path: '/tests/fixture.html' }, async page => {
+    assert.deepEqual(await page.evaluate(async () => (await import('../tests/campaign-startup-fixture.ts')).campaignStartup()), []);
+  });
+}
+
 export async function checkCampaignRendering(session: Session) {
   await withApp(session, { path: '/tests/fixture.html' }, async page => {
     for (const delivery of ['infantry', 'vehicle'] as const) {

@@ -24,6 +24,9 @@ export class CampaignPresentation {
   readonly music: CampaignMusic;
   readonly movie: MoviePlayer;
   private readonly screen: IndexedScreen;
+  private ui!: OriginalInterface;
+  private readonly interfaceReady: Promise<void>;
+  private phase = 0;
   private timer?: ReturnType<typeof setInterval>;
   private attract?: ReturnType<typeof setTimeout>;
   private selection?: (side: CampaignSide) => void;
@@ -35,7 +38,11 @@ export class CampaignPresentation {
     void (document.hidden ? this.audio.suspend() : this.audio.resume()).catch(this.callbacks.error);
   };
   private constructor(readonly renderer: Renderer, readonly assets: CampaignAssets, readonly audio: AudioContext,
-    private readonly ui: OriginalInterface, private readonly callbacks: CampaignCallbacks) {
+    private readonly callbacks: CampaignCallbacks) {
+    // Menu graphics are prepared alongside LOGO, not on the movie's startup path.
+    this.interfaceReady = OriginalInterface.open(assets).then(ui => { this.ui = ui; });
+    // mainMenu awaits and reports any failure; loading can finish while the movie is still playing.
+    void this.interfaceReady.catch(() => {});
     this.screen = new IndexedScreen(renderer.three);
     this.sound = new CampaignAudio(audio, assets, callbacks.error);
     this.music = new CampaignMusic(this.sound, assets, callbacks.error);
@@ -47,8 +54,8 @@ export class CampaignPresentation {
     const renderer = await createRenderer(canvas, { onDeviceLost: message => callbacks.error(new Error(`WebGPU device lost: ${message}`)) });
     if (!renderer) { callbacks.status('unsupported'); return; }
     try {
-      const assets = await CampaignAssets.open(), ui = await OriginalInterface.open(assets);
-      return new CampaignPresentation(renderer, assets, audio, ui, callbacks);
+      const assets = await CampaignAssets.open();
+      return new CampaignPresentation(renderer, assets, audio, callbacks);
     } catch (error) { renderer.dispose(); throw error; }
   }
   private showScreen() { this.renderer.setFrame((width, height) => this.screen.draw(width, height)); }
@@ -59,6 +66,8 @@ export class CampaignPresentation {
     if (!this.disposed) await this.mainMenu();
   }
   async mainMenu() {
+    await this.interfaceReady;
+    if (this.disposed) return;
     this.music.stop();
     this.clearTimers(); this.selection = undefined; this.movie.stop(); this.showScreen();
     this.screen.setOverlay(false);
@@ -176,6 +185,7 @@ export class CampaignPresentation {
   }
   /** SCENARIO.CPP Do_Win/Do_Lose use the original VCR font, centered on the tactical view. */
   async outcome(won: boolean, palette: Uint8Array) {
+    await this.interfaceReady;
     const font = decodeFont(await this.assets.bytes('VCR.FNT'));
     this.ui.pixels.fill(255);
     for (const [index, label] of ['MISSION', won ? 'ACCOMPLISHED' : 'FAILED'].entries()) {
@@ -256,15 +266,18 @@ export class CampaignPresentation {
     for(let step=1;step<=15&&!this.disposed;step++){this.screen.fade(1-step/15);await new Promise(resolve=>setTimeout(resolve,1000/60));}
   }
   private async chooseSide() {
+    await this.interfaceReady;
     this.clearTimers(); this.callbacks.buttons([]); this.sound.stop(); this.callbacks.status('starting');
+    const phase = this.phase;
     const bytes=await this.assets.optionalBytes('CHOOSE.WSA');
     if(!bytes){
       // Keep the available missions reachable when Gold's presentation archive is absent.
       const buttons=[{id:'gdi',label:'Global Defense Initiative',x:180,y:108,width:280,height:24},
         {id:'nod',label:'Brotherhood of Nod',x:180,y:156,width:280,height:24}];
       this.screen.set(this.ui.menu(buttons,'gdi'),this.ui.title.palette,640,400);
+      const choice=new Promise<CampaignSide>(resolve=>{this.selection=resolve;});
       this.callbacks.status('choosing');this.callbacks.buttons(buttons);
-      const side=await new Promise<CampaignSide>(resolve=>{this.selection=resolve;});
+      const side=await choice;
       this.selection=undefined;this.callbacks.buttons([]);
       if(!this.disposed)await this.callbacks.mission(side,this.renderer,this.assets,this);
       return;
@@ -300,15 +313,22 @@ export class CampaignPresentation {
       this.screen.set(pixels, animation.palette, 320, 200, table);
       this.screen.setForeground(foreground);
     };
+    const choice = new Promise<CampaignSide>(resolve => { this.selection = resolve; });
     draw(); this.timer = setInterval(draw, 50);
-    const staticSound = await this.sound.play('STRUGGLE',true,false,64/255);
-    if (staticSound) staticSound.loopEnd = Math.min(staticSound.buffer!.duration, 63 / 60);
+    // INTRO.CPP Choose_Side handles clicks throughout the animation. A slow
+    // background sound read must not leave the already visible choices inactive.
+    let staticSound: AudioBufferSourceNode | undefined;
+    void this.sound.play('STRUGGLE',true,false,64/255).then(node => {
+      if (this.disposed || this.phase !== phase) { node?.stop(); return; }
+      staticSound = node;
+      if (node) node.loopEnd = Math.min(node.buffer!.duration, 63 / 60);
+    }).catch(this.callbacks.error);
     this.callbacks.status('choosing');
     this.callbacks.buttons([
       { id: 'gdi', label: 'Global Defense Initiative', x: 36, y: 96, width: 260, height: 204 },
       { id: 'nod', label: 'Brotherhood of Nod', x: 320, y: 96, width: 280, height: 204 },
     ]);
-    const side = await new Promise<CampaignSide>(resolve => { this.selection = resolve; });
+    const side = await choice;
     if (this.disposed) return;
     selected = side;
     this.selection = undefined; this.callbacks.buttons([]);
@@ -322,7 +342,7 @@ export class CampaignPresentation {
     if(side==='nod')this.movie.preserveNextFrame();
     if (!this.disposed) await this.callbacks.mission(side, this.renderer, this.assets, this);
   }
-  private clearTimers() { clearInterval(this.timer); clearTimeout(this.attract); this.timer = this.attract = undefined; this.scoreAbort?.abort(); this.scoreAbort = undefined;this.paintFocus=undefined; }
+  private clearTimers() { this.phase++;clearInterval(this.timer); clearTimeout(this.attract); this.timer = this.attract = undefined; this.scoreAbort?.abort(); this.scoreAbort = undefined;this.paintFocus=undefined; }
   beginMusic(theme?:string) { void this.music.start(theme).catch(this.callbacks.error); }
   dispose() { this.disposed = true; this.clearTimers(); document.removeEventListener('visibilitychange', this.visibility); this.selection?.('gdi'); this.music.stop(); this.sound.dispose(); this.movie.stop(); this.screen.dispose(); this.renderer.dispose(); }
 }
