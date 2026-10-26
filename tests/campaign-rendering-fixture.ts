@@ -11,10 +11,11 @@ import { GpuTiberium } from '../src/game/simulation/tiberium-gpu.ts';
 import { GpuGround, groundLayout, updateGroundKeys, groundLayers, transitionGround, bubbleGround } from '../src/game/simulation/ground.ts';
 import { CombatView, combatExtraSprites } from '../src/game/simulation/combat-view.ts';
 import { BuildingView } from '../src/game/simulation/building-view.ts';
+import { REMAP_NAMES } from '../src/game/data/houses.ts';
 import * as U from '../src/game/simulation/units-state.ts';
 import * as C from '../src/game/simulation/combat-state.ts';
 
-/** Campaign draw records must preserve the original disembarking order. */
+/** Campaign draw records must preserve house colors and the original disembarking order. */
 export async function campaignRendering() {
   const canvas = document.createElement('canvas');
   canvas.style.cssText = 'width:480px;height:320px'; document.body.append(canvas);
@@ -59,7 +60,24 @@ export async function campaignRendering() {
       await battle.prepareForPlay(); await naval.prepare();
       const order = new Uint32Array(await renderer.getArrayBufferAsync(ground.order.order));
       const previousLayers = groundLayers(layout, cpu.units), cpuOrder = order.slice();
+      const enemySlot = order.findIndex(entry => layout.bindings[entry * 5] === 4);
+      const record = (layout.first + enemySlot * layout.slots) * 12;
       const units = battle.units.array as Int32Array, state = battle.state.array as Int32Array;
+      // INFANTRY.CPP Draw_It -> TECHNO.CPP Techno_Draw_Object uses the same
+      // House->Remap_Table for walking, firing and every frame of a death sequence.
+      for (const [owner, color] of [[1, 'blue'], [0, 'yellow']] as const) {
+        units[4 * U.WORDS + U.UOWNER] = owner;
+        for (const age of [-1, 0, 2, 8]) {
+          units[4 * U.WORDS + U.UHEALTH] = age < 0 ? 50 : 0;
+          state[4 * C.CWORDS + C.CDEATH] = age < 0 ? -1 : 0;
+          (battle.movement.control.array as Int32Array)[0] = Math.max(age, 0);
+          battle.units.needsUpdate = battle.state.needsUpdate = battle.movement.control.needsUpdate = true;
+          const sprites = await draw();
+          if (sprites[record + 2] <= 0 || sprites[record + 6] !== REMAP_NAMES.indexOf(color))
+            failures.add(`${color} infantry at death age ${age}: remap ${sprites[record + 6]}`);
+          if (owner === 1 && age === 2) capture('campaign-infantry-death', Math.round(units[4 * U.WORDS] * 24 / 256), Math.round(units[4 * U.WORDS + 1] * 24 / 256));
+        }
+      }
       cpu.units[4 * U.WORDS + U.UHEALTH] = 0;
       units.set(cpu.units); state.set(cpu.state); (battle.movement.control.array as Int32Array).fill(0);
       battle.units.needsUpdate = battle.state.needsUpdate = battle.movement.control.needsUpdate = true;

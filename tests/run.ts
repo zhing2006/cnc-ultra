@@ -79,7 +79,7 @@ try {
   }[] = [];
 
   const allChecks: [string, (session: Session) => Promise<void>][] = [
-    ['Campaign hovercraft unloading order',checkCampaignRendering],
+    ['Campaign infantry death colors and hovercraft unloading order',checkCampaignRendering],
     ['Campaign threat avoidance and deterministic continuation',checkCampaignRouting],
     ['Worker decoding and bounded campaign music buffers',checkCampaignAudio],
     ['Original campaign base rebuilding and reserve production', checkCampaignAI],

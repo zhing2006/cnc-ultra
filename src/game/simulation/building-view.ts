@@ -75,7 +75,9 @@ export class BuildingView {
         If(id.greaterThanEqual(0),()=>{
           const at=id.mul(U.WORDS),type=units.element(at.add(U.UTYPE)),row=type.mul(13),part=relative.mod(layout.slots);
           const atlas=sprites.element(index.mul(3).add(1)).toVar();
-          If(units.element(at.add(U.UHEALTH)).greaterThan(0),()=>{
+          // INFANTRY.CPP Draw_It keeps the house remap throughout the death sequence.
+          // Vehicle/building explosions retain their animation's unremapped colors.
+          If(units.element(at.add(U.UHEALTH)).greaterThan(0).or(units.element(at.add(U.UKIND)).notEqual(0)),()=>{
             const remaps=world.remaps??[{unit:0,building:0},{unit:1,building:1}];
             for(const [owner,remap] of remaps.entries())If(units.element(at.add(U.UOWNER)).equal(int(owner)),()=>{
               atlas.z.assign(select(units.element(at.add(U.UDOMAIN)).equal(int(2)),remap.building,remap.unit));
