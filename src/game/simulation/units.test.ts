@@ -6,6 +6,8 @@ import { CpuUnits,rotateFacing } from './units-cpu.ts';
 import { CpuSight } from './sight.ts';
 import * as S from './units-state.ts';
 import { distance } from '../coord.ts';
+import { blockedTerrainExitScenario, infantryTerrainScenario, terrainExitScenario } from '../../../tests/terrain-movement-scenario.ts';
+import { PATH_DELAY } from './navigation.ts';
 
 function setup(name='MTNK',facing=64,health?:number):S.UnitsSetup {
   return {grid:gridEdges(8,5,new Uint8Array(40).fill(1),true),land:new Uint8Array(40),seed:0x1995,
@@ -17,6 +19,71 @@ function arrival(s:S.UnitsSetup){
 }
 
 describe('original unit movement',()=>{
+  it.each(['E1','MTNK'])('uses a free terrain exit when the preferred exit of a %s is blocked',name=>{
+    for(const headOn of [true,false]){
+      const s=blockedTerrainExitScenario(name,headOn),cpu=new CpuUnits(s),goal=3*s.grid.width+15;
+      cpu.goals.set([goal,3*s.grid.width+1]);cpu.units[S.WORDS+S.UWAIT]=PATH_DELAY;
+      let redirected=false;
+      while(cpu.frame<600){
+        cpu.step();
+        // Before the waiting ally starts moving, the trapped unit must choose
+        // another legal exit instead of repeatedly failing its path.
+        if(cpu.frame<=PATH_DELAY){
+          const exit=cpu.units[S.UROUTE]>=0?cpu.units[S.UROUTE]:cpu.units[S.UDEST];
+          if(exit>=0&&exit!==s.units[1].cell&&s.passable![exit])redirected=true;
+        }
+        for(const field of [S.UDEST,S.UMIDDLE])if(cpu.units[field]>=0)expect(s.passable![cpu.units[field]]).toBe(1);
+      }
+      expect(redirected,`head-on ${headOn}`).toBe(true);
+      expect(cpu.units[S.UCELL]).toBe(goal);
+    }
+  });
+  it.each(['E1','MTNK'])('lets a trapped %s leave terrain without entering another blocked cell',name=>{
+    const s=terrainExitScenario(name),cpu=new CpuUnits(s);
+    cpu.step([{frame:1,kind:'move',ids:[0],target:17}]);
+    for(let tick=0;tick<240;tick++){
+      cpu.step();
+      for(const field of [S.UDEST,S.UMIDDLE]){
+        const cell=cpu.units[field];
+        if(cell>=0)expect(s.passable![cell]).toBe(1);
+      }
+      if(cpu.units[S.UCELL]!==27)expect(s.passable![cpu.units[S.UCELL]]).toBe(1);
+    }
+    expect(cpu.units[S.UCELL]).toBe(17);
+    cpu.step([{frame:cpu.frame+1,kind:'move',ids:[0],target:29}]);
+    while(cpu.frame<480){
+      cpu.step();
+      expect(s.passable![cpu.units[S.UCELL]]).toBe(1);
+    }
+    expect(cpu.units[S.UCELL]).toBe(29);
+  });
+  it.each(['E1','MTNK'])('lets a trapped %s scatter onto legal ground',name=>{
+    const s=terrainExitScenario(name),cpu=new CpuUnits(s);
+    cpu.step([{frame:1,kind:'scatter',ids:[0]}]);
+    expect(s.passable![cpu.goals[0]]).toBe(1);
+    while(cpu.frame<120)cpu.step();
+    expect(s.passable![cpu.units[S.UCELL]]).toBe(1);
+  });
+  it.each([false,true])('moves infantry around a tree with trapped save state %s',trapped=>{
+    const s=infantryTerrainScenario(trapped),cpu=new CpuUnits(s),ids=[0,1,2,3,4];
+    for(const target of [35,20]){
+      cpu.step([{frame:cpu.frame+1,kind:'move',ids,target}]);
+      for(let tick=0;tick<180;tick++){
+        cpu.step();
+        for(const id of ids){
+          const at=id*S.WORDS,destination=cpu.units[at+S.UDEST];
+          // INFANTRY.CPP Can_Enter_Cell: terrain is not a legal destination.
+          if(destination>=0)expect(s.passable![destination]).toBe(1);
+        }
+      }
+      if(target===35)expect(ids.map(id=>cpu.units[id*S.WORDS+S.UCELL])).toEqual(ids.map(()=>target));
+      else for(const id of ids){
+        expect(cpu.units[id*S.WORDS+S.UCELL]).not.toBe(35);
+        // INFANTRY.CPP AI allows arrival beside an occupied destination.
+        expect(distance(cpu.units[id*S.WORDS],cpu.units[id*S.WORDS+1],...cpu.point(target))).toBeLessThan(512);
+      }
+    }
+  });
   it('reserves an empty infantry cell for only one side when enemies arrive together',()=>{
     const s=setup('E1');s.units=[{cell:17,type:movementType('E1')},{cell:19,type:movementType('E1'),owner:1}];
     const cpu=new CpuUnits(s);cpu.step([{frame:1,kind:'move',ids:[0,1],target:18}]);

@@ -10,6 +10,8 @@ import { GpuCombat } from '../src/game/simulation/combat-gpu.ts';
 import { obstructionScenario, buildingObstructionScenario } from './obstruction-scenario.ts';
 import type { WebGPURenderer } from 'three/webgpu';
 import { applyArmyOrder, GpuArmyOrders } from '../src/game/ai/army-orders.ts';
+import { blockedTerrainExitScenario, infantryTerrainScenario, terrainExitScenario } from './terrain-movement-scenario.ts';
+import { PATH_DELAY } from '../src/game/simulation/navigation.ts';
 
 export async function compareUnreachablePrefixes() {
   const canvas = document.createElement('canvas');
@@ -56,7 +58,87 @@ export async function compareUnreachablePrefixes() {
       throw new Error('Actors did not follow the reachable prefix around intermediate obstacles');
     }
     await compareObstructions(wrapper.three);
+    await compareInfantryTerrain(wrapper.three);
+    await compareTerrainExits(wrapper.three);
+    await compareBlockedTerrainExits(wrapper.three);
   } finally { gpu.dispose(); wrapper.dispose(); canvas.remove(); }
+}
+
+async function compareBlockedTerrainExits(renderer:WebGPURenderer){
+  for(const name of ['E1','MTNK'])for(const headOn of [true,false]){
+    const setup=blockedTerrainExitScenario(name,headOn),cpu=new CpuUnits(setup),gpu=new GpuUnits(renderer,setup);
+    const goal=3*setup.grid.width+15;
+    // The ally is waiting for its previous path retry while retaining a move order.
+    cpu.goals.set([goal,3*setup.grid.width+1]);
+    cpu.units[U.WORDS+U.UWAIT]=PATH_DELAY;
+    (gpu.goals.array as Int32Array).set(cpu.goals);gpu.goals.needsUpdate=true;
+    (gpu.units.array as Int32Array).set(cpu.units);gpu.units.needsUpdate=true;
+    try{
+      await gpu.prepareForPlay();
+      for(let frame=1;frame<=600;frame++){
+        cpu.step();gpu.step();
+        if(frame<=20||frame%10===0){
+          const expected=cpu.buffers(),actual=await gpu.snapshot();
+          actual.forEach((values,b)=>{
+            for(let i=0;i<values.length;i++)if(values[i]!==expected[b][i])throw new Error(`${name} blocked terrain exit (head-on ${headOn}) tick ${frame}, buffer ${b}/${i}: GPU ${values[i]}, CPU ${expected[b][i]}`);
+          });
+        }
+      }
+      if(cpu.units[U.UCELL]!==goal)throw new Error(`${name} did not take a free exit around the waiting ally`);
+    }finally{gpu.dispose();}
+  }
+}
+
+async function compareTerrainExits(renderer:WebGPURenderer){
+  for(const name of ['E1','MTNK'])for(const scatter of [false,true]){
+    const setup=terrainExitScenario(name),cpu=new CpuUnits(setup),gpu=new GpuUnits(renderer,setup);
+    try{
+      await gpu.prepareForPlay();
+      for(let frame=1;frame<=480;frame++){
+        const commands:U.UnitCommand[]=frame===1?[{frame,kind:scatter?'scatter':'move',ids:[0],target:17}]:
+          frame===241?[{frame,kind:'move',ids:[0],target:29}]:[];
+        cpu.step(commands);gpu.step(commands);
+        for(const field of [U.UDEST,U.UMIDDLE]){
+          const cell=cpu.units[field];
+          if(cell>=0&&!setup.passable![cell])throw new Error(`${name} reserved blocked terrain at tick ${frame}`);
+        }
+        const cell=cpu.units[U.UCELL];
+        if(cell!==27&&!setup.passable![cell])throw new Error(`${name} entered another blocked cell at tick ${frame}`);
+        if(frame===1||frame%10===0){
+          const expected=cpu.buffers(),actual=await gpu.snapshot();
+          actual.forEach((values,b)=>{
+            for(let i=0;i<values.length;i++)if(values[i]!==expected[b][i])throw new Error(`${name} terrain exit (scatter ${scatter}) tick ${frame}, buffer ${b}/${i}: GPU ${values[i]}, CPU ${expected[b][i]}`);
+          });
+        }
+        if(frame===240&&(scatter?!setup.passable![cell]:cell!==17))throw new Error(`${name} did not leave blocked terrain`);
+      }
+      if(cpu.units[U.UCELL]!==29)throw new Error(`${name} did not path around terrain after leaving it`);
+    }finally{gpu.dispose();}
+  }
+}
+
+async function compareInfantryTerrain(renderer:WebGPURenderer){
+  for(const trapped of [false,true]){
+    const setup=infantryTerrainScenario(trapped),cpu=new CpuUnits(setup),gpu=new GpuUnits(renderer,setup),ids=[0,1,2,3,4];
+    try{
+      await gpu.prepareForPlay();
+      for(let frame=1;frame<=360;frame++){
+        const commands:U.UnitCommand[]=frame===1||frame===181?[{frame,kind:'move',ids,target:frame===1?35:20}]:[];
+        cpu.step(commands);gpu.step(commands);
+        for(const id of ids){
+          const destination=cpu.units[id*U.WORDS+U.UDEST];
+          if(destination>=0&&!setup.passable![destination])throw new Error(`Infantry reserved terrain at tick ${frame}`);
+        }
+        if(frame===1||frame%10===0){
+          const expected=cpu.buffers(),actual=await gpu.snapshot();
+          actual.forEach((values,b)=>{
+            for(let i=0;i<values.length;i++)if(values[i]!==expected[b][i])throw new Error(`Infantry terrain (saved ${trapped}) tick ${frame}, buffer ${b}/${i}: GPU ${values[i]}, CPU ${expected[b][i]}`);
+          });
+        }
+        if(frame===180&&ids.some(id=>cpu.units[id*U.WORDS+U.UCELL]!==35))throw new Error('The squad did not leave the tree and reach its destination');
+      }
+    }finally{gpu.dispose();}
+  }
 }
 
 async function compareObstructions(renderer: WebGPURenderer) {

@@ -177,6 +177,18 @@ export class GpuUnits {
     const type = (at: I, field: number) => data.element(u.element(at.add(int(S.UTYPE))).mul(int(TYPE_WORDS)).add(int(typeBase + field)));
     const terrainOpen = (cell: I, at: I) => data.element(cell.add(int(openBase))).notEqual(int(0)).and(
       data.element(data.element(cell.add(int(landBase))).mul(int(7)).add(type(at, TYPE_LOCOMOTION)).add(int(groundBase))).notEqual(int(0)));
+    const neighbor=(cell:I,dir:I,at:I)=>{
+      const result=int(-1).toVar();
+      const x=cell.mod(setup.grid.width).add(data.element(dir.mul(2).add(directionsBase)));
+      const y=cell.div(setup.grid.width).add(data.element(dir.mul(2).add(directionsBase+1)));
+      If(x.greaterThanEqual(0).and(y.greaterThanEqual(0)).and(x.lessThan(setup.grid.width)).and(y.lessThan(setup.grid.height)),()=>{
+        const other=y.mul(setup.grid.width).add(x);
+        If(terrainOpen(cell,at),()=>{
+          If(data.element(cell.add(edgeBase)).bitAnd(int(1).shiftLeft(dir)).notEqual(0),()=>{result.assign(other);});
+        }).Else(()=>{If(terrainOpen(other,at),()=>{result.assign(other);});});
+      });
+      return result;
+    };
     // Ported from FACING8.ASM, Desired_Facing8: half the major axis, rounded up.
     const cellFacing = (deltaX: I, deltaY: I) => {
       // Materialize both axes before the branches; each branch and the axis test use them.
@@ -455,13 +467,8 @@ export class GpuUnits {
       });
       Loop(8, ({ i }) => {
         const dir = start.add(int(i)).bitAnd(int(7));
-        const offset = int(0).toVar();
-        for (let d = 0; d < 8; d++)
-          If(dir.equal(int(d)), () => {
-            offset.assign(DIRECTIONS[d][1] * setup.grid.width + DIRECTIONS[d][0]);
-          });
-        If(data.element(cell.add(int(edgeBase))).bitAnd(int(1).shiftLeft(dir)).notEqual(int(0)), () => {
-          const other = cell.add(offset);
+        const other=neighbor(cell,dir,at);
+        If(other.greaterThanEqual(0), () => {
           If(free(other, id).greaterThanEqual(int(0)), () => {
             chosen.assign(other);
           });
@@ -593,26 +600,43 @@ export class GpuUnits {
               proposal.element(p.add(int(P_JUMP_NEXT))).assign(nextCell(field.mul(int(cells)).add(u.element(at.add(int(S.UDEST))))));
             });
             const route = u.element(at.add(int(S.UROUTE)));
-            const first = select(route.greaterThanEqual(int(0)), route, nextCell(field.mul(int(cells)).add(cell)));
+            const first = select(route.greaterThanEqual(int(0)), route, nextCell(field.mul(int(cells)).add(cell))).toVar();
+            // Permit exits from blocked terrain without making it traversable
+            // by other actors or allowing another blocked destination.
+            const escaping=terrainOpen(cell,at).not();
+            for(let d=0;d<8;d++)proposal.element(p.add(P_COST+d)).assign(0x7fffffff);
+            If(escaping,()=>{
+              const best=int(UNREACHABLE).toVar();first.assign(-1);
+              for(let dir=0;dir<8;dir++){
+                const other=neighbor(cell,int(dir),at);
+                If(other.greaterThanEqual(0),()=>{
+                  const cost=distance.element(field.mul(cells).add(other)).add(dir&1?362:256);
+                  If(cost.lessThan(best),()=>{best.assign(cost);first.assign(other);});
+                  const allowed=this.routing?next.element(field.mul(cells).add(other)).lessThan(cells):int(1).equal(1);
+                  If(allowed.and(cost.lessThan(UNREACHABLE)),()=>{proposal.element(p.add(P_COST+dir)).assign(cost);});
+                });
+              }
+              If(route.greaterThanEqual(0),()=>{first.assign(route);});
+            }).Else(()=>{
+              for(let d=0;d<8;d++){
+                If(data.element(cell.add(edgeBase)).bitAnd(1<<d).notEqual(0),()=>{
+                  const other=cell.add(DIRECTIONS[d][1]*setup.grid.width+DIRECTIONS[d][0]);
+                  const cost=distance.element(field.mul(cells).add(other));
+                  const allowed=this.routing?next.element(field.mul(cells).add(other)).lessThan(cells):int(1).equal(1);
+                  If(allowed.and(cost.lessThan(distance.element(field.mul(cells).add(cell)))),()=>{
+                    proposal.element(p.add(P_COST+d)).assign(cost.add(d&1?362:256));
+                  });
+                });
+              }
+            });
             proposal.element(p.add(int(P_NEXT))).assign(first);
             If(first.greaterThanEqual(int(0)), () => {
               proposal.element(p.add(int(P_FOLLOWING))).assign(nextCell(field.mul(int(cells)).add(first)));
             });
-            for (let d = 0; d < 8; d++) {
-              proposal.element(p.add(int(P_COST + d))).assign(0x7fffffff);
-              If(data.element(cell.add(int(edgeBase))).bitAnd(int(1 << d)).notEqual(int(0)), () => {
-                const neighbor = cell.add(int(DIRECTIONS[d][1] * setup.grid.width + DIRECTIONS[d][0]));
-                const neighborCost = distance.element(field.mul(int(cells)).add(neighbor));
-                const allowed=this.routing?next.element(field.mul(cells).add(neighbor)).lessThan(cells):int(1).equal(1);
-                If(allowed.and(neighborCost.lessThan(distance.element(field.mul(int(cells)).add(cell)))), () => {
-                  proposal.element(p.add(int(P_COST + d))).assign(neighborCost.add(d & 1 ? 362 : 256));
-                });
-              });
-            }
             if(resolvePrefix){
               const requested=proposal.element(p.add(P_GOAL)).toVar();
               const defer=()=>{proposal.element(p.add(P_READY)).assign(0);proposal.element(p.add(P_NEXT)).assign(-1);};
-              If(requested.greaterThanEqual(int(0)).and(u.element(at.add(S.UHEALTH)).greaterThan(int(0))).and(u.element(at.add(S.UATTACHED)).equal(int(0))).and(u.element(at.add(S.UDOMAIN)).equal(int(0))).and(u.element(at.add(S.UDEST)).lessThan(int(0))).and(u.element(at.add(S.UWAIT)).equal(int(0))),()=>{
+              If(requested.greaterThanEqual(int(0)).and(u.element(at.add(S.UHEALTH)).greaterThan(int(0))).and(u.element(at.add(S.UATTACHED)).equal(int(0))).and(u.element(at.add(S.UDOMAIN)).equal(int(0))).and(u.element(at.add(S.UDEST)).lessThan(int(0))).and(u.element(at.add(S.UWAIT)).equal(int(0))).and(escaping.not().or(first.lessThan(0))),()=>{
                 const constrained=this.routing?key.greaterThanEqual(cells):int(0).notEqual(0);
                 If(constrained.and(distance.element(field.mul(cells).add(cell)).equal(int(UNREACHABLE))),()=>{defer();})
                 .ElseIf(goal.equal(cell).and(requested.notEqual(cell)),()=>{
@@ -743,15 +767,16 @@ export class GpuUnits {
               const alternative = int(-1).toVar();
               const best = int(0x7fffffff).toVar();
               const current = u.element(at.add(int(S.UCELL)));
-              for (let d = 0; d < 8; d++)
-                If(data.element(current.add(int(edgeBase))).bitAnd(int(1 << d)).notEqual(int(0)), () => {
-                  const other = current.add(int(DIRECTIONS[d][1] * setup.grid.width + DIRECTIONS[d][0]));
+              for (let d = 0; d < 8; d++) {
+                const other = neighbor(current, int(d), at);
+                If(other.greaterThanEqual(int(0)), () => {
                   const cost = proposal.element(p.add(int(P_COST + d)));
                   If(free(other, id).greaterThanEqual(int(0)).and(cost.lessThan(best)), () => {
                     best.assign(cost);
                     alternative.assign(other);
                   });
                 });
+              }
               If(alternative.lessThan(int(0)), () => {
                 ok.assign(0);
                 u.element(at.add(int(S.UROUTE))).assign(-1);
@@ -807,7 +832,10 @@ export class GpuUnits {
       If(cell.greaterThanEqual(int(0)).and(u.element(at.add(int(S.UKIND))).notEqual(int(0))), () => {
         const backed = entryPoint(cell, at).toVar();
         proposal.element(p.add(int(P_APPROACH))).assign(cell);
-        proposal.element(p.add(int(P_CELL))).assign(backed.y.div(int(256)).mul(int(setup.grid.width)).add(backed.x.div(int(256))));
+        const physical=backed.y.div(int(256)).mul(int(setup.grid.width)).add(backed.x.div(int(256))).toVar();
+        // Preserve the spot preference without stopping in blocked terrain at a diagonal corner.
+        If(terrainOpen(physical,at).not(),()=>{physical.assign(cell);});
+        proposal.element(p.add(int(P_CELL))).assign(physical);
         proposal.element(p.add(int(P_SLOT))).assign(-1);
       });
     });

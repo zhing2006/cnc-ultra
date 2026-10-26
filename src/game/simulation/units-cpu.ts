@@ -90,13 +90,34 @@ export class CpuUnits {
     }
     return infantry ? freeSpot(mask, entrySpot(this.units[at], this.units[at + 1], ...this.point(cell)), randomWord(this.setup.seed, this.frame, id, 2) % 4) : mask === 31 ? 0 : -1;
   }
-  private neighbor(cell: number, dir: number) {
-    return this.setup.grid.edges[cell] & (1 << dir) ? cell + DIRECTIONS[dir][1] * this.setup.grid.width + DIRECTIONS[dir][0] : -1;
+  private neighbor(cell: number, dir: number, id:number) {
+    const [dx,dy]=DIRECTIONS[dir],x=cell%this.setup.grid.width+dx,y=Math.floor(cell/this.setup.grid.width)+dy;
+    if(x<0||y<0||x>=this.setup.grid.width||y>=this.setup.grid.height)return -1;
+    const other=y*this.setup.grid.width+x;
+    const allowed=this.terrainOpen(cell,id)?!!(this.setup.grid.edges[cell]&(1<<dir)):this.terrainOpen(other,id);
+    return allowed?other:-1;
   }
   private next(cell: number, goal: number,id:number) {
     const field = goal < 0 ? -1 : this.flow.lookup[this.routing?.key(id,goal)??goal];
     if(field<0||!this.flow.fields[field*FIELD_WORDS+1])return -1;
-    const cells=this.setup.grid.edges.length,value=this.flow.next[field*cells+cell];return value>=cells?value-cells:value;
+    const cells=this.setup.grid.edges.length,base=field*cells,value=this.flow.next[base+cell];
+    // Can_Enter_Cell checks the destination. An actor already inside blocked
+    // terrain may leave for a legal neighbor without opening a path through it.
+    if(!this.terrainOpen(cell,id)){
+      let chosen=-1,best=UNREACHABLE;
+      for(let dir=0;dir<8;dir++){
+        const other=this.neighbor(cell,dir,id);
+        if(other<0)continue;
+        const cost=this.flow.distance[base+other]+(dir&1?362:256);
+        if(cost<best){chosen=other;best=cost;}
+      }
+      return chosen;
+    }
+    return value>=cells?value-cells:value;
+  }
+  private terrainOpen(cell:number,id:number){
+    return !!(this.setup.passable??this.setup.grid.edges)[cell]&&
+      GROUND_SPEED[this.setup.land[cell]][MOVEMENT[this.units[id*S.WORDS+S.UTYPE]].locomotion]!==0;
   }
   private overrun(at: number) {
     if (this.units[at + S.UKIND]) return;
@@ -207,7 +228,7 @@ export class CpuUnits {
     // Ported from UNIT.CPP / INFANTRY.CPP, Scatter: choose a free adjacent cell.
     let destination=-1;
     for (let i = 0; i < 8; i++) {
-      const other = this.neighbor(cell, (start + i) & 7);
+      const other = this.neighbor(cell, (start + i) & 7,id);
       if (other >= 0 && this.free(other, id) >= 0)
         this.goals[id] = destination = other;
     }
@@ -276,6 +297,7 @@ export class CpuUnits {
     for(let id=0;id<this.goals.length;id++){
       const at=id*S.WORDS,goal=this.goals[id],path=this.pathGoals[id],source=u[at+S.UCELL],key=this.routing?.key(id,path)??path,field=path<0?-1:this.flow.lookup[key];
       if(goal<0||u[at+S.UHEALTH]<=0||u[at+S.UATTACHED]||u[at+S.UDOMAIN]||u[at+S.UDEST]>=0||u[at+S.UWAIT]||field<0||!this.flow.fields[field*FIELD_WORDS+1])continue;
+      if(!this.terrainOpen(source,id)&&this.next(source,path,id)>=0)continue;
       if(key>=cells&&this.flow.distance[field*cells+source]===UNREACHABLE){prefixPending[id]=1;}
       else if(path===source&&goal!==source){
         const prefix=reachablePrefix(this.setup,source,goal,this.flow.distance,field*cells);
@@ -368,7 +390,7 @@ export class CpuUnits {
         let alternative = -1;
         let best = 0x7fffffff;
         for (let d = 0; d < 8; d++) {
-          const other = this.neighbor(u[at + S.UCELL], d);
+          const other = this.neighbor(u[at + S.UCELL], d,id);
           // A one-step detour must make progress in the shared distance field.
           // Otherwise its reverse is equally eligible on the next tick.
           if (other < 0 || this.free(other, id) < 0 || this.flow.next[base+other]>=cells || this.flow.distance[base + other] >= this.flow.distance[base + u[at + S.UCELL]])
@@ -423,6 +445,9 @@ export class CpuUnits {
       const head = entryPoint(u[at], u[at + 1], ...this.point(p.cell));
       p.approach = p.cell;
       p.cell = Math.floor(head[1] / 256) * this.setup.grid.width + Math.floor(head[0] / 256);
+      // A diagonal backup can land in the blocked orthogonal neighbor. Keep
+      // the original spot preference, but stop inside the legal approach cell.
+      if(!this.terrainOpen(p.cell,p.id))p.cell=p.approach;
       p.slot = -1;
     }
     // Reserve departures first, then reuse their vacated spots for short steps
