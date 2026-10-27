@@ -9,7 +9,7 @@ const SIDE = 16, HALO = SIDE + 2, AREA = HALO * HALO;
 export const TILE_SWEEPS = 8;
 
 /** Block Jacobi: a sweep reads a frozen halo, then relaxes each tile locally. */
-export function relaxTiles(grid: Grid, base: number, distance: Int32Array, scratch: Int32Array) {
+export function relaxTiles(grid: Grid, base: number, distance: Int32Array, scratch: Int32Array, blockedTerminals=false) {
   let current = new Int32Array(AREA), other = new Int32Array(AREA);
   for (let sweep = 0; sweep < TILE_SWEEPS; sweep++) {
     const input = sweep & 1 ? scratch : distance, output = sweep & 1 ? distance : scratch;
@@ -25,7 +25,10 @@ export function relaxTiles(grid: Grid, base: number, distance: Int32Array, scrat
         for (let y = 0; y < SIDE && ty + y < grid.height; y++) for (let x = 0; x < SIDE && tx + x < grid.width; x++) {
           const cell = (ty + y) * grid.width + tx + x, index = (y + 1) * HALO + x + 1;
           let best = current[index];
-          for (let d = 0; d < 8; d++) if (grid.edges[cell] & (1 << d)) {
+          for (let d = 0; d < 8; d++) {
+            const nx=tx+x+DIRECTIONS[d][0],ny=ty+y+DIRECTIONS[d][1];
+            const terminal=blockedTerminals&&nx>=0&&ny>=0&&nx<grid.width&&ny<grid.height&&current[index+DIRECTIONS[d][1]*HALO+DIRECTIONS[d][0]]===0;
+            if (!(grid.edges[cell] & (1 << d))&&!terminal)continue;
             best = Math.min(best, current[index + DIRECTIONS[d][1] * HALO + DIRECTIONS[d][0]] + (d & 1 ? 362 : 256));
           }
           other[index] = best;
@@ -51,7 +54,8 @@ const uniformLoad = wgslFn('fn tileUniformLoad(value: ptr<workgroup, u32>) -> u3
 
 /** One workgroup per 16x16 tile, with dispatch boundaries as global barriers. */
 export function tiledFlow(grid: Grid, capacity: number, fields: StorageBufferAttribute,
-  distance: StorageBufferAttribute, scratch: StorageBufferAttribute, directions: StorageBufferAttribute, edges: StorageBufferAttribute) {
+  distance: StorageBufferAttribute, scratch: StorageBufferAttribute, directions: StorageBufferAttribute, edges: StorageBufferAttribute,
+  destinations?: StorageBufferAttribute) {
   const cells = grid.edges.length, columns = Math.ceil(grid.width / SIDE), tiles = columns * Math.ceil(grid.height / SIDE);
   const dispatch = new IndirectStorageBufferAttribute(new Uint32Array(capacity + 3), 1);
   const changes = new StorageBufferAttribute(new Uint32Array(capacity), 1);
@@ -60,6 +64,16 @@ export function tiledFlow(grid: Grid, capacity: number, fields: StorageBufferAtt
   const meta = storage(fields, 'int', capacity * 3).setName('tile_meta'), edge = storage(edges, 'uint', cells).setName('tile_edge').toReadOnly();
   const a = storage(distance, 'int', distance.count).setName('tile_a'), b = storage(scratch, 'int', scratch.count).setName('tile_b');
   const next = storage(directions, 'int', directions.count).setName('tile_next');
+  const seeds = destinations ? storage(destinations, 'uint', destinations.count).toReadOnly() : undefined;
+  // A terminal can be occupied/blocked. Permit the final edge into it without
+  // making that cell a passage to another destination.
+  const traversable=(cell:Node<'int'>,d:number,terminalDistance:Node<'int'>)=>{
+    const open=edge.element(cell).bitAnd(uint(1<<d)).notEqual(uint(0));
+    if(!seeds)return open;
+    const x=cell.mod(int(grid.width)).add(int(DIRECTIONS[d][0])),y=cell.div(int(grid.width)).add(int(DIRECTIONS[d][1]));
+    return open.or(x.greaterThanEqual(int(0)).and(y.greaterThanEqual(int(0))).and(x.lessThan(int(grid.width))).and(y.lessThan(int(grid.height)))
+      .and(terminalDistance.equal(int(0))));
+  };
   const indirect = (body: () => void) => {
     const kernel = Fn(body)().computeKernel([128]);
     // Three supports indirect ComputeNode.dispatchSize; its type declaration still omits it.
@@ -87,7 +101,8 @@ export function tiledFlow(grid: Grid, capacity: number, fields: StorageBufferAtt
   const initialize = indirect(() => tileCells((slot, cell) => {
     const at = slot.mul(int(3)), index = slot.mul(int(cells)).add(cell);
     If(meta.element(at.add(int(2))).notEqual(int(0)), () => {
-      const value = select(cell.equal(meta.element(at)), int(0), int(UNREACHABLE));
+      const terminal = seeds ? seeds.element(meta.element(at).mul(cells).add(cell)).notEqual(uint(0)) : cell.equal(meta.element(at));
+      const value = select(terminal, int(0), int(UNREACHABLE));
       a.element(index).assign(value); b.element(index).assign(value); next.element(index).assign(-1);
     });
   }));
@@ -119,7 +134,7 @@ export function tiledFlow(grid: Grid, capacity: number, fields: StorageBufferAtt
           tileCells((_,cell,i) => {
             const index = i.div(int(SIDE)).add(int(1)).mul(int(HALO)).add(i.mod(int(SIDE))).add(int(1));
             const best = current.element(index).toVar();
-            for(let d=0;d<8;d++) If(edge.element(cell).bitAnd(uint(1 << d)).notEqual(uint(0)), () => {
+            for(let d=0;d<8;d++) If(traversable(cell,d,current.element(index.add(int(DIRECTIONS[d][1]*HALO+DIRECTIONS[d][0])))), () => {
               best.assign(intMin(best,current.element(index.add(int(DIRECTIONS[d][1]*HALO+DIRECTIONS[d][0]))).add(int(d & 1 ? 362 : 256))));
             });
             other.element(index).assign(best);
@@ -158,7 +173,7 @@ export function tiledFlow(grid: Grid, capacity: number, fields: StorageBufferAtt
       const base = slot.mul(int(cells)).toVar(), chosen = int(-1).toVar();
       for(let d=0;d<8;d++) {
         const neighbor = cell.add(int(DIRECTIONS[d][1]*grid.width+DIRECTIONS[d][0]));
-        If(chosen.lessThan(int(0)).and(edge.element(cell).bitAnd(uint(1<<d)).notEqual(uint(0))), () => {
+        If(chosen.lessThan(int(0)).and(traversable(cell,d,a.element(base.add(neighbor)))), () => {
           If(a.element(base.add(neighbor)).add(int(d&1?362:256)).equal(a.element(base.add(cell))), () => { chosen.assign(neighbor); });
         });
       }

@@ -25,6 +25,7 @@ import type { GpuSelection } from './selection.ts';
 /** Original indexed shroud and selection marks, followed by diagnostic layers and the cursor. */
 export class UnitsView {
   readonly pointer = uniform(new Vector2(-1, -1));
+  readonly sampleStep = uniform(1, 'int');
   readonly special = uniform(0,'int');
   readonly band = uniform(new Vector4(-1, -1, -1, -1));
   readonly flow = uniform(0, 'int');
@@ -349,7 +350,7 @@ export class UnitsView {
         const lo = this.band.xy.min(this.band.zw);
         const hi = this.band.xy.max(this.band.zw);
         If(pixel.x.greaterThanEqual(lo.x).and(pixel.x.lessThanEqual(hi.x)).and(pixel.y.greaterThanEqual(lo.y)).and(pixel.y.lessThanEqual(hi.y))
-          .and(pixel.x.equal(lo.x).or(pixel.x.equal(hi.x)).or(pixel.y.equal(lo.y)).or(pixel.y.equal(hi.y))), () => {
+          .and(pixel.x.sub(lo.x).lessThan(float(this.sampleStep)).or(hi.x.sub(pixel.x).lessThan(float(this.sampleStep))).or(pixel.y.sub(lo.y).lessThan(float(this.sampleStep))).or(hi.y.sub(pixel.y).lessThan(float(this.sampleStep)))), () => {
           out.assign(vec4(1, 1, 1, 1));
         });
       });
@@ -378,7 +379,7 @@ export class UnitsView {
           });
         });
         const r = regions.element(frame);
-        const local = p.sub(ivec2(this.pointer)).add(hot);
+        const local = ivec2(floor(pixel.sub(this.pointer).div(float(this.sampleStep)))).add(hot);
         If(local.x.greaterThanEqual(0).and(local.y.greaterThanEqual(0)).and(local.x.lessThan(r.z)).and(local.y.lessThan(r.w)), () => {
           const ink = sample(r.xy.add(local));
           If(ink.notEqual(0), () => {

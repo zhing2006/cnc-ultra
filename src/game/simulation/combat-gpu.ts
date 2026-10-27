@@ -1,5 +1,7 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { alliedOwners } from './alliances.ts';
+import { GpuUltraHunt } from './ultra-hunt.ts';
+import { TARGET_SORT_OFFSETS } from './target-order.ts';
 import { IndirectStorageBufferAttribute, StorageBufferAttribute, type ComputeNode, type Node, type WebGPURenderer } from 'three/webgpu';
 import { Fn, If, Break, int, uint, ivec2, storage, instanceIndex, select, abs, uniform, atomicLoad, atomicStore, atomicOr, atomicAnd, atomicAdd, atomicMin, atomicMax, wgslFn, localId, workgroupId, workgroupArray, workgroupBarrier } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
@@ -33,6 +35,7 @@ const TYPE = { PRIMARY: 0, SECONDARY: 1, ARMOR: 2, TURRET: 3, TWO_SHOOTER: 4, LO
 const exchange = wgslFn('fn combatExchange(p: ptr<storage, atomic<u32>, read_write>, v: u32) -> u32 { return atomicExchange(p, v); }');
 const bitCount = wgslFn('fn combatBitCount(v: u32) -> u32 { return countOneBits(v); }');
 export class GpuCombat {
+  readonly ultraHunt?: GpuUltraHunt;
   readonly debugDamageOwner=uniform(-1,'int');
   readonly debugDamageScale=uniform(DAMAGE_SCALE,'int');
   scaleDamage(amount:I,owner:I):I{
@@ -40,7 +43,7 @@ export class GpuCombat {
     const adjusted=intMax(int(1),amount.div(DAMAGE_SCALE).mul(scale).add(amount.mod(DAMAGE_SCALE).mul(scale).div(DAMAGE_SCALE)));
     return select(owner.equal(this.debugDamageOwner).and(amount.greaterThan(0)),select(scale.equal(0),int(0),adjusted),amount);
   }
-  get saveBuffers() { return [...this.attributes, ...this.movement.saveBuffers, ...this.sight.saveBuffers]; }
+  get saveBuffers() { return [...this.attributes, ...this.movement.saveBuffers, ...this.sight.saveBuffers, ...(this.ultraHunt?.saveBuffers??[])]; }
   readonly movement: GpuUnits;
   readonly state: StorageBufferAttribute;
   readonly projectiles: StorageBufferAttribute;
@@ -118,7 +121,7 @@ export class GpuCombat {
     const shot = (id: I, field: number) => p.element(id.mul(C.BWORDS).add(field));
     const position = (id: I) => ivec2(unit(id, 0), unit(id, 1));
     const values: number[] = [];
-    const append = (a: readonly number[]) => { const start = values.length; values.push(...a); return start; };
+    const append = (a: readonly number[]) => { const start = values.length; for (const value of a) values.push(value); return start; };
     const typeBase = append(combatTypes.flatMap((t, i) => [t.primary, t.secondary, t.armor, t.turret, t.twoShooter,
     t.lockTurret, t.crew, t.transport, t.explosion, t.launch, t.proneLaunch, t.immune,
     MOVEMENT[i].rotation, MOVEMENT[i].strength, t.actions[13] ?? 0, t.actions[25] ?? 0, t.actions[16] ?? 0, t.actions[22] ?? 0]));
@@ -133,6 +136,7 @@ export class GpuCombat {
     const locomotionBase = append(MOVEMENT.map(t => t.locomotion));
     const crusherBase = append(combatTypes.map(t => t.crusher));
     const valueBase = append(combatTypes.map(t => t.risk + t.reward));
+    const sortBase = append(TARGET_SORT_OFFSETS.flat());
     const fraidyBase = append(combatTypes.map(t => Number(t.fraidy)));
     const ammoBase = append(combatTypes.map(t => t.ammo));
     const targetableBase = append(combatTypes.map(t => Number(t.targetable)));
@@ -150,7 +154,9 @@ export class GpuCombat {
     const buildingBase=this.buildingOffset;
     const openBase = append(Array.from(setup.grid.edges));
     const neighborsBase = append([0, 0, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1, -1, 0, -1, -1]);
-    const crewBase = append(setup.units.map((_, id) => setup.crewParents?.indexOf(id) ?? -1));
+    const crewIds = new Array<number>(count).fill(-1);
+    setup.crewParents?.forEach((parent, id) => { if (parent >= 0 && crewIds[parent] < 0) crewIds[parent] = id; });
+    const crewBase = append(crewIds);
     this.externalMetaOffset=append(new Array(C.MAX_SPECIAL_BLASTS*2).fill(0));
     const tableAttribute=keep(Int32Array.from(values));
     this.staticData=tableAttribute;
@@ -311,7 +317,7 @@ export class GpuCombat {
     const DEATH_BITS = UNIT_LINK + count, words = Math.ceil(count / 32), QUEUE = DEATH_BITS + words;
     const COMMANDS = QUEUE + count, DAMAGE = COMMANDS + count * 2, CAUSE = DAMAGE + count;
     const factions = Math.max(setup.houseCount ?? 2,...setup.units.map(u => (u.owner ?? 0)+1));
-    const THREATS = CAUSE + count, DEATH_COUNT = THREATS + factions * 8;
+    const THREATS = CAUSE + count, DEATH_COUNT = THREATS + factions * 16;
     const DEAD_CELLS = DEATH_COUNT + 1;
     const regionColumns = Math.ceil(setup.grid.width / 8), regionCount = regionColumns * Math.ceil(setup.grid.height / 8);
     const GUARD_CELLS = DEAD_CELLS + cells, GUARD_REGIONS = GUARD_CELLS + cells * factions;
@@ -366,9 +372,10 @@ export class GpuCombat {
     };
     const scan = (id: I) => {
       const best = int(-1).toVar(), primary = type(id, TYPE.PRIMARY).toVar();
-      If(primary.greaterThanEqual(int(0)).and(unit(id,U.UTYPE).notEqual(int(movementType('RMBO'))).or(unit(id,U.UOWNER).notEqual(this.humanOwner))), () => {
-        const area=state(id,C.CMISSION).equal(int(C.GUARD_AREA)).toVar(),center=position(id).toVar();
-        If(area,()=>{center.assign(targetPoint(state(id,C.CGUARD_CELL).negate().sub(1)));});
+      If(primary.greaterThanEqual(int(0)).and(unit(id,U.UTYPE).notEqual(int(movementType('RMBO'))).or(unit(id,U.UOWNER).notEqual(this.humanOwner)).or(state(id,C.CMISSION).equal(int(C.HUNT)))), () => {
+        const guardArea=state(id,C.CMISSION).equal(int(C.GUARD_AREA)).toVar();
+        const area=guardArea.or(int(Number(!!setup.ultraHunt)).equal(1).and(state(id,C.CMISSION).equal(int(C.HUNT)))).toVar(),center=position(id).toVar();
+        If(guardArea,()=>{center.assign(targetPoint(state(id,C.CGUARD_CELL).negate().sub(1)));});
         const origin = muzzle(id, int(0),center).div(256).toVar();
         const range = weapon(primary, WEAPON.RANGE).toVar();
         If(type(id, TYPE.SECONDARY).greaterThanEqual(int(0)), () => { range.assign(intMax(range, weapon(type(id, TYPE.SECONDARY), 3))); });
@@ -454,19 +461,30 @@ export class GpuCombat {
         If(mapped.element(cell).notEqual(int(0)).or(shroud.element(cell).notEqual(int(-2))), () => { state(id, C.CSEEN).assign(1); });
       });
     });
-    // TECHNO.CPP Evaluate_Object's non-ADVANCED score bottoms out at two.
-    // Reduce the first eligible enemy and maximum numerator once per faction.
-    // Only nearby enemies can exceed that baseline, so HUNT never scans the map
-    // or every unit for each hunter. Equal scores use stable unit IDs.
+    // TECHNO.CPP Greatest_Threat: aircraft first, then the current Sort_Y order.
+    // See target-order.ts for the deliberate full-sort approximation to LAYER.CPP.
+    const sortY=(id:I)=>{
+      const tethered=int(0).toVar(),carrier=unit(id,U.UENTER).sub(1).toVar();
+      If(unit(id,U.UKIND).notEqual(int(0)).and(carrier.greaterThanEqual(int(0))),()=>{
+        If(unit(carrier,U.UTYPE).equal(int(movementType('APC'))).and(unit(id,U.UDEST).equal(unit(carrier,U.UCELL))),()=>{tethered.assign(1);});
+      });
+      return select(unit(id,U.UDOMAIN).equal(int(1)),int(0),unit(id,1).add(512).add(
+        select(unit(id,U.UKIND).notEqual(int(0)).and(tethered.notEqual(int(0)).or(unit(id,U.UFLAGS).bitAnd(U.UNLOADING).notEqual(int(0)))),int(256),
+          select(unit(id,U.UTYPE).equal(int(movementType('LST'))).and(unit(id,U.UFLAGS).bitAnd(U.HOVER_TETHERED).notEqual(int(0))),int(-128),table.element(unit(id,U.UTYPE).mul(2).add(sortBase+1))))));
+    };
+    const sortX=(id:I)=>select(unit(id,U.UDOMAIN).equal(int(1)),int(0),unit(id,0).add(512).add(table.element(unit(id,U.UTYPE).mul(2).add(sortBase))));
+    const precedes=(a:I,b:I)=>sortY(a).lessThan(sortY(b)).or(sortY(a).equal(sortY(b)).and(sortX(a).lessThan(sortX(b)).or(sortX(a).equal(sortX(b)).and(a.lessThan(b)))));
     const clearThreats = kernel(factions*4, () => {
-      write(int(instanceIndex).mul(2).add(THREATS), int(count));
-      write(int(instanceIndex).mul(2).add(THREATS + 1), int(0));
+      const at=int(instanceIndex).mul(4).add(THREATS);
+      write(at,int(count));write(at.add(1),int(0));write(at.add(2),int(0x7fffffff));write(at.add(3),int(0x7fffffff));
     });
-    const threats = kernel(count, () => {
-      const id = int(instanceIndex);
-      If(unit(id, U.UHEALTH).greaterThan(int(0)).and(unit(id, U.UATTACHED).equal(0)), () => {
-          Loop(factions, ({ i }) => {
-            If(allied(int(i),unit(id, U.UOWNER)).not(), () => {
+    // Lexicographic reductions avoid packing large-map coordinates into 32 bits.
+    const threatPasses=[0,1,2].map(pass=>kernel(count, () => {
+      const id=int(instanceIndex);
+      If(unit(id,U.UHEALTH).greaterThan(int(0)).and(unit(id,U.UATTACHED).equal(int(0))),()=>{
+        Loop(factions,({i})=>{
+          If(allied(i,unit(id,U.UOWNER)).not(),()=>{
+            if(pass===0){
               const cell = cellAt(position(id)).toVar();
               const region = cell.div(setup.grid.width).div(8).mul(regionColumns).add(cell.mod(setup.grid.width).div(8));
               If(unit(id,U.UDOMAIN).notEqual(int(1)).or(unit(id,U.UALTITUDE).equal(int(0))),()=>{
@@ -476,31 +494,39 @@ export class GpuCombat {
                 });
               });
               If(unit(id,U.UDOMAIN).equal(int(1)),()=>{atomicOr(index.element(region.mul(factions).add(i).add(GUARD_REGIONS)),uint(2));});
-              If(unit(id,U.UCLOAK).notEqual(int(2)).and(table.element(unit(id,U.UTYPE).add(targetableBase)).notEqual(int(0)))
-                .and(int(i).notEqual(this.humanOwner).or(unit(id,U.UDOMAIN).notEqual(int(2))).or(type(id,TYPE.PRIMARY).greaterThanEqual(int(0))))
-                .and(int(Number(!!setup.multiplayer)).notEqual(int(0)).or(state(id, C.CSEEN).notEqual(int(0)))), () => {
-                const airborne=int(unit(id,U.UDOMAIN).equal(1).and(unit(id,U.UALTITUDE).greaterThan(0))),base=int(i).mul(8).add(THREATS);
-                const record=(offset:I)=>{atomicMin(index.element(base.add(offset)),uint(id));atomicMax(index.element(base.add(offset).add(1)),uint(table.element(unit(id,U.UTYPE).add(valueBase)).add(state(id,C.CKILLS))));};
-                record(airborne.mul(2));
-                If(table.element(unit(id,U.UTYPE).add(capturableBase)).notEqual(int(0)),()=>{record(int(4));});
-                If(unit(id,U.UKIND).notEqual(int(0)).or(unit(id,U.UDOMAIN).equal(int(2))),()=>{record(int(6));});
-              });
+            }
+            If(unit(id,U.UCLOAK).notEqual(int(2)).and(table.element(unit(id,U.UTYPE).add(targetableBase)).notEqual(int(0)))
+              .and(i.notEqual(this.humanOwner).or(unit(id,U.UDOMAIN).notEqual(int(2))).or(type(id,TYPE.PRIMARY).greaterThanEqual(int(0))))
+              .and(int(Number(!!setup.multiplayer)).notEqual(int(0)).or(state(id,C.CSEEN).notEqual(int(0)))),()=>{
+              const airborne=int(unit(id,U.UDOMAIN).equal(int(1)).and(unit(id,U.UALTITUDE).greaterThan(int(0)))),base=i.mul(16).add(THREATS);
+              const record=(category:I)=>{
+                const at=base.add(category.mul(4));
+                if(pass===0){atomicMin(index.element(at.add(2)),uint(sortY(id)));atomicMax(index.element(at.add(1)),uint(table.element(unit(id,U.UTYPE).add(valueBase)).add(state(id,C.CKILLS))));}
+                else If(sortY(id).equal(read(at.add(2))),()=>{
+                  if(pass===1)atomicMin(index.element(at.add(3)),uint(sortX(id)));
+                  else If(sortX(id).equal(read(at.add(3))),()=>{atomicMin(index.element(at),uint(id));});
+                });
+              };
+              record(airborne);
+              If(table.element(unit(id,U.UTYPE).add(capturableBase)).notEqual(int(0)),()=>{record(int(2));});
+              If(unit(id,U.UKIND).notEqual(int(0)).or(unit(id,U.UDOMAIN).equal(int(2))),()=>{record(int(3));});
             });
           });
         });
-    });
+      });
+    }));
     const hunt = (id: I) => {
-      const base=unit(id,U.UOWNER).mul(8).add(THREATS).toVar(),best=int(count).toVar(),maximum=int(0).toVar();
+      const base=unit(id,U.UOWNER).mul(16).add(THREATS).toVar(),best=int(count).toVar(),maximum=int(0).toVar();
       // Ground, airborne, capturable and sniper targets have separate eligibility.
       const engineer=unit(id,U.UTYPE).equal(int(movementType('E6'))),sniper=unit(id,U.UTYPE).equal(int(movementType('RMBO')));
       Loop(2,({i})=>{
         If(i.equal(int(0)).or(engineer.or(sniper).not()),()=>{
-          const category=int(select(engineer,int(2),select(sniper,int(3),int(i)))),at=base.add(category.mul(2)),candidate=lookupIndex(at).toVar();
-          If(candidate.lessThan(count),()=>{If(canTarget(id,candidate,type(id,TYPE.PRIMARY)).or(canTarget(id,candidate,type(id,TYPE.SECONDARY))),()=>{best.assign(intMin(best,candidate));maximum.assign(intMax(maximum,lookupIndex(at.add(1))));});});
+          const category=int(select(engineer,int(2),select(sniper,int(3),int(i)))),at=base.add(category.mul(4)),candidate=lookupIndex(at).toVar();
+          If(candidate.lessThan(int(count)),()=>{If(canTarget(id,candidate,type(id,TYPE.PRIMARY)).or(canTarget(id,candidate,type(id,TYPE.SECONDARY))),()=>{If(best.equal(int(count)),()=>{best.assign(candidate);}).ElseIf(precedes(candidate,best),()=>{best.assign(candidate);});maximum.assign(intMax(maximum,lookupIndex(at.add(1))));});});
         });
       });
       If(best.lessThan(int(count)), () => {
-        const scoreOf = (other: I) => intMax(select(table.element(unit(other,U.UTYPE).add(valueBase)).notEqual(0),int(2),int(0)), table.element(unit(other, U.UTYPE).add(valueBase)).add(state(other, C.CKILLS))
+        const scoreOf = (other: I) => intMax(select(table.element(unit(other,U.UTYPE).add(valueBase)).notEqual(int(0)),int(2),int(0)), table.element(unit(other, U.UTYPE).add(valueBase)).add(state(other, C.CKILLS))
           .div(intMax(int(1), unitDistance(position(id), position(other)))));
         const score = scoreOf(best).toVar();
         const radius = maximum.div(score.add(1)).div(256).add(1).toVar();
@@ -514,7 +540,7 @@ export class GpuCombat {
                 .and(table.element(unit(other, U.UTYPE).add(targetableBase)).notEqual(int(0)))
                 .and(canTarget(id,other,type(id,TYPE.PRIMARY)).or(canTarget(id,other,type(id,TYPE.SECONDARY)))), () => {
                   const value = scoreOf(other).toVar();
-                  If(value.greaterThan(score).or(value.equal(score).and(other.lessThan(best))), () => { best.assign(other); score.assign(value); });
+                  If(value.greaterThan(score).or(value.equal(score).and(precedes(other,best))), () => { best.assign(other); score.assign(value); });
                 });
             }, lookupIndex);
           });
@@ -727,12 +753,18 @@ export class GpuCombat {
             If(inRange(id, target).not().and(inRange(id, target, int(1)).not()), () => { target.assign(-1); });
           });
           If(target.equal(int(-1)), () => {
-            If(state(id, C.CMISSION).equal(int(C.HUNT)), () => { target.assign(hunt(id)); })
+            If(state(id, C.CMISSION).equal(int(C.HUNT)), () => {
+              if (setup.ultraHunt) {
+                If(unit(id,U.UDOMAIN).equal(int(0)).and(unit(id,U.UTYPE).notEqual(int(movementType('E6')))),()=>{target.assign(scan(id));})
+                  .Else(()=>{target.assign(hunt(id));});
+                If(target.greaterThanEqual(int(0)).and(paths.element(id).equal(int(U.DIRECT_STEP))),()=>{goals.element(id).assign(-1);paths.element(id).assign(-1);unit(id,U.UROUTE).assign(-1);});
+              } else target.assign(hunt(id));
+            })
               .Else(() => { target.assign(scan(id)); });
           });
           state(id, C.CSCAN).assign(select(moveScan,int(18),select(state(id,C.CMISSION).equal(int(C.GUARD_AREA)).and(searching).and(target.notEqual(int(-1))),int(1),
             select(state(id, C.CMISSION).equal(int(C.HUNT)), int(20), pick(id, 50, int(5), true).add(15)))));
-          If(target.equal(-1).and(state(id,C.CMISSION).equal(C.GUARD).or(state(id,C.CMISSION).equal(C.HUNT))),()=>{randomAnimate(id);});
+          If(target.equal(-1).and(state(id,C.CMISSION).equal(C.GUARD).or(state(id,C.CMISSION).equal(int(C.HUNT)))),()=>{randomAnimate(id);});
         });
         If(state(id,C.CACTION).equal(9).or(state(id,C.CACTION).equal(10)).and(target.notEqual(-1).or(goals.element(id).greaterThanEqual(0)).or(unit(id,U.UDEST).greaterThanEqual(0))),()=>{state(id,C.CACTION).assign(0);});
         If(unit(id,U.UTYPE).equal(int(movementType('E6'))).and(target.greaterThanEqual(int(0))).and(unit(id,U.UABILITY_MODE).equal(0)).and(state(id,C.CMISSION).equal(int(C.HUNT)).or(state(id,C.CMISSION).equal(C.ATTACK))),()=>{
@@ -1112,7 +1144,7 @@ export class GpuCombat {
             If(state(id, C.CAMMO).greaterThan(int(0)), () => { state(id, C.CAMMO).subAssign(1); });
             If(table.element(unit(id,U.UTYPE).add(fraidyBase)).notEqual(0).and(state(id,C.CAMMO).equal(0)),()=>{
               state(id,C.CFEAR).assign(255);
-              If(state(id,C.CMISSION).equal(C.ATTACK).or(state(id,C.CMISSION).equal(C.HUNT)),()=>{state(id,C.CMISSION).assign(C.GUARD);});
+              If(state(id,C.CMISSION).equal(C.ATTACK).or(state(id,C.CMISSION).equal(int(C.HUNT))),()=>{state(id,C.CMISSION).assign(C.GUARD);});
             });
             If(unit(id, U.UTYPE).equal(int(8)).and(state(id, C.CRELOAD).equal(int(0))), () => { state(id, C.CRELOAD).assign(450); });
             state(id, C.CLAST_FIRE).assign(clock());
@@ -1601,7 +1633,7 @@ export class GpuCombat {
     this.commands = keep(new Int32Array(count * 2).fill(-1));
     const incoming = storage(this.commands, 'int', count * 2).setName('combat_incoming').toReadOnly();
     this.upload = kernel(count * 2, () => { write(int(instanceIndex).add(COMMANDS), incoming.element(instanceIndex)); });
-    this.before = [this.capture, clearHeads, link, discover, clearThreats, clearGuards, threats, buildingMuzzles, prepare, collectRoutes, prepareRoutes];
+    this.before = [this.capture, clearHeads, link, discover, clearThreats, clearGuards, ...threatPasses, buildingMuzzles, prepare, collectRoutes, prepareRoutes];
     this.routes = [solveRoutes, orient, defense,buildingMuzzles];
     this.overruns = [clearHeads, link, clearImpacts, clearDeaths, claimCrush, crush, uncloakCrushers];
     this.impacts = [fire, clearImpacts,
@@ -1613,6 +1645,7 @@ export class GpuCombat {
     this.special=new GpuSpecialInfantry(this);
     this.cloak=new GpuCloak(this,(id,target)=>inRange(id,target),unit,state);
     this.before.splice(1,0,this.cloak.advance);this.impacts.unshift(this.cloak.contacts);
+    if (setup.ultraHunt) this.ultraHunt = new GpuUltraHunt(renderer, this);
   }
   queueExplosions(commands: readonly C.ExplosionCommand[]) {
     const data=this.externalExplosions.array as Int32Array;
@@ -1640,6 +1673,7 @@ export class GpuCombat {
   /** The first displayed frame has no logic tick; compile combat before exposing input. */
   async prepareForPlay() {
     await this.movement.prepareForPlay();
+    await this.ultraHunt?.prepare();
     await this.renderer.compileComputeAsync([...this.kernels,...this.special.before,...this.special.after,this.cloak.advance,this.cloak.contacts]);
   }
   step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
@@ -1673,6 +1707,8 @@ export class GpuCombat {
     this.renderer.compute(this.special.before);
     this.renderer.compute(this.before);
     this.renderer.compute(this.routes);
+    this.ultraHunt?.update();
+    if (this.ultraHunt) this.renderer.compute(this.ultraHunt.advance);
   }
   resolveStep() {
     this.renderer.compute(this.overruns);
@@ -1690,9 +1726,10 @@ export class GpuCombat {
       this.resolveStep();
     }
   }
-  buffers() { return [...this.movement.buffers(), this.state, this.projectiles, this.sight.mapped]; }
+  buffers() { return [...this.movement.buffers(), this.state, this.projectiles, this.sight.mapped, ...(this.ultraHunt?.flow.buffers()??[])]; }
   async snapshot() { return Promise.all(this.buffers().map(async (b) => new Int32Array(await this.renderer.getArrayBufferAsync(b)))); }
   dispose() {
+    this.ultraHunt?.dispose();
     this.cloak.dispose();this.special.dispose();
     this.sight.dispose();
     this.movement.dispose();

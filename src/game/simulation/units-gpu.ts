@@ -2,7 +2,7 @@ import { loop as Loop } from '../../engine/simulation/loop.ts';
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { alliedOwners } from './alliances.ts';
 import { StorageBufferAttribute, type ComputeNode, type WebGPURenderer, type Node } from 'three/webgpu';
-import { Fn, If, Break, int, uint, instanceIndex, storage, uniform, atomicStore, atomicLoad, atomicMin, atomicOr, wgslFn, ivec2, select } from 'three/tsl';
+import { Fn, If, Break, int, uint, instanceIndex, storage, uniform, atomicStore, atomicLoad, atomicMin, atomicMax, atomicOr, wgslFn, ivec2, select } from 'three/tsl';
 import { GpuFlowFields, FIELD_WORDS } from '../../engine/simulation/flow.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { randomNode, intMin, intMax } from '../../engine/simulation/integer-nodes.ts';
@@ -151,7 +151,7 @@ export class GpuUnits {
     const constants: number[] = [];
     const append = (values: readonly number[]) => {
       const offset = constants.length;
-      constants.push(...values);
+      for (const value of values) constants.push(value);
       return offset;
     };
     const typeBase = append(MOVEMENT.flatMap((t, i) => [t.infantry, t.speed, t.rotation, t.strength, t.locomotion, combatTypes[i].crusher]));
@@ -544,7 +544,10 @@ export class GpuUnits {
       });
     });
     // Separate passes make a docked unit's reservation independent of invocation order.
-    const occupy = [buildingOccupancy,...[1, 0].map(infantry => kernel(count, () => {
+    // Rebuild each occupancy layer with stable highest-ID winners. Gunboats may
+    // cross occupied water cells (UNIT.CPP Can_Enter_Cell), so stores would race.
+    const occupy = [buildingOccupancy,...[-2, 1, -1, 0].map(layer => kernel(count, () => {
+      const infantry=layer===1||layer===-2?1:0;
       If(occupancyStatus.element(count).notEqual(uint(0)), () => {
         const id = int(instanceIndex);
         const at = id.mul(int(S.WORDS)).toVar();
@@ -561,7 +564,8 @@ export class GpuUnits {
             const slot = u.element(at.add(field === S.UCELL ? S.USLOT : S.UDSLOT));
             Loop(5, ({ i: s }) => {
               If(u.element(at.add(int(S.UKIND))).equal(int(0)).or(slot.equal(int(s))), () => {
-                atomicStore(occupancy.element(cell.mul(int(5)).add(s)), uint(id.add(int(1))));
+                if(layer<0)atomicStore(occupancy.element(cell.mul(int(5)).add(s)),uint(0));
+                else atomicMax(occupancy.element(cell.mul(int(5)).add(s)), uint(id.add(int(1))));
               });
             });
           });

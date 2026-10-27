@@ -26,9 +26,14 @@ import { checkCampaignState, checkCampaignSimulation, checkCampaignScore, checkC
 import { checkCampaignEntry,checkCampaignDevelopmentEntry } from './campaign-entry.ts';
 import { checkCampaignStartup, checkCampaignOutcome } from './campaign.ts';
 import { checkMapGenerator, checkMapSampling } from './map-generator.ts';
+import { checkUltra } from './ultra.ts';
+import { checkUltraPerformance } from './ultra-performance.ts';
 
 const started = performance.now();
 const seconds = (since: number) => `${((performance.now() - since) / 1000).toFixed(1)}s`;
+const browserChannel=process.argv.find(value=>value.startsWith('--browser='))?.slice(10)??'chromium';
+assert(['chromium','chrome','msedge'].includes(browserChannel),'Supported browsers are chromium, chrome and msedge');
+const browserSuffix=browserChannel==='chromium'?'':`-${browserChannel}`;
 
 const serverProblems: string[] = [];
 const logger: Logger = {
@@ -60,7 +65,7 @@ const server = await createServer({
 
 let browser: Browser | undefined;
 try {
-  [browser] = await Promise.all([launchGpu(), server.listen()]);
+  [browser] = await Promise.all([launchGpu(undefined,process.argv.includes('--acceptance')||process.argv.some(a=>a.includes('ultraperformance')),browserChannel), server.listen()]);
   const address = server.httpServer?.address();
   assert(address && typeof address === 'object', 'the Vite server should listen on a TCP port');
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -83,7 +88,9 @@ try {
     [acceptance?'Full economy, aircraft, transport and building acceptance':'Tiberium, building damage and aircraft controls', checkEconomy],
     ['Campaign naval movement and first-mission continuation', checkCampaignSimulation],
     ['Original campaign country selection and branching', checkCampaignMap],
-    ['Ultra terrain generation, camera and seeded reload', checkMapGenerator],
+    ['Ultra generated battlefield, camera and playback', checkMapGenerator],
+    ...(acceptance ? [['Ultra twenty-thousand-unit CPU/GPU opening and player orders', checkUltra] as [string, (session: Session) => Promise<void>]] : []),
+    ...(acceptance ? [['Ultra actual battle frame rate and GPU costs', checkUltraPerformance] as [string, (session: Session) => Promise<void>]] : []),
     ['Viewport-sized integer map sampling and displaced pixels', checkMapSampling],
     ['Victory and defeat text follows the tactical viewport',checkCampaignOutcome],
     ['Airstrip and helipad deliveries preserve player orders',checkAirProductionOrders],
@@ -121,10 +128,12 @@ try {
   ];
   const only=process.argv.find(value=>value.startsWith('--only='))?.slice(7).split(',');
   const checkId=(check:(session:Session)=>Promise<void>)=>check.name.replace(/^check/,'').toLowerCase();
+  if(only?.includes('ultra')&&!acceptance)allChecks.push(['Ultra twenty-thousand-unit CPU/GPU opening and player orders', checkUltra]);
+  if(only?.includes('ultraperformance')&&!acceptance)allChecks.push(['Ultra actual battle frame rate and GPU costs', checkUltraPerformance]);
   if(only)assert(only.every(id=>allChecks.some(([,check])=>checkId(check)===id)),`Unknown check selection: ${only.join(',')}`);
   const checks=only?allChecks.filter(([,check])=>only.includes(checkId(check))):allChecks;
   await mkdir('test-results', { recursive: true });
-  const saveReport = (complete: boolean) => writeFile('test-results/acceptance.json', JSON.stringify({
+  const saveReport = (complete: boolean) => writeFile(`test-results/acceptance${browserSuffix}.json`, JSON.stringify({
     requested: requested.map(vendor => vendor ?? 'default'), profile:acceptance?'acceptance':'daily', checks:checks.map(([,check])=>checkId(check)), complete, runs: reports,
   }, null, 2));
   await saveReport(false);
@@ -133,16 +142,20 @@ try {
       const choice = choices.find(choice => choice.vendor === vendor);
       assert(choice || process.platform !== 'win32', `No ${vendor} hardware adapter is available; milestone acceptance cannot skip it`);
       await browser.close();
-      browser = await launchGpu(choice);
+      browser = await launchGpu(choice,acceptance,browserChannel);
     }
     const gpu = await identifyGpu(browser, baseUrl, vendor);
     console.log(`GPU environment: ${JSON.stringify(gpu)}`);
     let releasePerformance!: () => void;
-    let peers = checks.length - 1;
+    let peers = checks.filter(([,check])=>check!==checkCombat&&check!==checkUltraPerformance).length;
     const performanceReady = new Promise<void>(resolve => { releasePerformance = resolve; });
     if(peers===0)releasePerformance();
+    let releaseCombat!:()=>void;
+    const combatFinished=new Promise<void>(resolve=>{releaseCombat=resolve;});
+    if(!checks.some(([,check])=>check===checkCombat))releaseCombat();
     const session: Session = { browser, baseUrl, gpu, performanceReady, acceptance,
-      checkTimeoutMs: acceptance ? 600_000 : 120_000 };
+      // Rule journeys compile multiple worlds while three other workers share the GPU.
+      checkTimeoutMs: acceptance ? 600_000 : 300_000 };
     const suiteStart = Date.now();
     // Bound simultaneous shader preparation rather than stretching startup deadlines.
     // Combat may wait for the other checks before benchmarking; the other three workers keep draining the queue.
@@ -152,7 +165,7 @@ try {
       while (next < checks.length) {
         const index = next++, [name, check] = checks[index], start = performance.now();
         try {
-          await check(session);
+          await check(check===checkUltraPerformance?{...session,performanceReady:Promise.all([performanceReady,combatFinished]).then(()=>{})}:session);
           console.log(`ok   [${gpu.vendor}] ${name} (${seconds(start)})`);
           results[index] = { status: 'fulfilled', value: undefined };
         } catch (error) {
@@ -160,13 +173,14 @@ try {
           console.error(error);
           results[index] = { status: 'rejected', reason: error };
         } finally {
-          if (check !== checkCombat && --peers === 0) releasePerformance();
+          if(check===checkCombat)releaseCombat();
+          if (check !== checkCombat && check!==checkUltraPerformance && --peers === 0) releasePerformance();
         }
       }
     }));
     const failures = results.flatMap((result, i) => result.status === 'rejected' ? [{ check: checks[i][0], error: String(result.reason) }] : []);
     for (const failure of failures) console.error(failure);
-    const directory = `test-results/${gpu.vendor}`;
+    const directory = `test-results/${gpu.vendor}${browserSuffix}`;
     await mkdir(directory, { recursive: true });
     // Existing checks retain their stable artifact names; archive each GPU run
     // before the next one replaces them. Never copy artifacts from an older run.

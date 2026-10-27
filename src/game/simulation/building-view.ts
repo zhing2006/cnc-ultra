@@ -41,7 +41,7 @@ export class BuildingView {
     const tiBase=values.length;values.push(...ti);
     const bibBase=values.length;values.push(...bibStarts);
     const facingBase=values.length;values.push(...Array.from({length:256},(_,d)=>BODY_SHAPE[facingTo32(d)]));
-    const bindingsBase=values.length;values.push(...layout.bindings);
+    const bindingsBase=values.length;for(const value of layout.bindings)values.push(value);
     const rectBase=values.length;values.push(...rects);
     const data=storage(keep(Int32Array.from(values)),'int',values.length).toReadOnly();
     const rectangle=(index:import('three/webgpu').Node<'int'>)=>{const at=index.mul(4).add(rectBase);return ivec4(data.element(at),data.element(at.add(1)),data.element(at.add(2)),data.element(at.add(3)));};
@@ -167,7 +167,7 @@ export class BuildingView {
             });
           });
           If(units.element(at.add(U.UATTACHED)).notEqual(0),()=>{
-            if(world.setup.campaignLevel!==undefined&&scene.animation!.frames.has('LST')){
+            if(layout.slots>=6&&scene.animation!.frames.has('LST')){
               // UNIT.CPP Draw_It: preserve deck cargo for HovercraftView to move
               // into the hull's draw group after all body/turret/cloak projection.
               const parent=units.element(at.add(U.UATTACHED)).sub(1);

@@ -62,6 +62,10 @@ export async function checkCampaignEntry(session: Session) {
       assert.equal(await page.getByRole('button', { name: 'OK', exact: true }).isDisabled(), true);
       await page.keyboard.press('Escape');
       await page.getByRole('button', { name: 'Start New Game', exact: true }).waitFor();
+      // Restoring the menu can deliver pointerenter under the stationary pointer.
+      // Give the keyboard target focus before testing Enter activation.
+      await page.mouse.move(0,0);
+      await page.getByRole('button', { name: 'Start New Game', exact: true }).focus();
       await page.keyboard.press('Enter');
       await page.getByRole('button', { name: 'Global Defense Initiative', exact: true }).waitFor({ timeout: 30000 });
       await page.screenshot({ path: 'test-results/campaign-sides.png' });

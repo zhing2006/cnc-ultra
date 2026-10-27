@@ -1,5 +1,5 @@
 import { StorageBufferAttribute,type ComputeNode } from 'three/webgpu';
-import { Fn,If,int,uint,storage,instanceIndex,atomicStore } from 'three/tsl';
+import { Fn,If,int,uint,storage,instanceIndex,atomicStore,atomicMax } from 'three/tsl';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { MOVEMENT,movementType } from '../data/movement.ts';
@@ -44,14 +44,15 @@ export class GpuOccupancyEdits {
         Loop(16,({i})=>{If(mask.bitAnd(int(1).shiftLeft(i)).notEqual(0),()=>{const cell=origin.add(i.div(4).mul(width)).add(i.mod(4));If(flags.element(cell).notEqual(0),()=>{Loop(5,({i:slot})=>{atomicStore(occupancy.element(cell.mul(5).add(slot)),uint(id.add(1)));});});});});
       });
     })().compute(count);
-    const actors=[1,0].map(kind=>Fn(()=>{
+    const actors=[-2,1,-1,0].map(layer=>Fn(()=>{
+      const kind=layer===1||layer===-2?1:0;
       const id=int(instanceIndex),at=id.mul(U.WORDS),domain=u.element(at.add(U.UDOMAIN)),type=u.element(at.add(U.UTYPE));
       If(u.element(at.add(U.UHEALTH)).greaterThan(0).and(u.element(at.add(U.UATTACHED)).equal(0)).and(u.element(at.add(U.UKIND)).equal(kind)).and(domain.notEqual(2))
         .and(domain.notEqual(1).or(u.element(at.add(U.UALTITUDE)).lessThan(16).and(type.notEqual(movementType('C17'))).and(type.notEqual(movementType('A10'))))),()=>{
         for(const field of [U.UCELL,U.UDEST,U.UMIDDLE]){
           const cell=u.element(at.add(field)),slot=u.element(at.add(field===U.UCELL?U.USLOT:U.UDSLOT));
           const reserved=field===U.UCELL&&kind===1?u.element(at.add(U.UDEST)).lessThan(0):int(1).equal(1);
-          If(cell.greaterThanEqual(0).and(reserved),()=>{If(flags.element(cell).notEqual(0),()=>{Loop(5,({i})=>{If(int(kind).equal(0).or(slot.equal(i)),()=>{atomicStore(occupancy.element(cell.mul(5).add(i)),uint(id.add(1)));});});});});
+          If(cell.greaterThanEqual(0).and(reserved),()=>{If(flags.element(cell).notEqual(0),()=>{Loop(5,({i})=>{If(int(kind).equal(0).or(slot.equal(i)),()=>{if(layer<0)atomicStore(occupancy.element(cell.mul(5).add(i)),uint(0));else atomicMax(occupancy.element(cell.mul(5).add(i)),uint(id.add(1)));});});});});
         }
       });
     })().compute(count));

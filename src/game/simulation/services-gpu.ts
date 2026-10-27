@@ -28,7 +28,7 @@ export class GpuServices {
     this.claims=new StorageBufferAttribute(new Uint32Array(count*3),1);
     this.payments=new GpuTaskMask(battle.renderer,count);
     this.ownsState=!state;this.state=state??new StorageBufferAttribute(initialServices(count),1);
-    const values=[0,0,...SERVICE_TYPES.flat()],open=values.length;values.push(...battle.setup.passable!);
+    const values=[0,0,...SERVICE_TYPES.flat()],open=values.length;for(const value of battle.setup.passable!)values.push(value);
     const starts:number[]=[];for(const name of ['PYLE','HAND','WEAP']){starts.push(values.length);values.push(FACTORY_EXITS[name].length,...FACTORY_EXITS[name].flat());}
     const repairExits=values.length;values.push(...REPAIR_EXITS.flat());
     const neighbors=values.length;values.push(0,-1,1,-1,1,0,1,1,0,1,-1,1,-1,0,-1,-1);

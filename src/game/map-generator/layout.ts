@@ -28,10 +28,10 @@ export function planBattleLayout(width: number, height: number): BattleLayout {
     range,
   };
   const deploymentWidth = Math.trunc(width / 4), deploymentHeight = Math.trunc(height / 2);
-  const margin = Math.trunc(width / 25), deploymentY = shoreTop - deploymentHeight;
+  const gap = 24, center = Math.trunc(width / 2), deploymentY = shoreTop - deploymentHeight;
   const deployments: [MapRectangle, MapRectangle] = [
-    { x: margin, y: deploymentY, width: deploymentWidth, height: deploymentHeight },
-    { x: width - margin - deploymentWidth, y: deploymentY, width: deploymentWidth, height: deploymentHeight },
+    { x: center - gap / 2 - deploymentWidth, y: deploymentY, width: deploymentWidth, height: deploymentHeight },
+    { x: center + gap / 2, y: deploymentY, width: deploymentWidth, height: deploymentHeight },
   ];
   const battlefield = { x: 0, y: deploymentY, width, height: deploymentHeight };
   const supportFor = (army: MapRectangle, side: number): MapRectangle => ({

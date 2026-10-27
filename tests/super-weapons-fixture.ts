@@ -20,7 +20,9 @@ export async function compareMultiplayerTargets(renderer:WebGPURenderer){
     for(let tick=1;tick<=16;tick++){
       cpu.step();gpu.step();const actual=await gpu.snapshot(),expected=cpu.buffers();
       actual.forEach((buffer,b)=>{for(let i=0;i<buffer.length;i++)if(buffer[i]!==expected[b][i])throw new Error(`Multiplayer targets tick ${tick}, buffer ${b}/${i}: GPU ${buffer[i]}, CPU ${expected[b][i]}`);});
-      if(tick===1&&(cpu.state[C.CTARGET]!==1||cpu.units[2*U.WORDS+U.UABILITY_TARGET]!==2||cpu.state[3*C.CWORDS+C.CTARGET]!==1))throw new Error('Multiplayer hunters did not choose eligible undiscovered targets');
+      // TECHNO.CPP Greatest_Threat: equal scores follow Sort_Y. The jeep sorts
+      // north of the factory; engineers and commandos still exclude that vehicle.
+      if(tick===1&&(cpu.state[C.CTARGET]!==4||cpu.units[2*U.WORDS+U.UABILITY_TARGET]!==2||cpu.state[3*C.CWORDS+C.CTARGET]!==1))throw new Error('Multiplayer hunters did not choose eligible undiscovered targets');
     }
   }finally{gpu.dispose();}
 }

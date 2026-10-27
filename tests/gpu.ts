@@ -31,8 +31,8 @@ export async function discoverGpus(browser: Browser): Promise<GpuChoice[]> {
   } finally { await page.close(); }
 }
 
-export async function launchGpu(choice?: GpuChoice,preciseTimestamps=false) {
-  return chromium.launch({ channel: 'chromium', args: [...(choice ? ['--use-angle=d3d11', `--use-adapter-luid=${choice.luid}`] : []),...(preciseTimestamps?['--enable-webgpu-developer-features']:[])] });
+export async function launchGpu(choice?: GpuChoice,preciseTimestamps=false,channel='chromium') {
+  return chromium.launch({ channel, args: [...(choice ? ['--use-angle=d3d11', `--use-adapter-luid=${choice.luid}`] : []),...(preciseTimestamps?['--enable-webgpu-developer-features']:[])] });
 }
 
 /** Check the actual WebGPU adapter, not merely the browser's launch arguments. */

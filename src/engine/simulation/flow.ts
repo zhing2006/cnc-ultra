@@ -6,6 +6,7 @@ import { loop as Loop } from './loop.ts';
 import { DIRECTIONS, UNREACHABLE, type Grid } from './state.ts';
 import { releaseStorage } from './resources.ts';
 import { relaxTiles, tiledFlow } from './flow-tiles.ts';
+export { CpuMultiFlowFields, GpuMultiFlowFields } from './multi-flow.ts';
 
 export const FIELD_WORDS = 3;
 export const FIELD_TARGET = 0, FIELD_READY = 1, FIELD_RESET = 2;

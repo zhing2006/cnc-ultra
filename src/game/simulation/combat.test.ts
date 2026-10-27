@@ -217,8 +217,8 @@ describe('original ground combat', () => {
     battle.state[C.CMISSION]=C.HUNT;
     battle.units[U.WORDS+U.UX]=battle.units[U.UX]+60;
     battle.units[2*U.WORDS+U.UX]=battle.units[U.UX]+32;
-    // TECHNO.CPP: (32+45)/32 and (45+62)/60 both clamp to two; the earlier object wins.
-    expect(battle['findTarget'](0)).toBe(1);
+    // TECHNO.CPP Greatest_Threat: equal scores follow Sort_Y; the western bike is first.
+    expect(battle['findTarget'](0)).toBe(2);
   });
   it.each(['LST','BOAT','DELPHI'])('excludes %s from automatic guard targets', name => {
     const setup=combatFixture();
@@ -294,10 +294,10 @@ describe('original ground combat', () => {
     const battle = new CpuCombat(setup);
     battle.state[C.CMISSION] = C.HUNT;
     battle.step();
-    // Global threat scores tie at two; a stable ID resolves the tie.
-    expect(battle.state[C.CTARGET]).toBe(1);
-    battle['injure'](0, 1, 0, 2, []);
-    expect(battle.state[C.CTARGET]).toBe(1);
+    // TECHNO.CPP Greatest_Threat: equal scores retain the western ground object.
+    expect(battle.state[C.CTARGET]).toBe(2);
+    battle['injure'](0, 1, 0, 1, []);
+    expect(battle.state[C.CTARGET]).toBe(2);
   });
   it('points an idle turret toward its navigation destination', () => {
     const setup = combatFixture(); setup.units = [{...setup.units[0],facing:0}];

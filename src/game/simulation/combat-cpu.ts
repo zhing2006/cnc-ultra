@@ -1,5 +1,7 @@
 // Copyright 2025 Electronic Arts Inc. Licensed under GPL-3.0-or-later; see LICENSE.
 import { areAllied } from './alliances.ts';
+import { CpuUltraHunt } from './ultra-hunt.ts';
+import { targetOrder } from './target-order.ts';
 import { combatTypes, weapons, bullets, warheads,modifyDamage, ANIMATION_IDS } from '../data/combat.ts';
 import { MOVEMENT, GROUND_SPEED } from '../data/movement.ts';
 import { BUILDINGS } from '../data/buildings.ts';
@@ -61,6 +63,23 @@ export function firePoint(name: string, x: number, y: number, direction: number,
   return movePoint(x, y, direction, forward);
 }
 export class CpuCombat {
+  readonly ultraHunt?: CpuUltraHunt;
+  private targetCells?: Int32Array[];
+  private aircraftTargets?: number[];
+  private indexTargets() {
+    const cells=this.setup.grid.edges.length;
+    let factions=this.setup.houseCount??2;
+    for(let at=0;at<this.units.length;at+=U.WORDS)factions=Math.max(factions,this.units[at+U.UOWNER]+1);
+    this.targetCells=Array.from({length:factions},()=>new Int32Array(cells).fill(-1));this.aircraftTargets=[];
+    for(let id=0;id<this.setup.units.length;id++){
+      const at=id*U.WORDS;
+      if(this.units[at+U.UHEALTH]<=0||this.units[at+U.UATTACHED])continue;
+      if(this.units[at+U.UDOMAIN]===1)this.aircraftTargets.push(id);
+      if(this.units[at+U.UDOMAIN]===1&&this.units[at+U.UALTITUDE]>0||WALLS[MOVEMENT[this.units[at+U.UTYPE]].name])continue;
+      const cell=Math.trunc(this.units[at+1]/256)*this.setup.grid.width+Math.trunc(this.units[at]/256);
+      for(let owner=0;owner<factions;owner++)if(!areAllied(this.setup,owner,this.units[at+U.UOWNER])&&this.targetCells[owner][cell]<0)this.targetCells[owner][cell]=id;
+    }
+  }
   humanOwner=0;
   debugDamageOwner=-1;
   debugDamageScale=DAMAGE_SCALE;
@@ -78,6 +97,7 @@ export class CpuCombat {
     this.sight.step(this.movement.units);
     this.state = C.initialCombat(setup);
     this.projectiles = C.initialProjectiles(setup.units.length);
+    if (setup.ultraHunt) this.ultraHunt = new CpuUltraHunt(this);
   }
   get frame() { return this.movement.frame; }
   get units() { return this.movement.units; }
@@ -141,8 +161,9 @@ export class CpuCombat {
     };
     // FOOT.CPP Mission_Hunt; TECHNO.CPP Greatest_Threat/Evaluate_Object (non-ADVANCED).
     // CPU reference may scan all units. GPU uses a faction reduction and the score's
-    // distance upper bound; stable IDs settle equal scores in both versions.
-    if (this.state[id * C.CWORDS + C.CMISSION] === C.HUNT) {
+    // distance upper bound; current ground-layer coordinates settle equal scores.
+    const localHunt = !!this.setup.ultraHunt && hunter && u[at + U.UDOMAIN] === 0 && type.name !== 'E6';
+    if (hunter && !localHunt) {
       let best = -1, score = -1;
       for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS, target = combatTypes[u[p + U.UTYPE]];
@@ -152,7 +173,7 @@ export class CpuCombat {
         const raw = target.risk + target.reward;
         const value = Math.max(raw ? 2 : 0, Math.floor((raw + this.state[other * C.CWORDS + C.CKILLS]) /
           Math.max(1, distance(u[at], u[at + 1], u[p], u[p + 1]))));
-        if (value > score) {
+        if (value > score || value === score && targetOrder(u, other, best) < 0) {
           score = value;
           best = other;
         }
@@ -160,8 +181,8 @@ export class CpuCombat {
       return best;
     }
     const width = this.setup.grid.width, height = this.setup.grid.height;
-    const area=this.state[id*C.CWORDS+C.CMISSION]===C.GUARD_AREA;
-    const center=area?this.movement.point(this.state[id*C.CWORDS+C.CGUARD_CELL]-1):[u[at],u[at+1]];
+    const guardArea=this.state[id*C.CWORDS+C.CMISSION]===C.GUARD_AREA, area=guardArea||localHunt;
+    const center=guardArea?this.movement.point(this.state[id*C.CWORDS+C.CGUARD_CELL]-1):[u[at],u[at+1]];
     const [mx,my]=this.muzzle(id),cx=Math.floor((mx-u[at]+center[0])/256),cy=Math.floor((my-u[at+1]+center[1])/256);
     const maximum=Math.max(weapons[type.primary].range,type.secondary<0?0:weapons[type.secondary].range),areaRange=Math.min(2560,maximum*2);
     const range=area?Math.floor(areaRange/256):Math.floor(maximum/256)+1;
@@ -175,7 +196,7 @@ export class CpuCombat {
     const inReach=(other:number)=>area?(this.canTarget(id,other,type.primary)||this.canTarget(id,other,type.secondary))&&distance(center[0],center[1],...this.point(other))<=areaRange:
       this.inRange(id,other)||this.inRange(id,other,1);
     // TECHNO.CPP Greatest_Threat scans aircraft separately; flying aircraft never occupy ground cells.
-    if([type.primary,type.secondary].some(w=>w>=0&&bullets[weapons[w].bullet].antiAir))for(let other=0;other<this.setup.units.length;other++){
+    if([type.primary,type.secondary].some(w=>w>=0&&bullets[weapons[w].bullet].antiAir))for(const other of this.aircraftTargets??this.setup.units.map((_,id)=>id)){
       const p=other*U.WORDS;
       if(u[p+U.UDOMAIN]!==1||u[p+U.UHEALTH]<=0||u[p+U.UATTACHED]||areAllied(this.setup, u[at+U.UOWNER], u[p+U.UOWNER])||!eligible(other)||!combatTypes[u[p+U.UTYPE]].targetable||!inReach(other))continue;
       const value=valueOf(other);if(value>bestValue){best=other;bestValue=value;}
@@ -184,8 +205,8 @@ export class CpuCombat {
       if (x < 0 || y < 0 || x >= width || y >= height)
         return;
       // A cell's first enemy is deterministic, independent of GPU insertion order.
-      let candidate = -1;
-      for (let other = 0; other < this.setup.units.length; other++) {
+      let candidate = this.targetCells?.[u[at+U.UOWNER]][y*width+x]??-1;
+      if (!this.targetCells) for (let other = 0; other < this.setup.units.length; other++) {
         const p = other * U.WORDS;
         if ((u[p + U.UHEALTH] > 0 && u[p + U.UATTACHED] === 0) && !areAllied(this.setup, u[at + U.UOWNER], u[p + U.UOWNER]) &&
           !WALLS[MOVEMENT[u[p+U.UTYPE]].name]&&(u[p+U.UDOMAIN]!==1||u[p+U.UALTITUDE]===0)&&
@@ -516,7 +537,12 @@ export class CpuCombat {
       const moveScan = s[c+C.CMISSION] === C.MOVE && u[at+U.UOWNER] !== this.humanOwner && u[at+U.UDOMAIN] === 0;
       if (s[c + C.CSCAN] === 0 && (s[c + C.CMISSION] !== C.MOVE || moveScan) && ![C.SLEEP,C.STICKY,C.AMBUSH].includes(s[c+C.CMISSION])) {
         const searching=target===-1;
-        if (searching) target = this.findTarget(id);
+        if (searching) {
+          target = this.findTarget(id);
+          if (this.setup.ultraHunt && target >= 0 && s[c+C.CMISSION]===C.HUNT && this.movement.pathGoals[id]===U.DIRECT_STEP) {
+            this.movement.goals[id]=-1; this.movement.pathGoals[id]=-1; u[at+U.UROUTE]=-1;
+          }
+        }
         s[c + C.CSCAN] = moveScan ? 18 : s[c+C.CMISSION]===C.GUARD_AREA&&searching&&target!==-1?1:s[c + C.CMISSION] === C.HUNT ? 20 : 15 + randomWord(this.setup.seed, this.frame + 1, id, 50) % 5;
         if(target===-1&&(s[c+C.CMISSION]===C.GUARD||s[c+C.CMISSION]===C.HUNT))this.randomAnimate(id);
       }
@@ -1042,9 +1068,12 @@ export class CpuCombat {
   }
   step(commands: readonly (U.UnitCommand | C.AttackCommand)[] = []) {
     prepareSpecialInfantry(this);advanceCloak(this);
+    this.indexTargets();
     this.updateBuildingMuzzles();
     this.prepare();
     this.updateBuildingMuzzles();
+    this.ultraHunt?.update();
+    this.ultraHunt?.advance();
     this.movement.step();
     this.resolveStep();
     for (const command of commands) {
@@ -1092,5 +1121,5 @@ export class CpuCombat {
       }
     }
   }
-  buffers() { return [...this.movement.buffers(), this.state, this.projectiles, this.sight.mapped]; }
+  buffers() { return [...this.movement.buffers(), this.state, this.projectiles, this.sight.mapped, ...(this.ultraHunt?.buffers()??[])]; }
 }

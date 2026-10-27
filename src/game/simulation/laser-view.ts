@@ -15,6 +15,7 @@ export class LaserView {
   readonly draw:(pixel:Node<'vec2'>,color:Node<'vec4'>)=>Node<'vec4'>;
   private readonly target=new RenderTarget(1,1,{format:RedFormat,type:UnsignedByteType,depthBuffer:false,minFilter:NearestFilter,magFilter:NearestFilter,generateMipmaps:false});
   private readonly origin=uniform(new Vector2());
+  private readonly sampleStep=uniform(1,'int');
   private readonly lines:StorageBufferAttribute;
   private readonly collect:ComputeNode[];
   private readonly prefix:GpuPrefixSum;
@@ -47,7 +48,7 @@ export class LaserView {
     this.collect=[gather,...this.prefix.kernels,pack];
     const input=storage(this.lines,'int',this.lines.count).toReadOnly(),material=new MeshBasicNodeMaterial();
     material.fragmentNode=Fn(()=>{
-      const xy=ivec2(screenCoordinate.xy).add(ivec2(this.origin)),ink=int(0).toVar();
+      const xy=ivec2(screenCoordinate.xy.mul(float(this.sampleStep))).add(ivec2(this.origin)),ink=int(0).toVar();
       Loop({start:0,end:input.element(0),type:'int'},({i})=>{
         const at=i.mul(4).add(1),x0=input.element(at),y0=input.element(at.add(1)),x1=input.element(at.add(2)),y1=input.element(at.add(3));
         for(const offset of [-1,1,0]){
@@ -65,9 +66,10 @@ export class LaserView {
       });return vec4(float(ink).div(255),0,0,1);
     })();this.pass=new QuadMesh(material);
     this.palette=new DataTexture(palette,256,1,RGBAFormat,UnsignedByteType);this.palette.minFilter=this.palette.magFilter=NearestFilter;this.palette.generateMipmaps=false;this.palette.needsUpdate=true;
-    this.draw=(pixel,color)=>Fn(()=>{const ink=int(textureLoad(this.target.texture,ivec2(pixel.sub(this.origin))).r.mul(255).round()),out=color.toVar();If(ink.notEqual(0),()=>{out.assign(textureLoad(this.palette,ivec2(ink,0)));});return out;})();
+    this.draw=(pixel,color)=>Fn(()=>{const ink=int(textureLoad(this.target.texture,ivec2(pixel.sub(this.origin)).div(this.sampleStep)).r.mul(255).round()),out=color.toVar();If(ink.notEqual(0),()=>{out.assign(textureLoad(this.palette,ivec2(ink,0)));});return out;})();
   }
-  update(x:number,y:number,width:number,height:number){
+  update(x:number,y:number,width:number,height:number,sampleStep=1){
+    this.sampleStep.value=sampleStep;width=Math.ceil(width/sampleStep);height=Math.ceil(height/sampleStep);
     this.origin.value.set(x,y);if(this.target.width!==width||this.target.height!==height)this.target.setSize(width,height);
     const renderer=this.battle.renderer;if(this.frame!==this.battle.frame){renderer.compute(this.collect);this.frame=this.battle.frame;}
     const previous=renderer.getRenderTarget();renderer.setRenderTarget(this.target);this.pass.render(renderer);renderer.setRenderTarget(previous);

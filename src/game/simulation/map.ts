@@ -19,8 +19,8 @@ export const LOGIC_HZ = 15;
  * TERRAIN.CPP/BUILDING.CPP, Occupy_List. Dynamic occupancy and building entry are handled by the simulation.
  */
 export function movementMap(mix: MixSet, scenario: Scenario) {
-  const width = ORIGINAL_MAP_SIZE, passable = new Uint8Array(width * width);
-  const lands = new Uint8Array(width * width);
+  const width = scenario.mapWidth ?? ORIGINAL_MAP_SIZE, height = scenario.mapHeight ?? ORIGINAL_MAP_SIZE;
+  const passable = new Uint8Array(width * height), lands = new Uint8Array(width * height);
   const suffix = scenario.theater.toUpperCase() === 'TEMPERATE' ? 'TEM' : scenario.theater.toUpperCase().slice(0,3);
   const maps = new Map<number, Uint8Array>();
   for (let y = scenario.y; y < scenario.y + scenario.height; y++) for (let x = scenario.x; x < scenario.x + scenario.width; x++) {
@@ -44,7 +44,7 @@ export function movementMap(mix: MixSet, scenario: Scenario) {
   }
   const block = (cell: number, offsets: readonly (readonly [number, number])[]) => {
     const x = cell % width, y = Math.floor(cell / width);
-    for (const [dx,dy] of offsets) if (x + dx >= 0 && x + dx < width && y + dy >= 0 && y + dy < width) passable[(y + dy) * width + x + dx] = 0;
+    for (const [dx,dy] of offsets) if (x + dx >= 0 && x + dx < width && y + dy >= 0 && y + dy < height) passable[(y + dy) * width + x + dx] = 0;
   };
   // Non-clear overlays replace the underlying land type before object occupancy is checked.
   for (const overlay of initialCellImages(scenario).overlays) {
@@ -61,5 +61,5 @@ export function movementMap(mix: MixSet, scenario: Scenario) {
   for (const object of scenario.buildings) block(object.cell, BUILDINGS.get(object.type.toUpperCase())!.occupy);
   // UnitClass::Can_Enter_Cell ignores facing. DriveClass::Start_Of_Move checks the destination
   // cell for diagonal steps as well; it does not require both orthogonal neighbors to be clear.
-  return { passable, land: lands, grid: gridEdges(width, width, passable, true) };
+  return { passable, land: lands, grid: gridEdges(width, height, passable, true) };
 }

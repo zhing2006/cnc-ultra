@@ -48,6 +48,8 @@ export function initialProjectiles(units: number) {
   return state;
 }
 export interface CombatSetup extends UnitsSetup {
+  /** Design constitution article 5; original maps retain their global Hunt. */
+  ultraHunt?: boolean;
   dynamicTypes?: boolean;
   multiplayer?: boolean;
   /** Original scenario missions, using this simulation's mission constants. */

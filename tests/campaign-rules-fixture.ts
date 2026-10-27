@@ -72,7 +72,7 @@ export async function campaignRules() {
         let pending=new Int32Array(await renderer.three.getArrayBufferAsync(gpu.movement.pending));if(pending[6]!==-1)throw new Error('A campaign helicopter accepted a flight into unexplored terrain');
         (gpu.sight.shadow.array as Int32Array)[cell]=-1;gpu.sight.shadow.needsUpdate=true;
         selection.apply({action:'point',x:(cell%32)*256+128,y:Math.trunc(cell/32)*256+128});await selection.read();
-        pending=new Int32Array(await renderer.three.getArrayBufferAsync(gpu.movement.pending));if(pending[6]!==0||pending[7]!==cell)throw new Error('A campaign helicopter rejected an explored destination');
+        pending=new Int32Array(await renderer.three.getArrayBufferAsync(gpu.movement.pending));if(pending[6]!==0||pending[7]!==cell)throw new Error(`A campaign helicopter rejected an explored destination: pending=${Array.from(pending)}, selected=${Array.from(await selection.read())}`);
       }finally{selection.dispose();events.dispose();defense.dispose();teams.dispose();gpu.dispose();}
     }
     const setup={...field,units:[{type:movementType('A10'),cell:16,facing:0,altitude:24}]};

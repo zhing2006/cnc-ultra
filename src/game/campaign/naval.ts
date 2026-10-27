@@ -1,6 +1,6 @@
 import { StorageBufferAttribute } from 'three/webgpu';
 import { loop as Loop } from '../../engine/simulation/loop.ts';
-import { Fn, If, int, storage } from 'three/tsl';
+import { Fn, If, int, uint, storage, atomicLoad, atomicStore } from 'three/tsl';
 import { releaseStorage } from '../../engine/simulation/resources.ts';
 import { movementType } from '../data/movement.ts';
 import type { GpuCombat } from '../simulation/combat-gpu.ts';
@@ -54,8 +54,15 @@ export function stepNaval(battle: CpuCombat, state: Int32Array, map: NavalMap) {
       const cell = landingCell(map, occupied);
       if (cell < 0) { u[at + U.UHEALTH] = 0; continue; }
       state[p + BEACH] = cell; state[p + PHASE] = 1;
+      const old = u[at + U.UCELL];
       u[at + U.UCELL] = (map.bounds.y + map.bounds.height) * width + cell % width;
       u[at + U.UX] = (cell % width) * 256 + 128; u[at + U.UY] = (map.bounds.y + map.bounds.height) * 256 + 128;
+      // DISPLAY.CPP Calculated_Cell / Unlimbo: each arriving transport reserves
+      // its entry before the next transport chooses a beach column.
+      for(let slot=0;slot<5;slot++){
+        if(m.occupancy[old*5+slot]===id+1)m.occupancy[old*5+slot]=0;
+        m.occupancy[u[at+U.UCELL]*5+slot]=id+1;
+      }
     }
     c[id * CWORDS + CMISSION] = MOVE; c[id * CWORDS + CTARGET] = -1;
     if (u[at + U.UDEST] >= 0) continue;
@@ -117,22 +124,25 @@ export class GpuNaval {
   private readonly pass;
   constructor(private readonly battle: GpuCombat, map: NavalMap) {
     const count = battle.setup.units.length, width = map.width, { bounds } = map;
+    const actors = battle.setup.dynamicTypes ? undefined : battle.setup.units.flatMap((unit,id)=>
+      unit.type===BOAT||unit.type===LST||unit.attached?[id]:[]);
     this.state = new StorageBufferAttribute(new Int32Array(count * STRIDE), 1);
-    this.mapData = new StorageBufferAttribute(Int32Array.from([...map.land, ...map.clear]), 1);
+    this.mapData = new StorageBufferAttribute(Int32Array.from([...map.land, ...map.clear, ...(actors??[])]), 1);
     const u = storage(battle.units, 'int', battle.units.count), c = storage(battle.state, 'int', battle.state.count);
     const goals = storage(battle.movement.goals, 'int', count), paths = storage(battle.movement.pathGoals, 'int', count);
     const s = storage(this.state, 'int', count * STRIDE), data = storage(this.mapData, 'int', this.mapData.count).toReadOnly();
-    const occupancy = storage(battle.movement.occupancy, 'uint', battle.movement.occupancy.count).toReadOnly();
+    const occupancy = storage(battle.movement.occupancy, 'uint', battle.movement.occupancy.count).toAtomic();
     const clock = storage(battle.movement.control, 'int', 2).toReadOnly();
     this.pass = Fn(() => {
-      Loop({ start: 0, end: count, type: 'int' }, ({ i: id }) => {
+      Loop({ start: 0, end: actors?.length??count, type: 'int' }, ({ i }) => {
+        const id=actors?data.element(i.add(map.land.length*2)):i;
         const at = id.mul(U.WORDS), p = id.mul(STRIDE), type = u.element(at.add(U.UTYPE));
         const parent = u.element(at.add(U.UATTACHED)).sub(1);
         If(parent.greaterThanEqual(int(0)), () => { If(u.element(parent.mul(U.WORDS).add(U.UHEALTH)).lessThanEqual(int(0)), () => { u.element(at.add(U.UHEALTH)).assign(0); }); });
         If(u.element(at.add(U.UHEALTH)).greaterThan(int(0)).and(type.equal(BOAT).or(type.equal(LST))), () => {
           const occupied = (cell: import('three/webgpu').Node<'int'>) => {
             const busy = int(0).toVar();
-            Loop({ start: 0, end: 5, type: 'int' }, ({ i: spot }) => { const owner = int(occupancy.element(cell.mul(5).add(spot))); If(owner.notEqual(int(0)).and(owner.notEqual(id.add(1))), () => { busy.assign(1); }); });
+            Loop({ start: 0, end: 5, type: 'int' }, ({ i: spot }) => { const owner = int(atomicLoad(occupancy.element(cell.mul(5).add(spot)))); If(owner.notEqual(int(0)).and(owner.notEqual(id.add(1))), () => { busy.assign(1); }); });
             return busy.notEqual(int(0));
           };
           If(s.element(p.add(GENERATION)).notEqual(u.element(at.add(U.UGENERATION))), () => {
@@ -187,8 +197,13 @@ export class GpuNaval {
               If(wideChosen.greaterThanEqual(int(0)), () => { chosen.assign(wideChosen); });
               If(chosen.lessThan(int(0)), () => { u.element(at.add(U.UHEALTH)).assign(0); }).Else(() => {
                 s.element(p.add(BEACH)).assign(chosen.add(map.desert ? width : 0)); s.element(p.add(PHASE)).assign(1);
+                const old=u.element(at.add(U.UCELL)).toVar();
                 u.element(at.add(U.UCELL)).assign(int((bounds.y + bounds.height) * width).add(chosen.mod(width)));
                 u.element(at.add(U.UX)).assign(chosen.mod(width).mul(256).add(128)); u.element(at.add(U.UY)).assign((bounds.y + bounds.height) * 256 + 128);
+                Loop(5,({i:slot})=>{
+                  If(atomicLoad(occupancy.element(old.mul(5).add(slot))).equal(uint(id.add(1))),()=>{atomicStore(occupancy.element(old.mul(5).add(slot)),uint(0));});
+                  atomicStore(occupancy.element(u.element(at.add(U.UCELL)).mul(5).add(slot)),uint(id.add(1)));
+                });
               });
             });
             c.element(id.mul(CWORDS).add(CMISSION)).assign(MOVE); c.element(id.mul(CWORDS).add(CTARGET)).assign(-1);

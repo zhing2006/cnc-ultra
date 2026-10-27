@@ -74,6 +74,8 @@ export interface Game {
   setDensity(enabled:boolean):void;
   setSimulationSpeed(speed:1|10|100):void;
   setController(owner:number|null):void;
+  setZoom(value: number | 'fit'): void;
+  zoom(step: number): void;
   setPreferences(preferences: GamePreferences): void;
   canDebug(): boolean;
   isPaused(): boolean;
@@ -102,6 +104,8 @@ export interface GameOptions {
   onSpeed?: (actual: number) => void;
   onOutcome?: (winner: number) => void;
   onOptions?: () => void;
+  startOverview?: boolean;
+  onCamera?: (view: { x: number; y: number; width: number; height: number; scale: number }) => void;
 }
 
 /** Loads the original data and shows scg08eb on the renderer's canvas. */
@@ -177,7 +181,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     ...(unitView && { indexEffect: unitView.indexEffect }) });
   const ground = active && layout && new GpuGround(renderer.three, active, pipeline, layout, combatSetup ? scene : undefined,
     selection && units ? {state:selection.state,offset:selection.flashOffset,clock:units.control}:undefined,
-    combatSetup?.setup.campaignLevel!==undefined);
+    !!scene.animation?.frames.has('LST') && layout.slots >= 6);
   if(economy&&ground)economy.onSceneryVisibility=(sprite,visible)=>ground.setStaticSpriteVisible(sprite,visible);
   const combatView = battle && ground && combatSetup && new CombatView(renderer.three, battle, ground, pipeline, scene, combatSetup.decalStart,!!economy);
   const buildingEffects=economy&&combatView?new GpuBuildingEffects(economy.battle,scene.animation!.frames,combatView.smudges):undefined;
@@ -186,7 +190,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   const buildingView=economy&&ground&&ore?new BuildingView(economy,ground,pipeline,ore):undefined;
   const superView=economy&&combatView?new SuperView(economy,pipeline,scene,combatView.count+effectCapacity):undefined;
   const cloakView=battle&&ground&&perspective&&ground.layout.slots>=3?new CloakView(battle,ground,pipeline,perspective):undefined;
-  const hovercraftView=battle&&ground&&combatSetup?.setup.campaignLevel!==undefined&&scene.animation?.frames.has('LST')?new HovercraftView(battle,ground,pipeline):undefined;
+  const hovercraftView=battle&&ground&&ground.layout.slots>=6&&scene.animation?.frames.has('LST')?new HovercraftView(battle,ground,pipeline):undefined;
   buildingView?.update();aircraftView?.update();buildingEffects?.update();superView?.update();cloakView?.update();hovercraftView?.update();
   if(ground)pipeline.updateGpuSprites((combatView?.count??ground.layout.count)+effectCapacity+superCapacity);
   const battleSystems=battle?{battle,economy,ore,transport,services,harvest,aircraft,airOperations,opposingSight,buildingEffects}:undefined;
@@ -227,7 +231,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   syncPlayback();
   document.addEventListener('visibilitychange', visibility);
   const { scenario } = scene;
-  const mapWidth=units?.setup.grid.width??simulationSetup?.setup.grid.width??ORIGINAL_MAP_SIZE;
+  const mapWidth=units?.setup.grid.width??simulationSetup?.setup.grid.width??scenario.mapWidth??ORIGINAL_MAP_SIZE;
   const scroller = new Scroller(scenario);
   if(economy){
     economy.onSound=(name,x,y)=>combatAudio?.playExternal(name,x,y,{x:scroller.x,y:scroller.y,width:pixelToLepton(view.width),height:pixelToLepton(view.height)});
@@ -307,6 +311,21 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     scroller.setViewSize(view.width-(sidebar?.width??0), view.height);
     input.resize(previous);
   };
+  const fitScale = () => 1 / Math.max(1, Math.ceil(Math.max((scenario.width * CELL_PIXELS + (sidebar?.width ?? 0)) / bufferWidth, scenario.height * CELL_PIXELS / bufferHeight)));
+  const changeZoom = (next: number, anchor = { x: view.width / 2, y: view.height / 2 }) => {
+    if (!scale || next === scale) return;
+    const origin = viewOrigin();
+    const x = zoomOrigin(origin.x, anchor.x, scale, next), y = zoomOrigin(origin.y, anchor.y, scale, next);
+    scale = next; resize();
+    const inset = padding();
+    scroller.setPosition(pixelToLepton(x + inset.x), pixelToLepton(y + inset.y));
+  };
+  const zoomStep = (step: number, anchor?: { x: number; y: number }) => {
+    const levels = [...new Set([fitScale(), 1 / 16, 1 / 8, 1 / 4, 1 / 2, ...Array.from({ length: MAX_ZOOM }, (_, i) => i + 1)])]
+      .filter(value => value >= fitScale()).sort((a, b) => a - b);
+    const next = step > 0 ? levels.find(value => value > scale) : levels.reverse().find(value => value < scale);
+    if (next !== undefined) changeZoom(next, anchor);
+  };
   const input = new GameInput(canvas, () => view, (index, record) => {
     if (record) {
       const cellX = Math.floor(scroller.x / CELL_LEPTONS);
@@ -315,15 +334,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       jumpTo(bookmarks[index]);
     }
   }, (step, anchor) => {
-    const next = Math.max(1, Math.min(MAX_ZOOM, scale + step));
-    if (scale === 0 || next === scale) return;
-    const origin = viewOrigin();
-    const x = zoomOrigin(origin.x, anchor.x, scale, next);
-    const y = zoomOrigin(origin.y, anchor.y, scale, next);
-    scale = next;
-    resize();
-    const inset = padding();
-    scroller.setPosition(pixelToLepton(x + inset.x), pixelToLepton(y + inset.y));
+    zoomStep(step, anchor);
   }, (position) => {
     if (!simulationSetup) return;
     const origin = viewOrigin(), x = Math.floor((position.x + origin.x) / CELL_PIXELS), y = Math.floor((position.y + origin.y) / CELL_PIXELS);
@@ -371,7 +382,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     renderFrame++;
     bufferWidth = width;
     bufferHeight = height;
-    if (!scale) scale = initialZoom(height);
+    if (!scale) scale = options.startOverview ? fitScale() : initialZoom(height);
     const viewWidth = Math.ceil(width / scale);
     const viewHeight = Math.ceil(height / scale);
     if (viewWidth !== view.width || viewHeight !== view.height || scale !== view.scale) {
@@ -444,6 +455,7 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
       region: cursor.region, remap: scene.plainRemap, shadow: false,
     };
     if(unitView){
+      unitView.sampleStep.value=scale<1?Math.round(1/scale):1;
       unitView.pointer.value.set(input.mouse?x+input.mouse.x:-1,input.mouse?y+input.mouse.y:-1);
       unitView.time.value=Math.floor(time-startTime);
       unitView.shift.value=input.shift?1:0;unitView.ctrl.value=input.ctrl?1:0;
@@ -459,11 +471,13 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
     if(sidebar){sidebar.origin.value.set(x,y);sidebar.viewport.value.set(view.width,view.height);sidebar.pointer.value.set(input.mouse?.x??-100,input.mouse?.y??-100);}
     sidebar?.drawPixels();
     radar?.update(x,y,view.width-(sidebar?.width??0),view.height);
-    lasers?.update(x,y,view.width,view.height);
+    lasers?.update(x,y,view.width,view.height,scale<1?Math.round(1/scale):1);
     construction?.update(input.mouse&&!sidebar?.contains(input.mouse.x,input.mouse.y)?input.mouse.x+x:-100,input.mouse?input.mouse.y+y:-100);
     // UNIT.CPP Take_Damage requests three shakes. The visual offset is local UI state.
     canvas.style.transform=time<shakeUntil?`translateY(${Math.ceil((shakeUntil-time)*60/1000)%2?2:-2}px)`:'';
-    pipeline.render({ x, y, width: viewWidth, height: viewHeight }, scale);
+    const sampleStep = scale < 1 ? Math.round(1 / scale) : 1;
+    pipeline.render({ x, y, width: Math.ceil(viewWidth / sampleStep), height: Math.ceil(viewHeight / sampleStep) }, Math.max(1, scale), sampleStep);
+    options.onCamera?.({ x, y, width: viewWidth, height: viewHeight, scale });
   };
 
   await options.onProgress?.('Drawing the battlefield');
@@ -474,6 +488,11 @@ export async function startPreparedGame(renderer: Renderer, canvas: HTMLCanvasEl
   renderer.setFrame(drawFrame);
 
   return {
+    setZoom(value) {
+      changeZoom(value === 'fit' ? fitScale() : value >= 1 ? Math.max(1, Math.min(MAX_ZOOM, Math.round(value))) : 1 / Math.max(1, Math.round(1 / value)));
+      if (value === 'fit') scroller.setPosition(scenario.x * CELL_LEPTONS, scenario.y * CELL_LEPTONS);
+    },
+    zoom(step) { zoomStep(step); },
     setFlow(enabled) { if (flow) flow.enabled.value = enabled ? 1 : 0; if(unitView) unitView.flow.value=enabled?1:0; },
     setVision(enabled) { if(unitView) unitView.vision.value=enabled?1:0; },
     setPerspective(value) { perspective?.setPerspective(value);spritesDirty=true; },
